@@ -1,0 +1,4 @@
+name,role,pin,status,email
+Sensei John Smith,instructor,1234,active,john@example.com
+Senpai Jane Doe,junior,0000,active,jane@example.com
+Sensei Bob Admin,admin,5678,active,bob@example.com

@@ -1,0 +1,26 @@
+{
+  "name": "KRMAS Instructor App",
+  "short_name": "Roster",
+  "description": "Kumiai Ryu Martial Arts class roster and topic reference for instructors.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f5f2ec",
+  "theme_color": "#1a2238",
+  "categories": ["productivity", "education"],
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
