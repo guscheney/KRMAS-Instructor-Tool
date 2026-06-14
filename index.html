@@ -13,12 +13,12 @@
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Open+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {
-    --black: #000000;
+    --black: #010101;
     --black-2: #1a1a1a;
     --black-3: #2a2a2a;
-    --red: #d62828;
-    --red-2: #b32020;
-    --red-3: #8c1818;
+    --red: #d03428;
+    --red-2: #b02a20;
+    --red-3: #8f2017;
     --red-soft: #fbe9e6;
     --white: #ffffff;
     --off-white: #f5f5f3;
@@ -363,6 +363,12 @@
   }
   .sync-dot.offline { background: var(--grey-300); }
   .sync-dot.error { background: var(--red); }
+  .sync-dot.pending { background: #f5a623; animation: pulse-amber 1.2s ease-in-out infinite; }
+  @keyframes pulse-amber {
+    0%   { box-shadow: 0 0 0 2px var(--black), 0 0 0 0 rgba(245,166,35,0.6); }
+    70%  { box-shadow: 0 0 0 2px var(--black), 0 0 0 6px rgba(245,166,35,0); }
+    100% { box-shadow: 0 0 0 2px var(--black), 0 0 0 0 rgba(245,166,35,0); }
+  }
 
   .lp-section {
     background: var(--off-white); border: 1px solid var(--grey-200);
@@ -928,6 +934,7 @@
       <button class="week-nav" onclick="changeWeek(1)" aria-label="Next week">›</button>
       <div class="week-meta">WK <span class="num" id="weekMeta">11</span></div>
       <button class="week-nav" onclick="toggleSearch()" aria-label="Search" title="Search classes">⌕</button>
+      <button class="week-nav" id="acctBtn" onclick="acctButtonTap()" aria-label="Account" title="Account" style="display:none;">⏻</button>
     </div>
     <div id="searchBar" style="display: none; margin-top: 8px;">
       <input type="text" id="searchInput" placeholder="Search class, instructor, topic…"
@@ -1649,6 +1656,62 @@
   </div>
 </div>
 
+<!-- ===== Modal: Bulk import students into a grading ===== -->
+<div class="modal-bg" id="modalGradingImport">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2>⬆ Import students</h2>
+    <p class="modal-sub" id="giSub"></p>
+    <div id="giLadder" style="font-size:11px;color:var(--grey-500);background:var(--off-white);border-radius:var(--r-sm);padding:8px 10px;margin-bottom:10px;"></div>
+    <p style="font-size:12px;color:var(--grey-500);margin:0 0 8px;">Paste rows from a spreadsheet, or upload the export CSV from your member system. Columns are auto-detected (Enrolment Ref, Title, FirstName, LastName, Belt Size, Grade Description). A simple <em>member, name, grade, result</em> paste also works.</p>
+    <div style="display:flex;gap:8px;margin-bottom:8px;">
+      <input type="file" id="giFile" accept=".csv,.txt,.xlsx,.xls" onchange="handleGradingImportFile(this)" style="flex:1;font-size:12px;">
+      <button class="btn btn-sm" onclick="gradingImportTemplate()">Template</button>
+    </div>
+    <textarea id="giPaste" placeholder="Enrolment Ref, Title, FirstName, LastName, Belt Size, Grade Description, Result&#10;NEW8527, Mr, Nate, Hill, 4, White Belt, pass" oninput="parseGradingImport()" style="width:100%;min-height:110px;padding:10px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;font-family:'JetBrains Mono',monospace;box-sizing:border-box;"></textarea>
+    <div id="giStatus" style="font-size:12px;font-weight:600;margin:8px 0;min-height:16px;"></div>
+    <div id="giPreview" style="max-height:34vh;overflow:auto;"></div>
+    <div class="detail-actions" style="margin-top:8px;">
+      <button class="btn btn-primary" id="giCommitBtn" onclick="commitGradingImport()" style="flex:1;display:none;">Import students</button>
+      <button class="btn" onclick="closeModal('modalGradingImport')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Modal: Print grading certificates ===== -->
+<div class="modal-bg" id="modalGradingCerts">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2>🏆 Print certificates</h2>
+    <p class="modal-sub" id="certSub"></p>
+    <div id="certList" style="max-height:42vh;overflow:auto;margin-bottom:10px;"></div>
+    <div id="certExtraRows">
+      <div class="form-grid-2">
+        <div class="form-row compact">
+          <label>Program / club line</label>
+          <input type="text" id="certProgram" placeholder="e.g. KR Little Ninjas">
+        </div>
+        <div class="form-row compact">
+          <label>Rank / title line (optional)</label>
+          <input type="text" id="certTitleLine" placeholder="e.g. Kohai">
+        </div>
+      </div>
+    </div>
+    <div style="background:var(--off-white);border-radius:var(--r-sm);padding:10px 12px;margin-bottom:10px;">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin-bottom:6px;">Print alignment (mm)</div>
+      <div style="display:flex;gap:12px;align-items:center;">
+        <label style="font-size:12px;display:flex;align-items:center;gap:6px;">Nudge right <input type="number" id="certOffsetX" value="0" step="0.5" style="width:64px;padding:5px;border:1px solid var(--grey-200);border-radius:var(--r-sm);"></label>
+        <label style="font-size:12px;display:flex;align-items:center;gap:6px;">Nudge down <input type="number" id="certOffsetY" value="0" step="0.5" style="width:64px;padding:5px;border:1px solid var(--grey-200);border-radius:var(--r-sm);"></label>
+      </div>
+      <div style="font-size:11px;color:var(--grey-500);margin-top:6px;">Certificates print only the student details, positioned to overlay your pre-printed certificate paper. Adjust the nudge if alignment is off, then reprint — the values are remembered.</div>
+    </div>
+    <div class="detail-actions">
+      <button class="btn btn-primary" onclick="printGradingCerts()" style="flex:1;">Print selected</button>
+      <button class="btn" onclick="closeModal('modalGradingCerts')">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- ===== Modal: Instructor manager ===== -->
 <div class="modal-bg" id="modalInstructorManager">
   <div class="modal">
@@ -1967,6 +2030,17 @@
   </div>
 </div>
 
+<!-- ===== Modal: All-Schools overview (superadmin) ===== -->
+<div class="modal-bg" id="modalAllSchools">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2>🌐 All schools overview</h2>
+    <p class="modal-sub">Network-wide view across every school. Tap any item to jump to that school.</p>
+    <div id="allSchoolsBody" style="max-height:64vh;overflow-y:auto;"></div>
+    <button class="btn btn-ghost" style="width:100%;margin-top:10px;" onclick="closeModal('modalAllSchools')">Close</button>
+  </div>
+</div>
+
 <!-- ===== Modal: Onboarding admin ===== -->
 <div class="modal-bg" id="modalOnboarding">
   <div class="modal">
@@ -1975,6 +2049,22 @@
     <p class="modal-sub">Track onboarding progress for new instructors. Each instructor gets a checklist to complete.</p>
     <div id="onboardingBody" style="max-height:60vh;overflow-y:auto;"></div>
     <button class="btn btn-ghost" style="width:100%;margin-top:10px;" onclick="closeModal('modalOnboarding')">Close</button>
+  </div>
+</div>
+
+<!-- ===== Modal: Customise onboarding template ===== -->
+<div class="modal-bg" id="modalOnboardingTemplate">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2>⚙ Customise onboarding</h2>
+    <p class="modal-sub">Build your own onboarding checklist. These tasks apply to new checklists you create for this school.</p>
+    <div id="onbTemplateBody" style="max-height:48vh;overflow-y:auto;"></div>
+    <button class="btn" style="width:100%;margin:4px 0 10px;" onclick="onbTemplateAdd()">+ Add task</button>
+    <div class="detail-actions">
+      <button class="btn btn-primary" onclick="saveOnboardingTemplate()" style="flex:1;">Save checklist</button>
+      <button class="btn" onclick="closeModal('modalOnboardingTemplate')">Cancel</button>
+    </div>
+    <button class="btn btn-ghost" style="width:100%;margin-top:6px;color:var(--grey-500);" onclick="resetOnboardingTemplate()">Reset to built-in defaults</button>
   </div>
 </div>
 
@@ -2473,6 +2563,11 @@
 <script>
   window.SUPABASE_URL  = 'https://daxwvgnkzvpokzrywzeo.supabase.co';
   window.SUPABASE_ANON = 'sb_publishable_VcUeCM5v8MsvdmN2ycJAMg_KxYj9-Vi';
+
+  // Bumped on every deploy alongside the service-worker cache. The running app
+  // periodically compares this against the served index.html and offers a
+  // one-tap update when they differ — no manual hard-refresh needed.
+  window.KRMAS_APP_VERSION = '44';
   // Push notifications — generate keys with: npx web-push generate-vapid-keys
   // window.VAPID_PUBLIC_KEY = 'YOUR_VAPID_PUBLIC_KEY_HERE';
 </script>

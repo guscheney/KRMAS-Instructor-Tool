@@ -486,7 +486,16 @@ function renderDay() {
   const classes = rosterForDay(date);
   const main = document.getElementById('mainContent');
   if (classes.length === 0) {
-    main.innerHTML = `<div class="empty"><h2>No classes scheduled</h2><p>Tap another day to view the roster.</p></div>`;
+    const activeDays = getActiveDays();
+    const schoolName = KRMAS_SCHOOLS.find(s => s.id === state.schoolId)?.name || 'This school';
+    const dayList = activeDays.map(d => DAY_NAMES[d]).join(', ');
+    main.innerHTML = `<div class="empty">
+      <h2>No classes on ${DAY_NAMES[state.selectedDay]}</h2>
+      <p>${dayList
+        ? `${escapeHtml(schoolName)} runs classes on <strong>${dayList}</strong>. Tap one of those days above to manage the roster and lesson plans.`
+        : 'Tap another day to view the roster.'}</p>
+      ${can.editRoster() && activeDays.length === 0 ? `<button class="btn btn-primary" onclick="openSchoolManager && openSchoolManager()">Set up the timetable</button>` : ''}
+    </div>`;
     return;
   }
 
@@ -694,6 +703,7 @@ function setView(v) {
   // Show/hide Incidents nav tab based on role (instructor+)
   const incTab = document.querySelector('[data-view="incidents"]');
   if (incTab) incTab.style.display = can.viewIncidents() ? '' : 'none';
+  refreshAuthUI();
 
   if (v === 'roster') {
     renderDay();
@@ -1255,10 +1265,29 @@ function pinSubmit() {
 }
 
 function signOut() {
+  if (!confirm('Sign out of KRMAS on this device?')) return;
   state.user = null;
   state.myDocuments = [];
   saveUserAsync();
-  setView('roster');
+  setView('roster'); // setView re-evaluates nav tab visibility for the signed-out user
+}
+
+// Header account button — taps to sign out when signed in, or to sign in otherwise.
+function acctButtonTap() {
+  if (!state.user) { openLogin(); return; }
+  signOut();
+}
+
+// Show the header account/sign-out button only when signed in, with the user's name.
+function refreshAuthUI() {
+  const btn = document.getElementById('acctBtn');
+  if (!btn) return;
+  if (state.user) {
+    btn.style.display = '';
+    btn.title = 'Sign out (' + (state.user.name || 'signed in') + ')';
+  } else {
+    btn.style.display = 'none';
+  }
 }
 
 // ---------- PIN overrides ----------
@@ -1427,15 +1456,7 @@ function selectSchool(id) {
   }
 
   const schoolDataLoad = async () => {
-    await loadEdits(); await loadPlans(); await loadIncidents();
-    await loadStudents(); await loadProgressions(); await loadPathways(); await loadPinOverrides(); await loadGrading(); await loadNotices(); await loadFeedData(); await loadGroupsData(); await loadClassAssignmentsData(); await loadCalendarData(); state.lastLogins = (await DB.loadLastLogins(state.schoolId)) || {};
-    state.documents = await DB.loadDocuments(state.schoolId);
-    state.onboardingChecklists = await DB.loadOnboardingChecklists(state.schoolId);
-  state.classTypeOverrides = (await DB.loadClassTypeOverrides(state.schoolId)) || {};
-    state.complianceReqs = await DB.loadComplianceRequirements(state.schoolId);
-    state.complianceRecords = await DB.loadInstructorCompliance(state.schoolId);
-    state.myDocuments = state.user ? await DB.loadInstructorDocuments(state.user.id) : [];
-    startRealtimeFeed(); // re-subscribe to the new school's realtime channel
+    await loadCurrentSchoolData();
     if (state.view === 'roster') renderDay(); else setView(state.view);
   };
 
@@ -1444,6 +1465,24 @@ function selectSchool(id) {
   closeModal('modalSchool');
   saveUserAsync(); // persist the school choice
   schoolDataLoad();
+}
+
+// Loads EVERY per-school data domain for the current state.schoolId.
+// Shared by selectSchool and the setup wizard so switching schools — or
+// finishing setup of a brand-new school — never leaves another school's
+// incidents, posts, students or gradings in memory.
+async function loadCurrentSchoolData() {
+  await loadEdits(); await loadPlans(); await loadIncidents();
+  await loadStudents(); await loadProgressions(); await loadPathways(); await loadPinOverrides(); await loadGrading(); await loadNotices(); await loadFeedData(); await loadGroupsData(); await loadClassAssignmentsData(); await loadCalendarData();
+  state.lastLogins = (await DB.loadLastLogins(state.schoolId)) || {};
+  state.documents = await DB.loadDocuments(state.schoolId);
+  state.onboardingChecklists = await DB.loadOnboardingChecklists(state.schoolId);
+  state.onboardingTemplate = await DB.loadOnboardingTemplate(state.schoolId);
+  state.classTypeOverrides = (await DB.loadClassTypeOverrides(state.schoolId)) || {};
+  state.complianceReqs = await DB.loadComplianceRequirements(state.schoolId);
+  state.complianceRecords = await DB.loadInstructorCompliance(state.schoolId);
+  state.myDocuments = state.user ? await DB.loadInstructorDocuments(state.user.id) : [];
+  startRealtimeFeed(); // re-subscribe to the new school's realtime channel
 }
 
 // ---------- School onboarding wizard ----------
@@ -1698,8 +1737,13 @@ async function finishWizard() {
   state.schoolId = w.schoolId;
   document.getElementById('schoolName').textContent = w.schoolName;
   closeModal('modalWizard');
+  const schoolName = w.schoolName;
   state.wizardData = null;
-  alert('Welcome to ' + w.schoolName + '!\nNow assign instructors to each class via Edit roster.');
+  // Load this new school's own (empty) data set so nothing from the
+  // previously-selected school carries over into it.
+  await loadCurrentSchoolData();
+  saveUserAsync();
+  alert('Welcome to ' + schoolName + '!\nNow assign instructors to each class via Edit roster.');
   setView('roster');
 }
 
@@ -2040,8 +2084,24 @@ Incidents reported: ${p.incidents}
 }
 
 // ---------- Modal helpers ----------
-function openModal(id)  { const el = document.getElementById(id); if (el) el.classList.add('open'); }
-function closeModal(id) { const el = document.getElementById(id); if (el) el.classList.remove('open'); }
+let _modalZ = 100;
+function openModal(id)  {
+  const el = document.getElementById(id);
+  if (!el) return;
+  // Each newly opened modal sits above any already-open modal, so dialogs opened
+  // from within another dialog (e.g. "+ Upload" inside My Documents) appear on top
+  // rather than behind, regardless of their order in the HTML source.
+  _modalZ += 1;
+  el.style.zIndex = _modalZ;
+  el.classList.add('open');
+}
+function closeModal(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.remove('open');
+  el.style.zIndex = '';
+  if (!document.querySelector('.modal-bg.open')) _modalZ = 100; // reset when all modals closed
+}
 
 document.querySelectorAll('.modal-bg').forEach(bg => {
   bg.addEventListener('click', e => { if (e.target === bg) bg.classList.remove('open'); });
@@ -2446,19 +2506,33 @@ function openIncidentFromPlan() {
 // ---------- Sync indicator ----------
 function updateSyncStatus() {
   const dot = document.getElementById('syncDot');
-  if (dot) {
-    dot.classList.toggle('offline', !navigator.onLine);
-    // Also show Supabase vs local status via colour
-    if (DB.isSupabase) {
-      dot.style.background = '#10b981';
-      dot.title = 'Synced to Supabase';
-    } else {
-      dot.style.background = '';
-      dot.title = navigator.onLine ? 'Local only (no Supabase)' : 'Offline';
-    }
+  if (!dot) return;
+  const pending = (DB.pendingCount ? DB.pendingCount() : 0);
+  dot.classList.remove('offline', 'error', 'pending');
+  dot.style.background = '';
+  if (!navigator.onLine) {
+    dot.classList.add('offline');
+    dot.title = pending ? `Offline · ${pending} change${pending === 1 ? '' : 's'} buffered` : 'Offline — saving to this device';
+  } else if (pending > 0) {
+    dot.classList.add('pending');
+    dot.title = `Syncing ${pending} buffered change${pending === 1 ? '' : 's'}…`;
+  } else if (DB.isSupabase) {
+    dot.style.background = '#10b981';
+    dot.title = 'Synced';
+  } else {
+    dot.title = 'Local only (no Supabase)';
   }
 }
-window.addEventListener('online', updateSyncStatus);
+
+// On reconnect, replay any buffered writes then refresh the indicator.
+async function syncFlushOnline() {
+  updateSyncStatus();
+  if (DB.flushQueue) {
+    try { const n = await DB.flushQueue(); if (n) console.log('[sync] flushed', n, 'buffered write(s)'); } catch (e) {}
+  }
+  updateSyncStatus();
+}
+window.addEventListener('online', syncFlushOnline);
 window.addEventListener('offline', updateSyncStatus);
 
 // ---------- Student progression planner ----------
@@ -2764,33 +2838,71 @@ function renderStudents() {
       <h2>No students yet</h2>
       <p>Plan a student's progression through the KRMAS ranks, including projected dates and age-based program transitions, then flag candidates for the instructor pathway.</p>
     </div>`;
-  } else {
-    html += `<div class="section-sub">Students (${studentList.length})</div>`;
-    for (const stu of studentList) {
-      const progPlans = Object.values(state.progressions).filter(p => p.studentId === stu.id);
-      const pathway = state.pathways[stu.id];
-      const pathwayPoints = pathway ? instructorPathwayPoints(pathway) : 0;
-      const isCandidate = pathway && pathway.enrolledInLeadership;
-
-      // Program dots
-      const progDots = [...new Set(
-        progPlans.flatMap(p => Object.keys(p.programs || {}))
-      )].map(pid => {
-        const pr = progressionProgramById(pid);
-        return pr ? `<span class="pp-prog-dot" style="background: ${pr.colour};" title="${escapeHtml(pr.name)}"></span>` : '';
-      }).join('');
-
-      const age = stu.dob ? ppCalcAge(new Date(stu.dob + 'T00:00:00'), new Date()) : null;
-      html += `<div class="student-card" onclick="openStudent('${stu.id}')">
-        <div style="flex: 1; min-width: 0;">
-          <div class="name">${escapeHtml(stu.name)}${isCandidate ? '<span class="pw-badge-candidate">Candidate</span>' : ''}</div>
-          <div class="meta">${age ? age.years + 'y ' + age.months + 'm' : '—'} · DOB ${ppFmt(stu.dob ? new Date(stu.dob + 'T00:00:00') : null) || '—'}${pathway?.syllabus ? ' · ' + escapeHtml(pathway.syllabus) : ''}</div>
-          <div class="progs">${progDots}${progPlans.length > 0 ? ` <span style="font-size: 11px; color: var(--grey-500); margin-left: 4px;">${progPlans.length} plan${progPlans.length === 1 ? '' : 's'}</span>` : ''}${pathway ? ` · <span class="pw-points-pill" style="font-size: 10px; padding: 2px 8px;"><span>PTS</span><span class="num">${pathwayPoints}</span></span>` : ''}</div>
-        </div>
-      </div>`;
-    }
+    main.innerHTML = html;
+    return;
   }
+
+  // Search + filter (change requested)
+  html += `<div style="display:flex;gap:8px;margin-bottom:10px;">
+    <input type="search" id="studentSearch" placeholder="Search students by name…" value="${escapeHtml(state.studentSearch || '')}"
+      oninput="state.studentSearch=this.value; renderStudentsResults();"
+      style="flex:1;padding:9px 12px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;box-sizing:border-box;">
+    <select id="studentFilter" onchange="state.studentFilter=this.value; renderStudentsResults();" style="padding:9px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;">
+      <option value="all"${(state.studentFilter||'all')==='all'?' selected':''}>All students</option>
+      <option value="candidates"${state.studentFilter==='candidates'?' selected':''}>Pathway candidates</option>
+      <option value="leadership"${state.studentFilter==='leadership'?' selected':''}>In Leadership Program</option>
+      <option value="hasplan"${state.studentFilter==='hasplan'?' selected':''}>Has progression plan</option>
+    </select>
+  </div>`;
+  html += `<div id="studentsResults"></div>`;
   main.innerHTML = html;
+  renderStudentsResults();
+}
+
+function renderStudentsResults() {
+  const box = document.getElementById('studentsResults');
+  if (!box) return;
+  const q = (state.studentSearch || '').trim().toLowerCase();
+  const filter = state.studentFilter || 'all';
+  let studentList = Object.values(state.students || {}).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+  if (q) studentList = studentList.filter(s => (s.name || '').toLowerCase().includes(q));
+  if (filter !== 'all') {
+    studentList = studentList.filter(stu => {
+      const pathway = state.pathways[stu.id];
+      const progPlans = Object.values(state.progressions).filter(p => p.studentId === stu.id);
+      if (filter === 'candidates') return !!pathway;
+      if (filter === 'leadership') return pathway && pathway.enrolledInLeadership;
+      if (filter === 'hasplan') return progPlans.length > 0;
+      return true;
+    });
+  }
+
+  if (studentList.length === 0) {
+    box.innerHTML = `<div style="font-size:13px;color:var(--grey-500);padding:8px 4px;">No students match.</div>`;
+    return;
+  }
+
+  let html = `<div class="section-sub">Students (${studentList.length})</div>`;
+  for (const stu of studentList) {
+    const progPlans = Object.values(state.progressions).filter(p => p.studentId === stu.id);
+    const pathway = state.pathways[stu.id];
+    const pathwayPoints = pathway ? instructorPathwayPoints(pathway) : 0;
+    const isCandidate = pathway && pathway.enrolledInLeadership;
+    const progDots = [...new Set(progPlans.flatMap(p => Object.keys(p.programs || {})))].map(pid => {
+      const pr = progressionProgramById(pid);
+      return pr ? `<span class="pp-prog-dot" style="background: ${pr.colour};" title="${escapeHtml(pr.name)}"></span>` : '';
+    }).join('');
+    const age = stu.dob ? ppCalcAge(new Date(stu.dob + 'T00:00:00'), new Date()) : null;
+    html += `<div class="student-card" onclick="openStudent('${stu.id}')">
+      <div style="flex: 1; min-width: 0;">
+        <div class="name">${escapeHtml(stu.name)}${isCandidate ? '<span class="pw-badge-candidate">Candidate</span>' : ''}</div>
+        <div class="meta">${age ? age.years + 'y ' + age.months + 'm' : '—'} · DOB ${ppFmt(stu.dob ? new Date(stu.dob + 'T00:00:00') : null) || '—'}${pathway?.syllabus ? ' · ' + escapeHtml(pathway.syllabus) : ''}</div>
+        <div class="progs">${progDots}${progPlans.length > 0 ? ` <span style="font-size: 11px; color: var(--grey-500); margin-left: 4px;">${progPlans.length} plan${progPlans.length === 1 ? '' : 's'}</span>` : ''}${pathway ? ` · <span class="pw-points-pill" style="font-size: 10px; padding: 2px 8px;"><span>PTS</span><span class="num">${pathwayPoints}</span></span>` : ''}</div>
+      </div>
+    </div>`;
+  }
+  box.innerHTML = html;
 }
 
 // When a student card is tapped, show a proper action sheet
@@ -3661,6 +3773,7 @@ function renderGrading() {
   else if (state.gradingView === 'stocktake') html += renderGradingStocktake();
   else if (state.gradingView === 'order')     html += renderGradingBeltOrder();
   main.innerHTML = html;
+  if (state.gradingView === 'sessions') renderGradingSessionsResults();
 }
 
 function setGradingView(v) { state.gradingView = v; renderGrading(); }
@@ -3669,16 +3782,63 @@ function setGradingView(v) { state.gradingView = v; renderGrading(); }
    SESSIONS VIEW
    ================================================================ */
 function renderGradingSessions() {
-  const sessions = Object.values(state.grading)
-    .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  const allSessions = Object.values(state.grading);
+  let html = `<button class="btn btn-primary" style="width:100%;margin-bottom:10px;" onclick="${can.manageGrading() ? 'openNewGradingSession()' : 'requireRole(\'admin\')'}">${can.manageGrading() ? '+ New grading session' : '+ New grading session (admin only)'}</button>`;
 
-  let html = `<button class="btn btn-primary" style="width:100%;margin-bottom:12px;" onclick="${can.manageGrading() ? 'openNewGradingSession()' : 'requireRole(\'admin\')'}">${can.manageGrading() ? '+ New grading session' : '+ New grading session (admin only)'}</button>`;
-
-  if (sessions.length === 0) {
-    html += `<div class="empty"><h2>No grading sessions</h2><p>Create a session, add students, record results, then print the official examination sheet.</p></div>`;
+  if (allSessions.length === 0) {
+    html += `<div class="empty"><h2>No grading sessions</h2><p>Create a session, add students, record results, then print the official examination sheet and certificates.</p></div>`;
     return html;
   }
 
+  // Search + filters
+  const syllabusOpts = [...new Set(allSessions.map(s => s.syllabus))]
+    .map(k => `<option value="${escapeHtml(k)}"${state.gradingSearchSyl === k ? ' selected' : ''}>${escapeHtml(GRADING_SYLLABI[k]?.label || k)}</option>`).join('');
+  html += `<div style="display:flex;gap:8px;margin-bottom:6px;">
+    <input type="search" id="gradingSearch" placeholder="Search by syllabus, date, location…" value="${escapeHtml(state.gradingSearch || '')}"
+      oninput="state.gradingSearch=this.value; renderGradingSessionsResults();"
+      style="flex:1;padding:9px 12px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;box-sizing:border-box;">
+  </div>
+  <div style="display:flex;gap:8px;margin-bottom:12px;">
+    <select onchange="state.gradingSearchSyl=this.value; renderGradingSessionsResults();" style="flex:1;padding:8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;">
+      <option value=""${!state.gradingSearchSyl ? ' selected' : ''}>All syllabuses</option>
+      ${syllabusOpts}
+    </select>
+    <select onchange="state.gradingSearchStatus=this.value; renderGradingSessionsResults();" style="flex:1;padding:8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;">
+      <option value=""${!state.gradingSearchStatus ? ' selected' : ''}>Any status</option>
+      <option value="complete"${state.gradingSearchStatus === 'complete' ? ' selected' : ''}>Fully graded</option>
+      <option value="pending"${state.gradingSearchStatus === 'pending' ? ' selected' : ''}>Has ungraded</option>
+      <option value="empty"${state.gradingSearchStatus === 'empty' ? ' selected' : ''}>No students yet</option>
+    </select>
+  </div>
+  <div id="gradingSessionsResults"></div>`;
+  return html;
+}
+
+function renderGradingSessionsResults() {
+  const box = document.getElementById('gradingSessionsResults');
+  if (!box) return;
+  const q = (state.gradingSearch || '').trim().toLowerCase();
+  const sylFilter = state.gradingSearchSyl || '';
+  const statusFilter = state.gradingSearchStatus || '';
+
+  let sessions = Object.values(state.grading).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  if (sylFilter) sessions = sessions.filter(s => s.syllabus === sylFilter);
+  if (q) sessions = sessions.filter(s => {
+    const label = GRADING_SYLLABI[s.syllabus]?.label || s.syllabus;
+    return [label, s.date, s.location].filter(Boolean).join(' ').toLowerCase().includes(q);
+  });
+  if (statusFilter) sessions = sessions.filter(s => {
+    const cands = s.candidates || [];
+    const graded = cands.filter(c => c.result && c.result !== '').length;
+    if (statusFilter === 'empty') return cands.length === 0;
+    if (statusFilter === 'complete') return cands.length > 0 && graded === cands.length;
+    if (statusFilter === 'pending') return cands.length > 0 && graded < cands.length;
+    return true;
+  });
+
+  if (sessions.length === 0) { box.innerHTML = `<div style="font-size:13px;color:var(--grey-500);padding:6px 4px;">No grading sessions match.</div>`; return; }
+
+  let html = '';
   for (const s of sessions) {
     const syl = GRADING_SYLLABI[s.syllabus];
     const colour = syl?.colour || '#999';
@@ -3704,7 +3864,7 @@ function renderGradingSessions() {
       ${isOpen ? renderOpenSession(s) : ''}
     </div>`;
   }
-  return html;
+  box.innerHTML = html;
 }
 
 function toggleGradingSession(id) {
@@ -3739,9 +3899,13 @@ function renderOpenSession(s) {
   let html = `<div id="open-session-${s.id}" style="background:var(--off-white);border:1px solid ${colour};border-top:none;border-radius:0 0 var(--r-md) var(--r-md);padding:10px 12px;margin-bottom:10px;">`;
   if (can.manageGrading()) {
     const hasPlan = !!state.plans['grading-' + s.id];
-    html += `<div style="display:flex;gap:6px;margin-bottom:10px;">
+    html += `<div style="display:flex;gap:6px;margin-bottom:8px;">
       <button class="btn btn-primary" style="flex:1;" onclick="openAddGradingCandidate('${s.id}')">+ Add student</button>
       <button class="btn" style="flex:1;" onclick="openGradingPlan('${s.id}')">${hasPlan ? '📝 Lesson plan ✓' : '📝 Lesson plan'}</button>
+    </div>
+    <div style="display:flex;gap:6px;margin-bottom:10px;">
+      <button class="btn" style="flex:1;" onclick="openGradingImport('${s.id}')">⬆ Import students</button>
+      <button class="btn" style="flex:1;" onclick="openGradingCerts('${s.id}')">🏆 Certificates</button>
     </div>`;
   }
 
@@ -3961,6 +4125,377 @@ async function deleteGradingCandidate() {
   await saveGrading();
   closeModal('modalGradingCandidate');
   renderGrading();
+}
+
+/* ================================================================
+   BULK IMPORT STUDENTS INTO A GRADING SESSION
+   Accepts the EFC/Aquila export CSV (column headers detected) or a
+   simple paste of "member, name, grade[, result]" rows.
+   ================================================================ */
+let _gradingImportRows = [];
+
+function openGradingImport(sessionId) {
+  if (!can.manageGrading()) { alert('Grading manager access required.'); return; }
+  const session = state.grading[sessionId];
+  if (!session) return;
+  state.gradingSessionId = sessionId;
+  _gradingImportRows = [];
+  const syl = GRADING_SYLLABI[session.syllabus];
+  document.getElementById('giSub').textContent = `${syl?.label || session.syllabus} · ${session.date || ''}`;
+  document.getElementById('giPaste').value = '';
+  document.getElementById('giFile').value = '';
+  document.getElementById('giStatus').textContent = '';
+  document.getElementById('giPreview').innerHTML = '';
+  document.getElementById('giCommitBtn').style.display = 'none';
+  const ladder = sylGrades(session.syllabus);
+  document.getElementById('giLadder').innerHTML = ladder.length
+    ? `<strong>Grades for ${escapeHtml(syl?.label || session.syllabus)}:</strong> ${ladder.map(escapeHtml).join(' · ')}`
+    : '';
+  openModal('modalGradingImport');
+}
+
+function gradingImportTemplate() {
+  const session = state.grading[state.gradingSessionId];
+  const ladder = sylGrades(session?.syllabus || 'ln');
+  const firstGrade = ladder[0] || 'White Belt';
+  const headers = ['Enrolment Ref', 'Title', 'FirstName', 'LastName', 'Belt Size', 'Grade Description', 'Result'];
+  const examples = [
+    ['NEW8527', 'Mr', 'Nate', 'Hill', '4', firstGrade, 'pass'],
+    ['NEW8531', '', 'Ava', 'Smith', '3', firstGrade, 'distinction'],
+    ['', '', 'Liam', 'Brown', '', firstGrade, ''],
+  ];
+  const csv = [headers, ...examples].map(r => r.map(v => /[,"]/.test(v) ? `"${v}"` : v).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'KRMAS_Grading_Students_Template.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function handleGradingImportFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  const status = document.getElementById('giStatus');
+  status.textContent = 'Reading file…';
+  if (ext === 'csv' || ext === 'txt') {
+    const r = new FileReader();
+    r.onload = e => { document.getElementById('giPaste').value = e.target.result; parseGradingImport(); };
+    r.readAsText(file);
+  } else if ((ext === 'xlsx' || ext === 'xls') && typeof XLSX !== 'undefined') {
+    const r = new FileReader();
+    r.onload = e => {
+      try {
+        const wb = XLSX.read(e.target.result, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        document.getElementById('giPaste').value = XLSX.utils.sheet_to_csv(ws);
+        parseGradingImport();
+      } catch (err) { status.textContent = 'Could not read spreadsheet: ' + err.message; }
+    };
+    r.readAsArrayBuffer(file);
+  } else {
+    status.textContent = 'Unsupported file. Paste rows or use a CSV/XLSX.';
+  }
+}
+
+// Split a CSV line respecting double-quoted fields
+function splitCsvLine(line) {
+  const out = []; let cur = ''; let q = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (q) {
+      if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+      else if (ch === '"') q = false;
+      else cur += ch;
+    } else {
+      if (ch === '"') q = true;
+      else if (ch === ',') { out.push(cur); cur = ''; }
+      else cur += ch;
+    }
+  }
+  out.push(cur);
+  return out.map(s => s.trim());
+}
+
+// Fuzzy-match a typed grade against the syllabus ladder
+function matchGrade(input, ladder) {
+  if (!input) return null;
+  const norm = s => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const t = norm(input);
+  if (!t) return null;
+  let hit = ladder.find(g => norm(g) === t);
+  if (hit) return hit;
+  hit = ladder.find(g => norm(g).includes(t) || t.includes(norm(g)));
+  return hit || null;
+}
+
+function parseGradingImport() {
+  const session = state.grading[state.gradingSessionId];
+  if (!session) return;
+  const ladder = sylGrades(session.syllabus);
+  const text = document.getElementById('giPaste').value || '';
+  const status = document.getElementById('giStatus');
+  const preview = document.getElementById('giPreview');
+  const validResults = GRADING_RESULTS.map(r => r.value).filter(Boolean);
+
+  let lines = text.split(/\r?\n/).filter(l => l.trim() && l.replace(/[,\s]/g, '') !== '');
+  if (lines.length === 0) { status.textContent = 'Nothing to import yet.'; preview.innerHTML = ''; document.getElementById('giCommitBtn').style.display = 'none'; return; }
+
+  const headerCells = splitCsvLine(lines[0]).map(h => h.toLowerCase().replace(/\uFEFF/g, '').trim());
+  // A header row is detected only when at least two cells EXACTLY match known
+  // column names. Substring matching is unsafe because data values such as
+  // "White Belt" contain "belt" and would be mistaken for a header.
+  const HEADER_NAMES = new Set([
+    'efc reference','enrolment ref','enrolment reference','enrol ref','member','member#','membernum','member number','memberno',
+    'title','firstname','first name','first','middlename','middle name','lastname','last name','last','surname','name',
+    'belt size','beltsize','programme','program','programme description','program description',
+    'grade','grade description','current grade','currentgrade','result','next grade','date of birth','age in years','gender',
+  ]);
+  const headerMatches = headerCells.filter(h => HEADER_NAMES.has(h)).length;
+  const hasHeader = headerMatches >= 2;
+  const col = name => headerCells.indexOf(name);
+  // EFC/Aquila export columns (any subset)
+  const idx = {
+    enrol:  [col('enrolment ref'), col('efc reference'), col('member'), col('member#'), col('membernum')].find(i => i >= 0) ?? -1,
+    title:  col('title'),
+    first:  [col('firstname'), col('first name'), col('first')].find(i => i >= 0) ?? -1,
+    last:   [col('lastname'), col('last name'), col('last'), col('surname')].find(i => i >= 0) ?? -1,
+    name:   col('name'),
+    belt:   [col('belt size'), col('beltsize')].find(i => i >= 0) ?? -1,
+    grade:  [col('grade description'), col('grade'), col('current grade'), col('currentgrade')].find(i => i >= 0) ?? -1,
+    result: col('result'),
+  };
+
+  const dataLines = hasHeader ? lines.slice(1) : lines;
+  _gradingImportRows = dataLines.map(line => {
+    const p = splitCsvLine(line);
+    let member = '', name = '', gradeRaw = '', resultRaw = '', belt = '';
+    if (hasHeader && (idx.first >= 0 || idx.name >= 0)) {
+      member = idx.enrol >= 0 ? (p[idx.enrol] || '') : '';
+      belt   = idx.belt >= 0 ? (p[idx.belt] || '') : '';
+      if (idx.name >= 0 && idx.first < 0) {
+        name = p[idx.name] || '';
+      } else {
+        const title = idx.title >= 0 ? (p[idx.title] || '') : '';
+        const first = idx.first >= 0 ? (p[idx.first] || '') : '';
+        const last  = idx.last >= 0 ? (p[idx.last] || '') : '';
+        name = [title, first, last].filter(Boolean).join(' ').trim();
+      }
+      gradeRaw  = idx.grade >= 0 ? (p[idx.grade] || '') : '';
+      resultRaw = idx.result >= 0 ? (p[idx.result] || '') : '';
+    } else {
+      // headerless simple paste: member, name, grade, result  (or name, grade, result)
+      if (p.length >= 2 && /\d/.test(p[0]) && !/[a-z]{2,}\s+[a-z]{2,}/i.test(p[0])) {
+        [member, name, gradeRaw, resultRaw] = [p[0] || '', p[1] || '', p[2] || '', p[3] || ''];
+      } else {
+        [name, gradeRaw, resultRaw, member] = [p[0] || '', p[1] || '', p[2] || '', p[3] || ''];
+      }
+    }
+    const gradeMatch = matchGrade(gradeRaw, ladder);
+    const grade = gradeMatch || ladder[0] || '';
+    let result = (resultRaw || '').toLowerCase().replace(/\s+/g, '-');
+    if (/distinction/.test(result)) result = 'distinction';
+    else if (/probation/.test(result)) result = 'pass-probationary';
+    else if (/incomplete|retest|re-test/.test(result)) result = 'incomplete';
+    else if (/^pass$/.test(result)) result = 'pass';
+    if (!validResults.includes(result)) result = '';
+    return { member: member.trim(), name: name.trim(), beltSize: (belt || '').trim(), currentGrade: grade, gradeMatched: !gradeRaw || !!gradeMatch, result, valid: !!name.trim() };
+  }).filter(r => r.name || r.member);
+
+  const okCount = _gradingImportRows.filter(r => r.valid).length;
+  status.textContent = `${okCount} student${okCount === 1 ? '' : 's'} ready` + (_gradingImportRows.length - okCount > 0 ? `, ${_gradingImportRows.length - okCount} row(s) skipped (no name)` : '') + (hasHeader ? ' · detected column headers' : '');
+  status.style.color = okCount ? 'var(--ok)' : 'var(--red)';
+
+  preview.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <thead><tr style="text-align:left;color:var(--grey-500);">
+      <th style="padding:4px;">Member</th><th style="padding:4px;">Name</th><th style="padding:4px;">Current grade</th><th style="padding:4px;">Result</th>
+    </tr></thead><tbody>
+    ${_gradingImportRows.slice(0, 200).map(r => `<tr style="border-top:1px solid var(--grey-200);${!r.valid ? 'opacity:.5;' : ''}">
+      <td style="padding:4px;">${escapeHtml(r.member || '—')}</td>
+      <td style="padding:4px;font-weight:600;">${escapeHtml(r.name || '⚠ missing')}</td>
+      <td style="padding:4px;">${escapeHtml(r.currentGrade || '—')}${!r.gradeMatched ? ' <span style="color:var(--warn);" title="Not recognised — defaulted to first grade">⚠</span>' : ''}</td>
+      <td style="padding:4px;">${escapeHtml(GRADING_RESULTS.find(x => x.value === r.result)?.label.split(' (')[0] || '—')}</td>
+    </tr>`).join('')}
+  </tbody></table>`;
+  document.getElementById('giCommitBtn').style.display = okCount ? 'block' : 'none';
+}
+
+async function commitGradingImport() {
+  const session = state.grading[state.gradingSessionId];
+  if (!session) return;
+  const rows = _gradingImportRows.filter(r => r.valid);
+  if (rows.length === 0) { alert('No valid students to import.'); return; }
+  if (!Array.isArray(session.candidates)) session.candidates = [];
+  let base = Date.now();
+  for (const r of rows) {
+    session.candidates.push({
+      idx: base++,
+      memberNum: r.member,
+      name: r.name,
+      beltSize: r.beltSize || '',
+      currentGrade: r.currentGrade,
+      doubleGrade: 'no',
+      result: r.result || '',
+    });
+  }
+  await saveGrading();
+  closeModal('modalGradingImport');
+  renderGrading();
+  alert(`Imported ${rows.length} student${rows.length === 1 ? '' : 's'} into the grading.`);
+}
+
+/* ================================================================
+   GRADING CERTIFICATES — overlay print onto pre-printed stock
+   ================================================================ */
+
+// "13th June 2025" (with <sup> ordinal)
+function ordinalDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso + 'T00:00:00');
+  if (isNaN(d)) return iso;
+  const day = d.getDate();
+  const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const suffix = (day % 10 === 1 && day !== 11) ? 'st' : (day % 10 === 2 && day !== 12) ? 'nd' : (day % 10 === 3 && day !== 13) ? 'rd' : 'th';
+  return `${day}<sup>${suffix}</sup> ${months[d.getMonth()]} ${d.getFullYear()}`;
+}
+
+// Layouts measured (mm from page top) from the supplied 2021 templates.
+const CERT_TEMPLATES = {
+  mln: {
+    label: 'Mini Little Ninjas',
+    fontStack: "'Karate Medium','Karate','Trebuchet MS',Arial,sans-serif",
+    bold: false,
+    fields: [
+      { key: 'name',   top: 118, size: 22 },
+      { key: 'member', top: 152, size: 16 },
+      { key: 'grade',  top: 180, size: 20 },
+      { key: 'date',   top: 207, size: 20 },
+    ],
+  },
+  allinone: {
+    label: 'All other syllabuses',
+    fontStack: "'Lucida Calligraphy','Apple Chancery','URW Chancery L','Segoe Script',cursive",
+    bold: true,
+    fields: [
+      { key: 'name',    top: 58,  size: 23 },
+      { key: 'grade',   top: 77,  size: 20 },
+      { key: 'title',   top: 98,  size: 20 },
+      { key: 'program', top: 119, size: 20 },
+      { key: 'member',  top: 134, size: 16 },
+      { key: 'date',    top: 157, size: 16 },
+    ],
+  },
+};
+
+function certTemplateFor(syllabus) { return syllabus === 'mln' ? 'mln' : 'allinone'; }
+
+let _certState = null;
+
+function openGradingCerts(sessionId) {
+  if (!can.manageGrading()) { alert('Grading manager access required.'); return; }
+  const session = state.grading[sessionId];
+  if (!session) return;
+  const syl = GRADING_SYLLABI[session.syllabus];
+  const templateKey = certTemplateFor(session.syllabus);
+
+  const rows = (session.candidates || []).map(c => {
+    const newGrade = gradingNewGrade(session.syllabus, c.currentGrade, c.result, c.doubleGrade);
+    const achieved = !!newGrade && (c.result === 'pass' || c.result === 'distinction');
+    return {
+      idx: c.idx, include: achieved, eligible: achieved,
+      name: c.name || '', member: c.memberNum || '',
+      grade: newGrade || c.currentGrade || '', result: c.result || '',
+    };
+  });
+
+  let offsetX = 0, offsetY = 0;
+  try { const s = JSON.parse(localStorage.getItem('krmas-cert-offset') || '{}'); offsetX = +s.x || 0; offsetY = +s.y || 0; } catch (e) {}
+
+  _certState = { sessionId, templateKey, program: syl?.label || session.syllabus, date: session.date || isoDate(new Date()), rows, offsetX, offsetY };
+
+  document.getElementById('certSub').textContent = `${syl?.label || session.syllabus} · ${session.date || ''} · ${CERT_TEMPLATES[templateKey].label} template`;
+  document.getElementById('certProgram').value = _certState.program;
+  document.getElementById('certTitleLine').value = '';
+  document.getElementById('certExtraRows').style.display = templateKey === 'allinone' ? 'block' : 'none';
+  document.getElementById('certOffsetX').value = offsetX;
+  document.getElementById('certOffsetY').value = offsetY;
+  renderCertList();
+  openModal('modalGradingCerts');
+}
+
+function renderCertList() {
+  const body = document.getElementById('certList');
+  if (!body || !_certState) return;
+  const rows = _certState.rows;
+  if (rows.length === 0) { body.innerHTML = `<div style="font-size:13px;color:var(--grey-500);padding:8px 0;">No students in this session.</div>`; return; }
+  const incl = rows.filter(r => r.include).length;
+  body.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+      <span style="font-size:11px;color:var(--grey-500);">${incl} of ${rows.length} selected · passes pre-ticked</span>
+      <span><button class="btn btn-sm" onclick="certSelectAll(true)">All</button> <button class="btn btn-sm" onclick="certSelectAll(false)">None</button></span>
+    </div>` +
+    rows.map(r => `
+    <label style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--grey-200);border-radius:var(--r-sm);margin-bottom:6px;cursor:pointer;${!r.eligible ? 'background:var(--off-white);' : ''}">
+      <input type="checkbox" ${r.include ? 'checked' : ''} onchange="certToggle(${r.idx}, this.checked)" style="width:18px;height:18px;accent-color:var(--red);">
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:700;">${escapeHtml(r.name)}${r.member ? ` <span style="font-weight:400;color:var(--grey-500);font-size:12px;">${escapeHtml(r.member)}</span>` : ''}</div>
+        <div style="font-size:12px;color:var(--grey-500);">${escapeHtml(r.grade || '—')}${!r.eligible ? ' · no promotion — tick to print anyway' : ''}</div>
+      </div>
+    </label>`).join('');
+}
+
+function certToggle(idx, on) { if (!_certState) return; const r = _certState.rows.find(x => x.idx === idx); if (r) r.include = on; renderCertList(); }
+function certSelectAll(on) { if (!_certState) return; _certState.rows.forEach(r => r.include = on); renderCertList(); }
+
+function printGradingCerts() {
+  if (!_certState) return;
+  const tpl = CERT_TEMPLATES[_certState.templateKey];
+  const offsetX = parseFloat(document.getElementById('certOffsetX').value) || 0;
+  const offsetY = parseFloat(document.getElementById('certOffsetY').value) || 0;
+  const program = document.getElementById('certProgram').value.trim();
+  const titleLine = document.getElementById('certTitleLine').value.trim();
+  try { localStorage.setItem('krmas-cert-offset', JSON.stringify({ x: offsetX, y: offsetY })); } catch (e) {}
+
+  const chosen = _certState.rows.filter(r => r.include);
+  if (chosen.length === 0) { alert('Select at least one student.'); return; }
+
+  const dateStr = ordinalDate(_certState.date);
+  const pages = chosen.map(r => {
+    const values = { name: r.name, member: r.member, grade: r.grade, level: r.grade, title: titleLine, program, date: dateStr };
+    const fields = tpl.fields.map(f => {
+      const v = values[f.key] || '';
+      if (!v) return '';
+      return `<div class="cf" style="top:${(f.top + offsetY).toFixed(1)}mm;font-size:${f.size}pt;">${v}</div>`;
+    }).join('');
+    return `<div class="page">${fields}</div>`;
+  }).join('');
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Grading certificates</title>
+  <style>
+    @page { size: A4 portrait; margin: 0; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    .page { position: relative; width: 210mm; height: 297mm; overflow: hidden; page-break-after: always; break-after: page; }
+    .page:last-child { page-break-after: auto; break-after: auto; }
+    .cf { position: absolute; left: ${offsetX.toFixed(1)}mm; right: ${(-offsetX).toFixed(1)}mm; text-align: center; font-family: ${tpl.fontStack}; font-weight: ${tpl.bold ? '700' : '400'}; color: #111; line-height: 1.1; white-space: nowrap; }
+    .cf sup { font-size: .6em; }
+    @media screen {
+      body { background: #525659; padding: 76px 0 20px; }
+      .page { background: #fff; margin: 0 auto 20px; box-shadow: 0 2px 12px rgba(0,0,0,.4); }
+      .toolbar { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 10; background: #fff; padding: 10px 16px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.3); font-family: Arial, sans-serif; font-size: 13px; }
+      .toolbar button { font-size: 13px; padding: 6px 14px; cursor: pointer; }
+    }
+    @media print { .toolbar { display: none; } }
+  </style></head><body>
+  <div class="toolbar">${chosen.length} certificate${chosen.length === 1 ? '' : 's'} &nbsp;<button onclick="window.print()">Print</button>&nbsp; Set printer margins to <b>None</b>, scale <b>100%</b></div>
+  ${pages}
+  </body></html>`;
+
+  const w = window.open('', '_blank', 'width=900,height=1000');
+  if (!w) { alert('Allow pop-ups for this site to print certificates.'); return; }
+  w.document.write(html);
+  w.document.close();
+  setTimeout(() => { w.focus(); w.print(); }, 600);
 }
 
 /* ================================================================
@@ -4909,7 +5444,7 @@ async function init() {
   state.classTypeOverrides = (await DB.loadClassTypeOverrides(state.schoolId)) || {};
   state.documents = await DB.loadDocuments(state.schoolId);
   state.onboardingChecklists = await DB.loadOnboardingChecklists(state.schoolId);
-  state.complianceReqs = await DB.loadComplianceRequirements(state.schoolId);
+  state.onboardingTemplate = await DB.loadOnboardingTemplate(state.schoolId);
   state.complianceRecords = await DB.loadInstructorCompliance(state.schoolId);
   await loadUserAsync();
   state.myDocuments = state.user ? await DB.loadInstructorDocuments(state.user.id) : [];
@@ -4931,6 +5466,62 @@ async function init() {
 }
 
 init();
+
+// ====================================================================
+// App-update check — compares the running version against the served
+// index.html and offers a one-tap update, so a new deploy is picked up
+// without a manual hard-refresh. Also keeps the sync dot fresh.
+// ====================================================================
+let _updatePrompted = false;
+async function checkForAppUpdate() {
+  if (_updatePrompted || !navigator.onLine) return;
+  try {
+    const res = await fetch('./index.html?cb=' + Date.now(), { cache: 'no-store' });
+    if (!res.ok) return;
+    const text = await res.text();
+    const m = text.match(/KRMAS_APP_VERSION\s*=\s*['"]([^'"]+)['"]/);
+    const serverVer = m ? m[1] : null;
+    const localVer = window.KRMAS_APP_VERSION || null;
+    if (serverVer && localVer && serverVer !== localVer) {
+      _updatePrompted = true;
+      showUpdateBanner(serverVer);
+    }
+  } catch (e) { /* offline / blocked — ignore */ }
+}
+
+function showUpdateBanner(newVer) {
+  if (document.getElementById('updateBanner')) return;
+  const bar = document.createElement('div');
+  bar.id = 'updateBanner';
+  bar.style.cssText = 'position:fixed;left:0;right:0;bottom:calc(64px + env(safe-area-inset-bottom));z-index:200;display:flex;align-items:center;gap:10px;justify-content:center;background:var(--black);color:#fff;padding:10px 14px;font-size:13px;box-shadow:0 -2px 12px rgba(0,0,0,.3);';
+  bar.innerHTML = `<span>A new version is available.</span>
+    <button id="updateNowBtn" style="background:var(--red);color:#fff;border:none;border-radius:var(--r-sm);padding:7px 14px;font-weight:700;cursor:pointer;font-family:'Oswald',sans-serif;text-transform:uppercase;letter-spacing:.04em;">Update now</button>
+    <button id="updateDismissBtn" style="background:transparent;color:#aaa;border:none;cursor:pointer;font-size:18px;line-height:1;">×</button>`;
+  document.body.appendChild(bar);
+  document.getElementById('updateNowBtn').onclick = applyAppUpdate;
+  document.getElementById('updateDismissBtn').onclick = () => bar.remove();
+}
+
+async function applyAppUpdate() {
+  try {
+    if (window.caches && caches.keys) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    }
+    if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(r => r.update().catch(() => {})));
+    }
+  } catch (e) {}
+  location.reload();
+}
+
+// Poll for updates + refresh the sync indicator periodically.
+setInterval(() => { updateSyncStatus(); checkForAppUpdate(); }, 90000);
+// First update check shortly after load (let init settle).
+setTimeout(checkForAppUpdate, 8000);
+// When the tab regains focus, re-check (covers PWAs left open for days).
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { updateSyncStatus(); checkForAppUpdate(); } });
 
 // ---------- Cover requests ----------
 function renderCoverRequests() {
@@ -5067,6 +5658,9 @@ function resolveTargetAudience(post) {
   if (post.targetScope === 'role') {
     const roles = post.targetIds || [];
     return new Set(allInstructors().filter(i => roles.includes(i.role)).map(i => i.id));
+  }
+  if (post.targetScope === 'users') {
+    return new Set(post.targetIds || []);
   }
   if (post.targetScope === 'group') {
     const groupIds = post.targetIds || [];
@@ -5517,6 +6111,7 @@ function openPostComposer(editPostId, opts) {
     { v: 'school', label: 'Everyone at this school' },
     { v: 'group',  label: 'Specific group' },
     { v: 'role',   label: 'Specific role' },
+    { v: 'users',  label: 'Specific people' },
   ];
   if (can.switchAnySchool()) scopes.push({ v: 'network', label: 'All schools (network)' });
   scopeSel.innerHTML = scopes.map(s => `<option value="${s.v}">${s.label}</option>`).join('');
@@ -5524,8 +6119,8 @@ function openPostComposer(editPostId, opts) {
   scopeSel.value = scopes.find(s => s.v === wantScope) ? wantScope : 'school';
   composerUpdateTargetUI();
 
-  // Pre-select targets when editing a group/role post
-  if (existing && (existing.targetScope === 'group' || existing.targetScope === 'role')) {
+  // Pre-select targets when editing a group/role/users post
+  if (existing && (existing.targetScope === 'group' || existing.targetScope === 'role' || existing.targetScope === 'users')) {
     setTimeout(() => {
       const modal = document.getElementById('modalPostComposer');
       modal.querySelectorAll('.composer-target-check').forEach(cb => {
@@ -5559,7 +6154,7 @@ function openPostEditor(postId) { openPostComposer(postId); }
 function composerUpdateTargetUI() {
   const scope = document.getElementById('composerScope').value;
   const targetsRow = document.getElementById('composerTargetsRow');
-  targetsRow.style.display = (scope === 'group' || scope === 'role') ? 'block' : 'none';
+  targetsRow.style.display = (scope === 'group' || scope === 'role' || scope === 'users') ? 'block' : 'none';
   if (scope === 'group') {
     targetsRow.innerHTML = `<label>Groups</label>
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;">
@@ -5574,6 +6169,14 @@ function composerUpdateTargetUI() {
           <input type="checkbox" class="composer-target-check" value="${r}"> ${r}
         </label>`).join('')}
       </div>`;
+  } else if (scope === 'users') {
+    const people = allInstructors();
+    targetsRow.innerHTML = `<label>People</label>
+      <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px;max-height:160px;overflow:auto;">
+        ${people.map(i => `<label style="display:flex;align-items:center;gap:6px;font-size:12px;">
+          <input type="checkbox" class="composer-target-check" value="${i.id}"> ${escapeHtml(i.name)} <span style="color:var(--grey-400);">${escapeHtml(i.role || '')}</span>
+        </label>`).join('') || '<span style="font-size:12px;color:var(--grey-500);">No people set up yet</span>'}
+      </div>`;
   }
 }
 
@@ -5583,11 +6186,11 @@ async function submitPost() {
   if (!body && _pendingAttachments.length === 0) { alert('Write something or attach a file first.'); return; }
   const scope = document.getElementById('composerScope').value;
   const composerModal = document.getElementById('modalPostComposer');
-  const targetIds = (scope === 'group' || scope === 'role')
+  const targetIds = (scope === 'group' || scope === 'role' || scope === 'users')
     ? [...composerModal.querySelectorAll('.composer-target-check:checked')].map(el => el.value)
     : [];
-  if ((scope === 'group' || scope === 'role') && targetIds.length === 0) {
-    alert('Pick at least one ' + (scope === 'group' ? 'group' : 'role') + '.');
+  if ((scope === 'group' || scope === 'role' || scope === 'users') && targetIds.length === 0) {
+    alert('Pick at least one ' + (scope === 'group' ? 'group' : scope === 'users' ? 'person' : 'role') + '.');
     return;
   }
 
@@ -6559,12 +7162,15 @@ function renderEventCard(ev) {
   const time = ev.startTime ? (ev.startTime + (ev.endTime ? '–' + ev.endTime : '')) : 'All day';
   const mapsUrl = ev.location ? 'https://maps.google.com/?q=' + encodeURIComponent(ev.location) : null;
 
+  const isGrading = t && /grad/i.test(t.name || '');
   return `<div class="ev-card" style="border-left:4px solid ${colour};">
     <div style="display:flex;align-items:flex-start;gap:8px;">
       <div style="flex:1;min-width:0;">
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
           <span style="font-weight:700;font-size:14px;">${escapeHtml(ev.title)}</span>
-          ${t ? `<span class="fp-tag" style="background:${colour};">${escapeHtml(t.name)}</span>` : ''}
+          ${t ? (isGrading
+            ? `<button class="fp-tag" style="background:${colour};border:none;cursor:pointer;font:inherit;" onclick="openGradingFromEvent('${ev.id}')" title="Open the connected grading board">${escapeHtml(t.name)} ›</button>`
+            : `<span class="fp-tag" style="background:${colour};">${escapeHtml(t.name)}</span>`) : ''}
           ${ev.schoolId === null ? '<span class="fp-tag" style="background:var(--red);">Network</span>' : ''}
         </div>
         <div style="font-size:12px;color:var(--grey-500);margin-top:3px;">${fmtEvRange(ev)} · ${time}</div>
@@ -6572,11 +7178,26 @@ function renderEventCard(ev) {
         ${ev.description ? `<div style="font-size:12px;color:var(--grey-500);margin-top:4px;line-height:1.4;">${escapeHtml(ev.description)}</div>` : ''}
       </div>
     </div>
-    <div style="display:flex;gap:6px;margin-top:8px;">
+    <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
       <button class="btn btn-sm" onclick="downloadEventIcs('${ev.id}')">⬇ Add to my calendar</button>
+      ${isGrading ? `<button class="btn btn-sm" onclick="openGradingFromEvent('${ev.id}')">🎯 Open connected grading</button>` : ''}
       ${canEdit ? `<button class="btn btn-sm" onclick="openEventEditor('${ev.id}')">Edit</button>` : ''}
     </div>
   </div>`;
+}
+
+// Jump from a calendar event to its connected grading session (created on import).
+function openGradingFromEvent(eventId) {
+  const session = Object.values(state.grading || {}).find(g => g.fromEvent === eventId);
+  state.gradingView = 'sessions';
+  if (session) state.gradingSessionId = session.id;
+  setView('grading');
+  if (session) {
+    setTimeout(() => {
+      const el = document.getElementById('open-session-' + session.id);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 120);
+  }
 }
 
 function calMonthShift(delta) {
@@ -7047,7 +7668,9 @@ async function confirmEventImport() {
   }
 
   let imported = 0;
+  const gradingEventsForSession = [];
   for (const r of valid) {
+    const typeId = r.typeId || (r.newType ? createdTypes[r.typeName.toLowerCase()] : null);
     const ev = {
       id: 'EVT-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 5).toUpperCase(),
       schoolId: r.schoolId,
@@ -7058,17 +7681,41 @@ async function confirmEventImport() {
       endDate: r.endDate,
       startTime: r.startTime,
       endTime: r.endTime,
-      typeId: r.typeId || (r.newType ? createdTypes[r.typeName.toLowerCase()] : null),
+      typeId,
       createdBy: state.user?.name || null,
       createdAt: new Date().toISOString(),
     };
     state.calendarEvents.push(ev);
     await DB.saveCalendarEvent(ev);
     imported++;
+    // Flag grading-category events (by type name) for session creation
+    if (/grad/i.test(r.typeName || '')) gradingEventsForSession.push(ev);
+  }
+
+  // Auto-create a grading session for each imported "grading" event (de-duplicated by date+location)
+  let gradingsCreated = 0;
+  if (gradingEventsForSession.length > 0) {
+    if (!state.grading || typeof state.grading !== 'object') state.grading = {};
+    const defaultSyl = Object.keys(GRADING_SYLLABI)[0] || 'ln';
+    for (const ev of gradingEventsForSession) {
+      const dupe = Object.values(state.grading).some(g => g.date === ev.startDate && (g.location || '') === (ev.location || ''));
+      if (dupe) continue;
+      const id = 'GS-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 5).toUpperCase();
+      state.grading[id] = {
+        id,
+        syllabus: defaultSyl,
+        date: ev.startDate,
+        location: ev.location || ev.title || '',
+        candidates: [],
+        fromEvent: ev.id,
+      };
+      gradingsCreated++;
+    }
+    if (gradingsCreated > 0) await saveGrading();
   }
 
   window._eventImportRows = null;
-  document.getElementById('eventImportStatus').textContent = `✓ Done: ${imported} event${imported === 1 ? '' : 's'} imported${newTypeNames.length ? ', ' + newTypeNames.length + ' new type' + (newTypeNames.length === 1 ? '' : 's') + ' created' : ''}.`;
+  document.getElementById('eventImportStatus').textContent = `✓ Done: ${imported} event${imported === 1 ? '' : 's'} imported${newTypeNames.length ? ', ' + newTypeNames.length + ' new type' + (newTypeNames.length === 1 ? '' : 's') + ' created' : ''}${gradingsCreated ? ', ' + gradingsCreated + ' grading session' + (gradingsCreated === 1 ? '' : 's') + ' created — set the syllabus for each' : ''}.`;
   document.getElementById('eventImportPreview').innerHTML = '';
   document.getElementById('eventImportFile').value = '';
   if (state.view === 'calendar') renderCalendar();
@@ -7692,6 +8339,127 @@ function urlBase64ToUint8Array(base64String) {
 // ====================================================================
 // Admin view — full page (admin/superadmin only, nav tab)
 // ====================================================================
+// ====================================================================
+// Superadmin — All-Schools overview (cross-school oversight)
+// ====================================================================
+async function openAllSchoolsOverview() {
+  if (!requireRole('superadmin')) return;
+  const body = document.getElementById('allSchoolsBody');
+  if (body) body.innerHTML = `<div style="padding:24px;text-align:center;color:var(--grey-500);">Loading every school…</div>`;
+  openModal('modalAllSchools');
+
+  const ids = [...new Set([...KRMAS_SCHOOLS.map(s => s.id), ...Object.keys(state.customSchools || {})])];
+  const perSchool = [];
+  const allIncidents = [];
+  const allGradings = [];
+
+  for (const id of ids) {
+    const name = KRMAS_SCHOOLS.find(s => s.id === id)?.name || id;
+    let inc = {}, grad = {};
+    try { inc = (await DB.loadIncidents(id)) || {}; } catch (e) {}
+    try { grad = (await DB.loadGrading(id)) || {}; } catch (e) {}
+    const incList = Object.entries(inc).map(([iid, v]) => ({ ...v, id: iid, schoolId: id, schoolName: name }));
+    const gradList = Object.values(grad).map(g => ({ ...g, schoolId: id, schoolName: name }));
+    const seeded = !!(state.customSchools?.[id] || SCHOOL_DATA_SEED[id]);
+    if (!incList.length && !gradList.length && !seeded) continue;
+    perSchool.push({
+      id, name,
+      incidents: incList.length,
+      gradings: gradList.length,
+      openGradings: gradList.filter(g => (g.candidates || []).some(c => !c.result)).length,
+    });
+    allIncidents.push(...incList);
+    allGradings.push(...gradList);
+  }
+  renderAllSchoolsData(perSchool, allIncidents, allGradings);
+}
+
+function renderAllSchoolsData(perSchool, allIncidents, allGradings) {
+  const body = document.getElementById('allSchoolsBody');
+  if (!body) return;
+  perSchool.sort((a, b) => a.name.localeCompare(b.name));
+  const totIncidents = allIncidents.length;
+  const totGradings = allGradings.length;
+  const totOpenGradings = allGradings.filter(g => (g.candidates || []).some(c => !c.result)).length;
+
+  // Recent incidents across all schools
+  const recentIncidents = [...allIncidents].sort((a, b) => (b.date || '').localeCompare(a.date || '')).slice(0, 12);
+  // Gradings sorted by date (upcoming + recent)
+  const sortedGradings = [...allGradings].sort((a, b) => (b.date || '').localeCompare(a.date || '')).slice(0, 12);
+
+  let html = `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px;">
+    ${[['Schools', perSchool.length], ['Incidents', totIncidents], ['Gradings', totGradings]].map(([l, n]) => `
+      <div style="background:var(--white);border:1px solid var(--grey-200);border-radius:var(--r-md);padding:12px;text-align:center;box-shadow:var(--shadow);">
+        <div style="font-family:'Oswald',sans-serif;font-size:26px;font-weight:700;">${n}</div>
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--grey-500);font-weight:700;">${l}</div>
+      </div>`).join('')}
+  </div>`;
+
+  // Per-school breakdown
+  html += `<div class="section-sub">By school</div>`;
+  if (perSchool.length === 0) {
+    html += `<div style="font-size:13px;color:var(--grey-500);padding:6px 4px;">No school data found yet.</div>`;
+  } else {
+    html += `<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px;">`;
+    for (const s of perSchool) {
+      html += `<div style="display:flex;align-items:center;gap:10px;background:var(--white);border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:10px 12px;">
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:700;">${escapeHtml(s.name)}</div>
+          <div style="font-size:11px;color:var(--grey-500);margin-top:2px;">${s.incidents} incident${s.incidents === 1 ? '' : 's'} · ${s.gradings} grading${s.gradings === 1 ? '' : 's'}${s.openGradings ? ` · <span style="color:var(--warn);font-weight:700;">${s.openGradings} open</span>` : ''}</div>
+        </div>
+        <button class="btn btn-sm" onclick="gotoSchoolFromOverview('${s.id}')">Open ›</button>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+
+  // Recent incidents network-wide
+  html += `<div class="section-sub">Recent incidents (all schools)</div>`;
+  if (recentIncidents.length === 0) {
+    html += `<div style="font-size:13px;color:var(--grey-500);padding:6px 4px;">No incidents on record.</div>`;
+  } else {
+    html += `<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px;">`;
+    for (const inc of recentIncidents) {
+      const dateStr = inc.date ? formatDateShort(new Date(inc.date + 'T00:00:00')) : '—';
+      html += `<div class="ir-saved-item ${inc.severity || ''}" onclick="gotoSchoolFromOverview('${inc.schoolId}','incidents')" style="cursor:pointer;">
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:700;">${escapeHtml(inc.personName || '—')} · <span style="color:var(--grey-500);font-weight:400;">${escapeHtml(inc.schoolName)}</span></div>
+          <div class="meta">${dateStr} · ${(inc.type || 'incident').replace(/-/g, ' ')} · ${(inc.severity || '').toUpperCase()}</div>
+        </div>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+
+  // Gradings network-wide
+  html += `<div class="section-sub">Gradings (all schools)</div>`;
+  if (sortedGradings.length === 0) {
+    html += `<div style="font-size:13px;color:var(--grey-500);padding:6px 4px;">No grading sessions.</div>`;
+  } else {
+    html += `<div style="display:flex;flex-direction:column;gap:6px;">`;
+    for (const g of sortedGradings) {
+      const syl = GRADING_SYLLABI[g.syllabus];
+      const cands = g.candidates || [];
+      const graded = cands.filter(c => c.result).length;
+      html += `<div style="display:flex;align-items:center;gap:10px;background:var(--white);border:1px solid var(--grey-200);border-left:4px solid ${syl?.colour || '#999'};border-radius:var(--r-sm);padding:10px 12px;cursor:pointer;" onclick="gotoSchoolFromOverview('${g.schoolId}','grading')">
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:700;">${escapeHtml(syl?.label || g.syllabus)} · <span style="color:var(--grey-500);font-weight:400;">${escapeHtml(g.schoolName)}</span></div>
+          <div style="font-size:11px;color:var(--grey-500);margin-top:2px;">${escapeHtml(g.date || '—')} · ${cands.length} candidate${cands.length === 1 ? '' : 's'} · ${graded} graded</div>
+        </div>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+
+  body.innerHTML = html;
+}
+
+function gotoSchoolFromOverview(schoolId, view) {
+  closeModal('modalAllSchools');
+  if (view) state.view = view;
+  selectSchool(schoolId);
+}
+
 function renderAdmin() {
   hideDayHead();
   const nb = document.getElementById('noticeBanners');
@@ -7732,6 +8500,7 @@ function renderAdmin() {
     { icon: '📢', label: 'Notices board',       fn: 'openNoticesBoard()' },
   ];
   if (isSuperAdmin) {
+    btns.unshift({ icon: '🌐', label: 'All schools overview', fn: 'openAllSchoolsOverview()' });
     btns.push({ icon: '📄', label: 'Upload docs', fn: 'openDocUpload()' });
     if (!DB.isSupabase) btns.push({ icon: '☁', label: 'Migrate to Supabase', fn: 'runMigration()' });
   }
@@ -8517,6 +9286,21 @@ function onboardingProgress(checklist) {
   return { done, total: checklist.items.length, pct: Math.round(done / checklist.items.length * 100) };
 }
 
+// Returns the active onboarding task list: the school's custom template if one
+// has been set up, otherwise the built-in defaults.
+function effectiveOnboardingItems() {
+  const t = state.onboardingTemplate;
+  if (Array.isArray(t) && t.length) {
+    return t.map(it => ({
+      key: it.key || ('item-' + Math.random().toString(36).slice(2, 7)),
+      label: it.label || 'Task',
+      required: it.required !== false,
+      action: it.action || 'me',
+    }));
+  }
+  return DEFAULT_ONBOARDING_ITEMS;
+}
+
 async function createOnboardingForInstructor(instructorId) {
   const existing = getOnboardingForInstructor(instructorId);
   if (existing) return existing;
@@ -8524,7 +9308,7 @@ async function createOnboardingForInstructor(instructorId) {
     id: 'ONB-' + instructorId + '-' + state.schoolId,
     schoolId: state.schoolId,
     instructorId,
-    items: DEFAULT_ONBOARDING_ITEMS.map(item => ({
+    items: effectiveOnboardingItems().map(item => ({
       ...item, completed: false, completedAt: null,
     })),
     status: 'pending',
@@ -8533,6 +9317,86 @@ async function createOnboardingForInstructor(instructorId) {
   state.onboardingChecklists.push(checklist);
   await DB.saveOnboardingChecklist(checklist);
   return checklist;
+}
+
+// ── Custom onboarding template editor ──
+const ONBOARDING_ACTIONS = [
+  { v: 'pin',        label: 'Open: Change PIN' },
+  { v: 'docs',       label: 'Open: Documents' },
+  { v: 'compliance', label: 'Open: My documents (compliance)' },
+  { v: 'me',         label: 'Open: My profile / classes' },
+  { v: 'none',       label: 'No link (just tick off)' },
+];
+let _onbTemplateDraft = [];
+
+function openOnboardingTemplate() {
+  if (!requireRole('admin')) return;
+  const src = (Array.isArray(state.onboardingTemplate) && state.onboardingTemplate.length)
+    ? state.onboardingTemplate
+    : DEFAULT_ONBOARDING_ITEMS;
+  _onbTemplateDraft = src.map(it => ({
+    key: it.key || ('item-' + Math.random().toString(36).slice(2, 7)),
+    label: it.label || '',
+    required: it.required !== false,
+    action: it.action || 'me',
+  }));
+  renderOnboardingTemplate();
+  openModal('modalOnboardingTemplate');
+}
+
+function renderOnboardingTemplate() {
+  const body = document.getElementById('onbTemplateBody');
+  if (!body) return;
+  if (_onbTemplateDraft.length === 0) {
+    body.innerHTML = `<div style="font-size:13px;color:var(--grey-500);padding:8px 0;">No tasks yet. Add one below.</div>`;
+    return;
+  }
+  body.innerHTML = _onbTemplateDraft.map((it, i) => `
+    <div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:10px;margin-bottom:8px;">
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+        <input type="text" value="${escapeHtml(it.label)}" placeholder="Task description" oninput="onbTemplateEdit(${i},'label',this.value)" style="flex:1;padding:7px 9px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;">
+        <button class="btn btn-sm" onclick="onbTemplateMove(${i},-1)" ${i === 0 ? 'disabled' : ''} title="Move up">↑</button>
+        <button class="btn btn-sm" onclick="onbTemplateMove(${i},1)" ${i === _onbTemplateDraft.length - 1 ? 'disabled' : ''} title="Move down">↓</button>
+        <button class="btn btn-sm" style="color:var(--red);" onclick="onbTemplateRemove(${i})" title="Remove">✕</button>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <select onchange="onbTemplateEdit(${i},'action',this.value)" style="padding:6px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;">
+          ${ONBOARDING_ACTIONS.map(a => `<option value="${a.v}"${it.action === a.v ? ' selected' : ''}>${a.label}</option>`).join('')}
+        </select>
+        <label style="font-size:12px;display:flex;align-items:center;gap:5px;"><input type="checkbox" ${it.required ? 'checked' : ''} onchange="onbTemplateEdit(${i},'required',this.checked)"> Required</label>
+      </div>
+    </div>`).join('');
+}
+
+function onbTemplateEdit(i, field, val) { if (_onbTemplateDraft[i]) _onbTemplateDraft[i][field] = val; }
+function onbTemplateRemove(i) { _onbTemplateDraft.splice(i, 1); renderOnboardingTemplate(); }
+function onbTemplateMove(i, dir) {
+  const j = i + dir;
+  if (j < 0 || j >= _onbTemplateDraft.length) return;
+  [_onbTemplateDraft[i], _onbTemplateDraft[j]] = [_onbTemplateDraft[j], _onbTemplateDraft[i]];
+  renderOnboardingTemplate();
+}
+function onbTemplateAdd() {
+  _onbTemplateDraft.push({ key: 'item-' + Math.random().toString(36).slice(2, 7), label: '', required: true, action: 'me' });
+  renderOnboardingTemplate();
+}
+
+async function saveOnboardingTemplate() {
+  const items = _onbTemplateDraft.map(it => ({ ...it, label: (it.label || '').trim() })).filter(it => it.label);
+  if (items.length === 0) { alert('Add at least one task with a description.'); return; }
+  state.onboardingTemplate = items;
+  await DB.saveOnboardingTemplate(state.schoolId, items);
+  closeModal('modalOnboardingTemplate');
+  renderOnboardingAdmin();
+  alert('Custom onboarding saved. New checklists will use these tasks.');
+}
+
+async function resetOnboardingTemplate() {
+  if (!confirm('Reset to the built-in default onboarding tasks? Your custom list will be removed.')) return;
+  state.onboardingTemplate = null;
+  await DB.saveOnboardingTemplate(state.schoolId, null);
+  closeModal('modalOnboardingTemplate');
+  renderOnboardingAdmin();
 }
 
 // ── Admin: onboarding overview ──
@@ -8547,7 +9411,11 @@ function renderOnboardingAdmin() {
   if (!body) return;
   const instrs = currentInstructors();
 
-  let html = `<button class="btn btn-primary" style="width:100%;margin-bottom:12px;" onclick="initAllOnboarding()">Initialise onboarding for all instructors</button>`;
+  let html = `<div style="display:flex;gap:8px;margin-bottom:12px;">
+    <button class="btn btn-primary" style="flex:1;" onclick="initAllOnboarding()">Start for all instructors</button>
+    <button class="btn btn-black" style="flex:1;" onclick="openOnboardingTemplate()">⚙ Customise tasks</button>
+  </div>
+  <div style="font-size:11px;color:var(--grey-500);margin-bottom:10px;">${Array.isArray(state.onboardingTemplate) && state.onboardingTemplate.length ? `Using a custom onboarding checklist (${state.onboardingTemplate.length} task${state.onboardingTemplate.length === 1 ? '' : 's'}).` : 'Using the built-in default checklist. Tap "Customise tasks" to set your own.'}</div>`;
 
   const withChecklist = instrs.map(instr => {
     const cl = getOnboardingForInstructor(instr.id);

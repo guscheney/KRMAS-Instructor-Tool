@@ -38,6 +38,45 @@ const DB = (() => {
   // User session is always localStorage (device-local by design).
   const LOCAL_ONLY_KEYS = ['roster-user:session'];
 
+  // ── Outbound sync queue ──────────────────────────────────────────
+  // When a Supabase write fails (offline or transient error) we still write
+  // locally AND buffer the operation here, keyed by school|key so only the
+  // latest value per record is retained (last-write-wins, bounded size).
+  // window 'online' triggers flushQueue() which replays buffered writes.
+  const QUEUE_KEY = 'krmas_outbound_queue';
+  function loadQueue() { try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || '{}'); } catch (e) { return {}; } }
+  function saveQueue(q) { try { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); } catch (e) {} }
+  function enqueue(schoolId, key, value) {
+    const q = loadQueue();
+    q[schoolId + '|' + key] = { schoolId, key, value, ts: Date.now() };
+    saveQueue(q);
+  }
+  function pendingCount() { return Object.keys(loadQueue()).length; }
+
+  async function _rawSbSet(schoolId, key, value) {
+    const sb = sbClient();
+    if (!sb) throw new Error('no-supabase');
+    const { error } = await sb.rpc('upsert_kv', { p_school_id: schoolId, p_key: key, p_value: value, p_updated_by: null });
+    if (error) throw error;
+    return true;
+  }
+
+  // Replay any buffered writes. Stops on the first still-failing item so order
+  // and connectivity problems don't spin. Returns the number flushed.
+  async function flushQueue() {
+    if (!sbClient()) return 0;
+    const q = loadQueue();
+    const keys = Object.keys(q);
+    let flushed = 0;
+    for (const k of keys) {
+      const item = q[k];
+      try { await _rawSbSet(item.schoolId, item.key, item.value); delete q[k]; flushed++; }
+      catch (e) { break; } // still offline / failing — keep remaining buffered
+    }
+    saveQueue(q);
+    return flushed;
+  }
+
   async function sbGet(schoolId, key) {
     const sb = sbClient();
     if (!sb) return null;
@@ -58,19 +97,15 @@ const DB = (() => {
 
   async function sbSet(schoolId, key, value) {
     const sb = sbClient();
-    if (!sb) return lSet(schoolId + ':' + key, value);
+    if (!sb) return lSet(schoolId + ':' + key, value); // pure local mode — nothing to sync to
     try {
-      const { error } = await sb.rpc('upsert_kv', {
-        p_school_id: schoolId,
-        p_key:       key,
-        p_value:     value,
-        p_updated_by: null,
-      });
-      if (error) throw error;
+      await _rawSbSet(schoolId, key, value);
       return true;
     } catch (e) {
-      console.warn('[DB] sbSet fallback:', key, e.message);
-      return lSet(schoolId + ':' + key, value);
+      console.warn('[DB] sbSet buffered (will sync when online):', key, e.message);
+      lSet(schoolId + ':' + key, value);
+      enqueue(schoolId, key, value);
+      return true;
     }
   }
 
@@ -1052,6 +1087,11 @@ const DB = (() => {
     saveLastLogins:   (schoolId, d) => set('last-login:' + schoolId, d),
     loadGrading:      (schoolId) => get('grading:' + schoolId),
     saveGrading:      (schoolId, d) => set('grading:' + schoolId, d),
+    loadOnboardingTemplate: (schoolId) => get('onboarding-template:' + schoolId),
+    saveOnboardingTemplate: (schoolId, d) => set('onboarding-template:' + schoolId, d),
+
+    // Outbound sync queue (offline → online)
+    flushQueue, pendingCount,
 
     // Global / device-local
     loadCustomSchools: () => get('custom-schools:global'),
