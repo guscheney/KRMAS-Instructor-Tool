@@ -13,15 +13,74 @@ const DB = (() => {
 
   // ── Supabase client (lazy-initialised) ──────────────────────────
   let _sb = null;
+  let _uid = null;
   function sbClient() {
     if (_sb) return _sb;
     if (!window.SUPABASE_URL || !window.SUPABASE_ANON) return null;
     if (typeof supabase === 'undefined' || !supabase.createClient) return null;
-    _sb = supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON);
+    _sb = supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON, {
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'pkce' }
+    });
+    _sb.auth.getUser().then(({ data }) => { _uid = data && data.user ? data.user.id : null; }).catch(() => {});
+    _sb.auth.onAuthStateChange((_e, session) => { _uid = session && session.user ? session.user.id : null; });
     console.log('[DB] Supabase connected to', window.SUPABASE_URL);
     return _sb;
   }
   function isSB() { return !!sbClient(); }
+
+  // ── Hashing for the optional on-device PIN lock (uid acts as salt) ──
+  async function sha256Hex(s) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  // ── Normalized table <-> {id: record} map, written with minimal diffs ──
+  // students & incidents are real tables now (RLS per row). The app still hands
+  // us whole {id: record} maps; we diff against the last-loaded snapshot and issue
+  // only the rows that actually changed, so each write lands on the right RLS policy
+  // (e.g. a junior filing one incident does a single INSERT, not an UPDATE of all).
+  let _snap = {};
+  function _snapshot(map) { const o = {}; for (const id in map) o[id] = JSON.stringify(map[id]); return o; }
+  function _rowToRec(table, r) {
+    if (table === 'students')
+      return { id: r.id, name: r.name, dob: r.dob, memberNum: r.member_num, source: r.source, schoolId: r.school_id };
+    return Object.assign({}, r.data || {}, { id: r.id, schoolId: r.school_id }); // incidents
+  }
+  function _recToRow(table, id, rec, schoolId) {
+    if (table === 'students')
+      return { id, school_id: schoolId, name: rec.name || '', dob: rec.dob || null, member_num: rec.memberNum || null, source: rec.source || null };
+    const data = Object.assign({}, rec); delete data.schoolId; // incidents: whole object in jsonb
+    const row = { id, school_id: schoolId, data };
+    if (_uid) row.created_by = _uid; // required by RLS on INSERT
+    return row;
+  }
+  async function sbLoadTableMap(table, schoolId) {
+    const sb = sbClient(); const lk = table + ':' + schoolId;
+    if (!sb) { const m = (await lGet(lk)) || {}; _snap[lk] = _snapshot(m); return m; }
+    const { data, error } = await sb.from(table).select('*');
+    if (error) { console.warn('[DB] load ' + table + ' fallback:', error.message); const m = (await lGet(lk)) || {}; _snap[lk] = _snapshot(m); return m; }
+    const map = {}; (data || []).forEach(r => { map[r.id] = _rowToRec(table, r); });
+    _snap[lk] = _snapshot(map); lSet(lk, map); return map;
+  }
+  async function sbSaveTableMap(table, schoolId, map) {
+    const sb = sbClient(); const lk = table + ':' + schoolId; map = map || {};
+    if (!sb) { _snap[lk] = _snapshot(map); return lSet(lk, map); }
+    const prev = _snap[lk] || {}; const cur = _snapshot(map);
+    for (const id in cur) if (prev[id] !== cur[id]) {
+      const { error } = await sb.from(table).upsert(_recToRow(table, id, map[id], schoolId), { onConflict: 'id' });
+      if (error) console.warn('[DB] save ' + table + ' ' + id + ':', error.message);
+    }
+    for (const id in prev) if (!(id in cur)) {
+      const { error } = await sb.from(table).delete().eq('id', id);
+      if (error) console.warn('[DB] delete ' + table + ' ' + id + ':', error.message);
+    }
+    _snap[lk] = cur; lSet(lk, map); return true;
+  }
+  async function sbDeleteRow(table, id) {
+    const sb = sbClient();
+    if (sb) { const { error } = await sb.from(table).delete().eq('id', id); if (error) console.warn('[DB] delete ' + table + ':', error.message); }
+    return true;
+  }
 
   // ── localStorage helpers ─────────────────────────────────────────
   async function lGet(key) {
@@ -1076,6 +1135,35 @@ const DB = (() => {
   return {
     get isSupabase() { return isSB(); },
 
+    // ── Auth (Supabase session is the real boundary) ──
+    auth: {
+      async getSession() { const sb = sbClient(); if (!sb) return null; const { data } = await sb.auth.getSession(); return data.session; },
+      async signInWithEmail(email) {
+        const sb = sbClient(); if (!sb) throw new Error('Supabase unavailable');
+        return sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname } });
+      },
+      async signOut() { const sb = sbClient(); if (sb) await sb.auth.signOut(); _uid = null; },
+      onChange(cb) { const sb = sbClient(); if (!sb) return; sb.auth.onAuthStateChange((_e, session) => cb(session)); },
+      currentUid() { return _uid; },
+      async myProfile() {
+        const sb = sbClient(); if (!sb) return null;
+        const { data: u } = await sb.auth.getUser(); if (!u || !u.user) return null;
+        const { data, error } = await sb.from('profiles').select('*').eq('id', u.user.id).single();
+        if (error) { console.warn('[DB] profile:', error.message); return null; }
+        return data;
+      },
+      async setPin(pin) { const sb = sbClient(); if (!sb || !_uid) return false; const h = await sha256Hex(_uid + ':' + pin); const { error } = await sb.from('profiles').update({ pin_hash: h }).eq('id', _uid); return !error; },
+      async checkPin(pin) { const sb = sbClient(); if (!sb || !_uid) return false; const h = await sha256Hex(_uid + ':' + pin); const { data } = await sb.from('profiles').select('pin_hash').eq('id', _uid).single(); return !!(data && data.pin_hash === h); },
+      async hasPin() { const sb = sbClient(); if (!sb || !_uid) return false; const { data } = await sb.from('profiles').select('pin_hash').eq('id', _uid).single(); return !!(data && data.pin_hash); },
+    },
+
+    // Privileged CSV import → Edge Function (service role stays server-side)
+    bulkImportStudents: async (schoolId, students) => {
+      const sb = sbClient(); if (!sb) throw new Error('Supabase unavailable');
+      const { data, error } = await sb.functions.invoke('bulk-import', { body: { schoolId, students } });
+      if (error) throw error; return data;
+    },
+
     // KV data (per-school blobs)
     loadEdits:        (schoolId) => get('roster-edits:' + schoolId),
     saveEdits:        (schoolId, d) => set('roster-edits:' + schoolId, d),
@@ -1083,10 +1171,12 @@ const DB = (() => {
     savePlans:        (schoolId, d) => set('lesson-plans:' + schoolId, d),
     loadNetworkPlans: () => get('lesson-plans:network'),
     saveNetworkPlans: (d) => set('lesson-plans:network', d),
-    loadIncidents:    (schoolId) => get('incidents:' + schoolId),
-    saveIncidents:    (schoolId, d) => set('incidents:' + schoolId, d),
-    loadStudents:     (schoolId) => get('students:' + schoolId),
-    saveStudents:     (schoolId, d) => set('students:' + schoolId, d),
+    loadIncidents:    (schoolId) => sbLoadTableMap('incidents', schoolId),
+    saveIncidents:    (schoolId, d) => sbSaveTableMap('incidents', schoolId, d),
+    deleteIncident:   (schoolId, id) => sbDeleteRow('incidents', id),
+    loadStudents:     (schoolId) => sbLoadTableMap('students', schoolId),
+    saveStudents:     (schoolId, d) => sbSaveTableMap('students', schoolId, d),
+    deleteStudent:    (schoolId, id) => sbDeleteRow('students', id),
     loadProgressions: (schoolId) => get('progressions:' + schoolId),
     saveProgressions: (schoolId, d) => set('progressions:' + schoolId, d),
     loadPathways:     (schoolId) => get('pathways:' + schoolId),

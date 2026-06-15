@@ -55,9 +55,9 @@
 
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; padding: 0; background: var(--off-white); color: var(--black); font-family: 'Open Sans', system-ui, sans-serif; font-size: 15px; line-height: 1.5; }
-  body { padding-bottom: env(safe-area-inset-bottom); min-height: 100vh; }
+  body { height: 100vh; height: 100dvh; overflow: hidden; }
 
-  .app { max-width: 720px; margin: 0 auto; min-height: 100vh; display: flex; flex-direction: column; background: var(--off-white); }
+  .app { max-width: 720px; margin: 0 auto; height: 100%; display: flex; flex-direction: column; background: var(--off-white); }
 
   header.top {
     position: sticky; top: 0; z-index: 30;
@@ -119,7 +119,7 @@
   }
   .week-meta .num { color: var(--red); }
 
-  main { flex: 1; padding: 14px 16px calc(var(--bottom-nav-h, 150px) + 12px); }
+  main { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 14px 16px 16px; }
 
   .day-head {
     display: flex; align-items: baseline; justify-content: space-between;
@@ -327,12 +327,10 @@
   .form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
   .bottom-nav {
-    position: fixed; bottom: 0; left: 0; right: 0;
-    max-width: 720px; margin: 0 auto;
+    flex: none;
     background: var(--white); border-top: 2px solid var(--black);
     display: grid; grid-template-columns: repeat(5, 1fr);
     padding-bottom: env(safe-area-inset-bottom);
-    z-index: 20;
   }
   .nav-btn {
     background: transparent; border: 0; padding: 9px 0 7px;
@@ -900,13 +898,15 @@
   }
 
   @media (max-width: 380px) {
-    main { padding: 12px 12px calc(var(--bottom-nav-h, 150px) + 12px); }
+    main { padding: 12px; }
     .card-inner { padding: 10px 12px 10px 16px; }
   }
 
   @media print {
     .top, .bottom-nav, .sync-dot, .modal-bg { display: none !important; }
-    main { padding: 0; }
+    html, body { height: auto; overflow: visible; }
+    .app { height: auto; display: block; }
+    main { padding: 0; overflow: visible; height: auto; }
     body { background: white; }
     .card, .lp-section { box-shadow: none; border: 1px solid #999; }
   }
@@ -1001,28 +1001,17 @@
   <div class="modal">
     <div class="modal-handle"></div>
     <h2>Sign in</h2>
-    <p class="modal-sub">Select your name, then enter your 4-digit PIN.</p>
+    <p class="modal-sub">Enter your email and we'll send a one-tap sign-in link.</p>
     <div class="form-row">
-      <label>Instructor</label>
-      <select id="loginInstructor"></select>
+      <label>Email</label>
+      <input id="loginEmail" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com"
+             style="width:100%;padding:11px 12px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:16px;" />
     </div>
-    <div class="pin-display" id="pinDisplay"></div>
-    <div class="pin-error" id="pinError"></div>
-    <div class="pin-pad">
-      <button class="pin-btn" onclick="pinPress('1')">1</button>
-      <button class="pin-btn" onclick="pinPress('2')">2</button>
-      <button class="pin-btn" onclick="pinPress('3')">3</button>
-      <button class="pin-btn" onclick="pinPress('4')">4</button>
-      <button class="pin-btn" onclick="pinPress('5')">5</button>
-      <button class="pin-btn" onclick="pinPress('6')">6</button>
-      <button class="pin-btn" onclick="pinPress('7')">7</button>
-      <button class="pin-btn" onclick="pinPress('8')">8</button>
-      <button class="pin-btn" onclick="pinPress('9')">9</button>
-      <button class="pin-btn" onclick="pinClear()">⌫</button>
-      <button class="pin-btn" onclick="pinPress('0')">0</button>
-      <button class="pin-btn" onclick="pinSubmit()" style="background: var(--red); color: var(--white); border-color: var(--red);">OK</button>
-    </div>
-    <button class="btn btn-ghost" style="width: 100%; margin-top: 10px;" onclick="closeModal('modalLogin')">View as guest</button>
+    <div class="pin-error" id="loginError"></div>
+    <button class="btn" id="loginSendBtn" onclick="sendMagicLink()"
+            style="width:100%;margin-top:6px;background:var(--red);color:var(--white);border-color:var(--red);font-weight:700;">
+      Send sign-in link</button>
+    <p id="loginStatus" style="display:none;font-size:13px;color:var(--grey-500);margin-top:12px;text-align:center;line-height:1.5;"></p>
   </div>
 </div>
 
@@ -1645,6 +1634,12 @@
         <option value="distinction">Distinction (Double Rank Promotion)</option>
         <option value="pass-probationary">Pass Not Yet Complete (Probationary Period)</option>
         <option value="incomplete">Pass Incomplete (Re-test required)</option>
+      </select>
+    </div>
+    <div class="form-row compact">
+      <label>Grade in to a set level? <span style="font-weight:400;color:var(--grey-500);">(transfer-in — overrides the promotion above)</span></label>
+      <select id="gcGradeInTo" onchange="gcRefreshNewGradePreview()">
+        <option value="">No — use the result &amp; promotion above</option>
       </select>
     </div>
     <div id="gcNewGradePreview" style="display:none;background:var(--off-white);border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:10px 12px;margin-bottom:10px;flex-direction:column;gap:4px;"></div>
@@ -2566,7 +2561,7 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '45';
+  window.KRMAS_APP_VERSION = '46';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';

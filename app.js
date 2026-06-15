@@ -265,6 +265,30 @@ function allInstructors() {
   return data ? data.instructors : [];
 }
 
+// Every instructor across every school, each tagged with their home school. Custom-schools
+// is loaded globally, so all rosters are available even when not the active school. Used
+// for superadmin network groups that can contain anyone from any location.
+function allInstructorsAllSchools() {
+  const out = [];
+  const seen = new Set();
+  const schools = KRMAS_SCHOOLS.slice();
+  for (const sid of Object.keys(state.customSchools || {})) {
+    if (!schools.find(s => s.id === sid)) {
+      schools.push({ id: sid, name: (state.customSchools[sid] && state.customSchools[sid].name) || sid });
+    }
+  }
+  for (const sc of schools) {
+    const data = getSchoolData(sc.id);
+    for (const i of (data && data.instructors ? data.instructors : [])) {
+      const key = sc.id + ':' + i.id;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ ...i, schoolId: sc.id, schoolName: sc.name || sc.id });
+    }
+  }
+  return out;
+}
+
 function currentSchedule() {
   const data = getSchoolData();
   return data ? data.schedule : [];
@@ -1228,20 +1252,39 @@ function countUrgentCover() {
   return count;
 }
 
-function openLogin() {
-  const sel = document.getElementById('loginInstructor');
-  // Show all instructors except fully inactive — on-leave can still log in
-  const instrs = allInstructors().filter(i => i.active !== false);
-  if (instrs.length === 0) {
-    sel.innerHTML = '<option value="">— No instructors set up —</option>';
-    document.getElementById('pinError').textContent = 'Set up instructors via the school wizard first.';
-  } else {
-    sel.innerHTML = instrs.map(i => `<option value="${i.id}">${escapeHtml(i.name)}${i.status === 'leave' ? ' (on leave)' : ''}</option>`).join('');
-    document.getElementById('pinError').textContent = '';
+function openLogin() { showLoginGate(); }
+
+// The sign-in modal is the gate: under RLS there is no anonymous/guest access, so
+// the app cannot load data without a Supabase session.
+function showLoginGate(msg) {
+  try { openModal('modalLogin'); } catch (e) {}
+  const err = document.getElementById('loginError');
+  const status = document.getElementById('loginStatus');
+  if (err) err.textContent = '';
+  if (status) {
+    if (msg) { status.style.display = 'block'; status.textContent = msg; }
+    else { status.style.display = 'none'; status.textContent = ''; }
   }
-  state.pinInput = '';
-  renderPinDisplay();
-  openModal('modalLogin');
+}
+function hideLoginGate() { try { closeModal('modalLogin'); } catch (e) {} }
+
+async function sendMagicLink() {
+  const emailEl = document.getElementById('loginEmail');
+  const err = document.getElementById('loginError');
+  const status = document.getElementById('loginStatus');
+  const btn = document.getElementById('loginSendBtn');
+  const email = ((emailEl && emailEl.value) || '').trim();
+  if (err) err.textContent = '';
+  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { if (err) err.textContent = 'Enter a valid email address.'; return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  try {
+    await DB.auth.signInWithEmail(email);
+    if (status) { status.style.display = 'block'; status.textContent = 'Check your email for a sign-in link from KRMAS, then tap it on this device.'; }
+  } catch (e) {
+    if (err) err.textContent = 'Could not send link: ' + ((e && e.message) || 'please try again');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Send sign-in link'; }
+  }
 }
 
 function pinPress(d) {
@@ -1259,31 +1302,16 @@ function renderPinDisplay() {
   document.getElementById('pinDisplay').innerHTML = html;
 }
 
-function pinSubmit() {
-  const id = document.getElementById('loginInstructor').value;
-  // Use allInstructors for auth — on-leave instructors can still log in
-  const instr = allInstructors().filter(i => i.active !== false).find(i => i.id === id);
-  if (!instr) return;
-  if (state.pinInput !== effectivePin(instr.id)) {
-    document.getElementById('pinError').textContent = 'Incorrect PIN. Default is 0000 on first use.';
-    state.pinInput = '';
-    renderPinDisplay();
-    return;
-  }
-  state.user = { id: instr.id, name: instr.name, role: instr.role };
-  saveUserAsync(); // also updates lastActive
-  recordLastLogin(instr.id);
-  closeModal('modalLogin');
-  DB.loadInstructorDocuments(instr.id).then(d => { state.myDocuments = d || []; });
-  setView(state.view);
-}
+// Legacy PIN entry is no longer used for sign-in (magic-link is the boundary).
+// Kept as a safe redirect in case any old handler still calls it.
+function pinSubmit() { showLoginGate(); }
 
-function signOut() {
+async function signOut() {
   if (!confirm('Sign out of KRMAS on this device?')) return;
+  await DB.auth.signOut();
   state.user = null;
   state.myDocuments = [];
-  saveUserAsync();
-  setView('roster'); // setView re-evaluates nav tab visibility for the signed-out user
+  showLoginGate();
 }
 
 // Header account button — taps to sign out when signed in, or to sign in otherwise.
@@ -1501,6 +1529,7 @@ function selectSchool(id) {
 async function loadCurrentSchoolData() {
   await loadEdits(); await loadPlans(); await loadIncidents();
   await loadStudents(); await loadProgressions(); await loadPathways(); await loadPinOverrides(); await loadGrading(); await loadNotices(); await loadFeedData(); await loadGroupsData(); await loadClassAssignmentsData(); await loadCalendarData();
+  await reconcileStudents();
   state.lastLogins = (await DB.loadLastLogins(state.schoolId)) || {};
   state.documents = await DB.loadDocuments(state.schoolId);
   state.onboardingChecklists = await DB.loadOnboardingChecklists(state.schoolId);
@@ -2829,6 +2858,81 @@ function renderProgressionResults() {
 }
 
 // ---------- Students view ----------
+// Merge duplicate student records (same trimmed/lowercased name + same DOB) into a
+// single canonical record, re-pointing progression plans, the instructor pathway, and
+// any linked grading candidates. Cleans up duplicates created before progression plans
+// were forced to start from an existing student. Conservative: only merges when BOTH
+// name and DOB are present and match, so distinct students are never collapsed.
+async function reconcileStudents() {
+  const students = state.students || {};
+  const groups = {};
+  for (const [id, s] of Object.entries(students)) {
+    if (!s || !s.name || !s.dob) continue;
+    const key = s.name.trim().toLowerCase() + '|' + s.dob;
+    (groups[key] = groups[key] || []).push(id);
+  }
+  let changed = false;
+  for (const ids of Object.values(groups)) {
+    if (ids.length < 2) continue;
+    // Canonical = the record with the best-presented name (most capitals, then longest,
+    // then stable by id), so merging never leaves a messy lower-cased/space-padded name.
+    const canonical = ids.slice().sort((a, b) => {
+      const na = (students[a].name || '').trim(), nb = (students[b].name || '').trim();
+      const ua = (na.match(/[A-Z]/g) || []).length, ub = (nb.match(/[A-Z]/g) || []).length;
+      if (ub !== ua) return ub - ua;
+      if (nb.length !== na.length) return nb.length - na.length;
+      return a.localeCompare(b);
+    })[0];
+    for (const id of ids) {
+      if (id === canonical) continue;
+      for (const p of Object.values(state.progressions || {})) {
+        if (p && p.studentId === id) { p.studentId = canonical; changed = true; }
+      }
+      if (state.pathways && state.pathways[id]) {
+        const cur = state.pathways[canonical];
+        const dup = state.pathways[id];
+        if (!cur) {
+          state.pathways[canonical] = { ...dup, studentId: canonical };
+        } else {
+          // Merge so no pathway data is lost when both records have one.
+          state.pathways[canonical] = {
+            ...dup, ...cur,
+            studentId: canonical,
+            enrolledInLeadership: !!(cur.enrolledInLeadership || dup.enrolledInLeadership),
+            goals:      { ...(dup.goals || {}),      ...(cur.goals || {}) },
+            meetings:   { ...(dup.meetings || {}),   ...(cur.meetings || {}) },
+            milestones: { ...(dup.milestones || {}), ...(cur.milestones || {}) },
+            syllabus:     cur.syllabus     || dup.syllabus     || '',
+            summaryNotes: cur.summaryNotes || dup.summaryNotes || '',
+            weaknesses:   cur.weaknesses   || dup.weaknesses   || '',
+          };
+        }
+        delete state.pathways[id];
+        changed = true;
+      }
+      for (const sess of Object.values(state.grading || {})) {
+        for (const c of (sess.candidates || [])) {
+          if (c && c.studentId === id) { c.studentId = canonical; changed = true; }
+        }
+      }
+      delete state.students[id];
+      changed = true;
+    }
+    // Tidy the surviving name.
+    if (state.students[canonical] && state.students[canonical].name) {
+      const clean = state.students[canonical].name.trim();
+      if (clean !== state.students[canonical].name) { state.students[canonical].name = clean; changed = true; }
+    }
+  }
+  if (changed) {
+    await saveStudents();
+    await saveProgressions();
+    await savePathways();
+    try { await saveGrading(); } catch (e) {}
+  }
+  return changed;
+}
+
 function renderStudents() {
   hideDayHead();
   const main = document.getElementById('mainContent');
@@ -2843,9 +2947,8 @@ function renderStudents() {
   const allFlaggedCount = Object.keys(state.pathways || {}).length;
 
   let html = `<h1 class="section-head">Students <span class="accent">&</span> pathway</h1>`;
-  html += `<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px;">
-    ${can.editPlans() ? `<button class="btn btn-primary" onclick="newStudent()">+ Add student</button>` : '<div></div>'}
-    ${can.editPlans() ? `<button class="btn btn-black" onclick="openProgression()">+ Progression plan</button>` : ''}
+  html += `<div style="margin-bottom: 14px;">
+    ${can.editPlans() ? `<button class="btn btn-primary" style="width:100%;" onclick="newStudent()">+ Add student</button>` : ''}
   </div>`;
 
   // Candidates summary (if any flagged)
@@ -3011,7 +3114,16 @@ async function saveStudent() {
   const dob = document.getElementById('studentDobInput').value;
   if (!name) { alert('Enter a name.'); return; }
   let id = state.editingStudentId;
-  if (!id) id = 'STU-' + Date.now().toString(36).toUpperCase();
+  if (!id) {
+    const norm = name.trim().toLowerCase();
+    // Fold into an existing record of the same name (a grading-created stub, or an exact
+    // name+DOB match) so manual adds and grading candidates stay a single student record.
+    const match = Object.values(state.students).find(s => {
+      if ((s.name || '').trim().toLowerCase() !== norm) return false;
+      return !s.dob || !dob || s.dob === dob;
+    });
+    id = match ? match.id : ('STU-' + Date.now().toString(36).toUpperCase());
+  }
   const existing = state.students[id] || {};
   state.students[id] = {
     ...existing,
@@ -3856,7 +3968,7 @@ function renderGradingSessionsResults() {
   });
   if (statusFilter) sessions = sessions.filter(s => {
     const cands = s.candidates || [];
-    const graded = cands.filter(c => c.result && c.result !== '').length;
+    const graded = cands.filter(candidateFinalised).length;
     if (statusFilter === 'empty') return cands.length === 0;
     if (statusFilter === 'complete') return cands.length > 0 && graded === cands.length;
     if (statusFilter === 'pending') return cands.length > 0 && graded < cands.length;
@@ -3870,7 +3982,7 @@ function renderGradingSessionsResults() {
     const syl = GRADING_SYLLABI[s.syllabus];
     const colour = syl?.colour || '#999';
     const cands = s.candidates || [];
-    const graded = cands.filter(c => c.result && c.result !== '').length;
+    const graded = cands.filter(candidateFinalised).length;
     const isOpen = state.gradingSessionId === s.id;
 
     html += `<div style="margin-bottom:${isOpen ? 0 : 10}px;">
@@ -3943,7 +4055,7 @@ function renderOpenSession(s) {
       const group = grouped[grade];
       html += `<div style="font-size:10px;font-family:'Oswald',sans-serif;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--grey-500);padding:8px 0 3px;display:flex;align-items:center;gap:6px;">${beltSwatch(grade, 18)}${escapeHtml(grade)}</div>`;
       for (const c of group) {
-        const ng = gradingNewGrade(s.syllabus, c.currentGrade, c.result, c.doubleGrade);
+        const ng = effectiveNewGrade(s.syllabus, c);
         const resultColour = c.result === 'pass' || c.result === 'distinction' ? 'var(--ok)'
           : c.result === 'pass-probationary' ? 'var(--warn)'
           : c.result === 'incomplete' ? 'var(--red)' : null;
@@ -4071,17 +4183,36 @@ function openEditGradingCandidate(sessionId, idx) {
   document.getElementById('gcResult').value = c.result || '';
   document.getElementById('gcDeleteBtn').style.display = 'block';
 
-  gcBuildGrades(session.syllabus, c.currentGrade);
+  gcBuildGrades(session.syllabus, c.currentGrade, c.gradeInTo);
   gcRefreshNewGradePreview();
   openModal('modalGradingCandidate');
 }
 
-function gcBuildGrades(syllabus, selectedGrade) {
+function gcBuildGrades(syllabus, selectedGrade, selectedGradeInTo) {
   const grades = sylGrades(syllabus || 'ln');
   const sel = document.getElementById('gcCurrentGrade');
   sel.innerHTML = grades.map(g =>
     `<option value="${escapeHtml(g)}"${g === selectedGrade ? ' selected' : ''}>${escapeHtml(g)}</option>`
   ).join('');
+  const git = document.getElementById('gcGradeInTo');
+  if (git) {
+    git.innerHTML = `<option value="">No — use the result &amp; promotion above</option>` +
+      grades.map(g => `<option value="${escapeHtml(g)}"${g === selectedGradeInTo ? ' selected' : ''}>${escapeHtml(g)}</option>`).join('');
+  }
+}
+
+// The achieved grade for a candidate: an explicit instructor "grade in to" override
+// wins (transfer-ins with skills carried from another style), otherwise the standard
+// single/double promotion computed from the current grade and result.
+function effectiveNewGrade(syllabus, c) {
+  if (c && c.gradeInTo) return c.gradeInTo;
+  return gradingNewGrade(syllabus, c.currentGrade, c.result, c.doubleGrade);
+}
+
+// A candidate has an outcome recorded if they have a result OR a grade-in override
+// (an explicit instructor award), so progress counters treat grade-ins as done.
+function candidateFinalised(c) {
+  return !!(c && (c.result || c.gradeInTo));
 }
 
 function gcRefreshNewGradePreview() {
@@ -4091,8 +4222,18 @@ function gcRefreshNewGradePreview() {
   const grade  = document.getElementById('gcCurrentGrade')?.value || '';
   const result = document.getElementById('gcResult')?.value || '';
   const dbl    = document.getElementById('gcDoubleGrade')?.value || 'no';
+  const gradeInTo = document.getElementById('gcGradeInTo')?.value || '';
   const preview = document.getElementById('gcNewGradePreview');
   if (!preview) return;
+
+  // Transfer-in override: the instructor dictates the level directly.
+  if (gradeInTo) {
+    preview.style.display = 'flex';
+    preview.innerHTML = `<span style="font-size:11px;font-family:'Oswald',sans-serif;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:var(--grey-500);">Graded in to</span>
+      <span style="font-weight:700;font-size:14px;display:flex;align-items:center;margin-top:4px;">${beltSwatch(gradeInTo, 24)}&nbsp;${escapeHtml(gradeInTo)}</span>
+      <span style="font-size:11px;color:var(--grey-500);margin-top:2px;">Instructor override — set level, single/double promotion ignored</span>`;
+    return;
+  }
 
   const syl = GRADING_SYLLABI[syllabus];
   const ng = gradingNewGrade(syllabus, grade, result, dbl);
@@ -4112,6 +4253,36 @@ function gcRefreshNewGradePreview() {
   }
 }
 
+// Link a grading candidate to a shared student record (creating one if needed) so the
+// Students tab and grading stay in sync in both directions. Match by member number
+// first, then by name; enrich the student's member number when newly supplied.
+function linkStudentForCandidate(name, memberNum, priorStudentId) {
+  const students = state.students || (state.students = {});
+  if (priorStudentId && students[priorStudentId]) {
+    if (memberNum && !students[priorStudentId].memberNum) students[priorStudentId].memberNum = memberNum;
+    return priorStudentId;
+  }
+  const norm = name.trim().toLowerCase();
+  let match = null;
+  if (memberNum) {
+    const mn = memberNum.toLowerCase();
+    match = Object.values(students).find(s => s.memberNum && s.memberNum.toLowerCase() === mn);
+  }
+  if (!match) match = Object.values(students).find(s => (s.name || '').trim().toLowerCase() === norm);
+  if (match) {
+    if (memberNum && !match.memberNum) match.memberNum = memberNum;
+    return match.id;
+  }
+  const id = 'STU-' + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 1000);
+  students[id] = {
+    id, name: name.trim(), dob: '', memberNum: memberNum || '',
+    schoolId: state.schoolId, source: 'grading',
+    updatedAt: new Date().toISOString(),
+    updatedBy: state.user ? state.user.name : 'unknown',
+  };
+  return id;
+}
+
 async function saveGradingCandidate() {
   const name = document.getElementById('gcName').value.trim();
   if (!name) { alert('Enter the student name.'); return; }
@@ -4119,14 +4290,21 @@ async function saveGradingCandidate() {
   const session = state.grading[sessionId];
   if (!session) return;
 
+  const memberNum = document.getElementById('gcMemNum').value.trim();
+  const prior = (state.editingCandidateIdx !== null)
+    ? session.candidates.find(c => c.idx === state.editingCandidateIdx) : null;
+  const studentId = linkStudentForCandidate(name, memberNum, prior?.studentId);
+
   const candidate = {
     idx:          state.editingCandidateIdx !== null ? state.editingCandidateIdx : Date.now(),
-    memberNum:    document.getElementById('gcMemNum').value.trim(),
+    memberNum,
     name,
     beltSize:     document.getElementById('gcBeltSize').value,
     currentGrade: document.getElementById('gcCurrentGrade').value,
     doubleGrade:  document.getElementById('gcDoubleGrade').value,
     result:       document.getElementById('gcResult').value,
+    gradeInTo:    document.getElementById('gcGradeInTo').value,
+    studentId,
   };
 
   if (state.editingCandidateIdx !== null) {
@@ -4138,6 +4316,7 @@ async function saveGradingCandidate() {
   }
 
   await saveGrading();
+  await saveStudents();
   closeModal('modalGradingCandidate');
   renderGrading();
 }
@@ -4356,6 +4535,7 @@ async function commitGradingImport() {
   if (!Array.isArray(session.candidates)) session.candidates = [];
   let base = Date.now();
   for (const r of rows) {
+    const studentId = linkStudentForCandidate(r.name, r.member, null);
     session.candidates.push({
       idx: base++,
       memberNum: r.member,
@@ -4364,9 +4544,11 @@ async function commitGradingImport() {
       currentGrade: r.currentGrade,
       doubleGrade: 'no',
       result: r.result || '',
+      studentId,
     });
   }
   await saveGrading();
+  await saveStudents();
   closeModal('modalGradingImport');
   renderGrading();
   alert(`Imported ${rows.length} student${rows.length === 1 ? '' : 's'} into the grading.`);
@@ -4427,8 +4609,11 @@ function openGradingCerts(sessionId) {
   const templateKey = certTemplateFor(session.syllabus);
 
   const rows = (session.candidates || []).map(c => {
-    const newGrade = gradingNewGrade(session.syllabus, c.currentGrade, c.result, c.doubleGrade);
-    const achieved = !!newGrade && (c.result === 'pass' || c.result === 'distinction');
+    const newGrade = effectiveNewGrade(session.syllabus, c);
+    const achieved = !!newGrade && (
+      c.result === 'pass' || c.result === 'distinction' ||
+      (!!c.gradeInTo && c.result !== 'incomplete' && c.result !== 'pass-probationary')
+    );
     return {
       idx: c.idx, include: achieved, eligible: achieved,
       name: c.name || '', member: c.memberNum || '',
@@ -4557,7 +4742,7 @@ function buildGradingSheetHtml(session) {
   const sizeCol = hasBeltSize ? '<th>Belt Size</th>' : '';
 
   const rows = sorted.map(c => {
-    const ng = gradingNewGrade(session.syllabus, c.currentGrade, c.result, c.doubleGrade);
+    const ng = effectiveNewGrade(session.syllabus, c);
     const resultLabel = GRADING_RESULTS.find(r => r.value === c.result)?.label || '';
     const resultCell = ng
       ? escapeHtml(resultLabel) + '<br><b>→ ' + escapeHtml(ng) + '</b>'
@@ -4730,7 +4915,7 @@ function renderGradingBeltOrder() {
     const syl = GRADING_SYLLABI[session.syllabus];
     if (!syl?.hasBeltSize) continue;
     for (const c of (session.candidates || [])) {
-      const ng = gradingNewGrade(session.syllabus, c.currentGrade, c.result, c.doubleGrade);
+      const ng = effectiveNewGrade(session.syllabus, c);
       if (!ng) continue;
       const size = parseInt(c.beltSize, 10);
       if (!size) continue;
@@ -4808,7 +4993,7 @@ function printBeltOrder() {
     const syl = GRADING_SYLLABI[session.syllabus];
     if (!syl?.hasBeltSize) continue;
     for (const c of (session.candidates || [])) {
-      const ng = gradingNewGrade(session.syllabus, c.currentGrade, c.result, c.doubleGrade);
+      const ng = effectiveNewGrade(session.syllabus, c);
       if (!ng) continue;
       const size = parseInt(c.beltSize, 10);
       if (!size) continue;
@@ -5469,30 +5654,61 @@ async function runMigration() {
 
 // ---------- Boot ----------
 async function init() {
+  // The Supabase session is the real boundary now: without one, RLS returns nothing,
+  // so we show the sign-in gate instead of trying to load data as an anonymous user.
+  if (!DB.isSupabase) { await enterOfflineFallback(); return; }
+  const session = await DB.auth.getSession();
+  if (!session) { showLoginGate(); return; }
+  await enterAppWithSession(session);
+}
+
+// Re-run whenever auth changes (magic-link callback completing, sign-out, token refresh).
+let _enteredOnce = false;
+DB.auth && DB.auth.onChange(async (session) => {
+  if (session) { if (!_enteredOnce) await enterAppWithSession(session); }
+  else { _enteredOnce = false; state.user = null; showLoginGate(); }
+});
+
+async function enterAppWithSession(session) {
+  hideLoginGate();
+  const prof = await DB.auth.myProfile();
+  if (!prof) {
+    await DB.auth.signOut();
+    showLoginGate("This email isn't set up in KRMAS yet. Ask an admin to add you, then sign in again.");
+    return;
+  }
+  _enteredOnce = true;
+  state.user = { id: session.user.id, name: prof.display_name || session.user.email, role: prof.role };
+  if (prof.school_id) {
+    state.schoolId = prof.school_id;
+    const school = (typeof KRMAS_SCHOOLS !== 'undefined') && KRMAS_SCHOOLS.find(s => s.id === state.schoolId);
+    if (school) { const el = document.getElementById('schoolName'); if (el) el.textContent = school.name; }
+  }
+  try { recordLastLogin(state.user.id); } catch (e) {}
   await loadCustomSchools();
-  // Restore the saved session (user + schoolId) BEFORE loading any per-school
-  // data, then use the one canonical loader. Previously the loads below ran
-  // with the DEFAULT schoolId and only restored the real school afterwards —
-  // so on refresh you could briefly load the wrong location's plans/incidents.
-  // loadCurrentSchoolData also covers complianceReqs (which init used to miss)
-  // and re-subscribes the realtime feed.
-  await loadUserAsync();
   await loadCurrentSchoolData();
+  finishBootRender();
+  if (typeof refreshAuthUI === 'function') refreshAuthUI();
+  DB.loadInstructorDocuments(state.user.id).then(d => { state.myDocuments = d || []; }).catch(() => {});
+}
+
+// Offline / Supabase-unreachable: fall back to whatever is cached locally (read-only-ish).
+async function enterOfflineFallback() {
+  await loadCustomSchools();
+  await loadCurrentSchoolData();
+  finishBootRender();
+}
+
+function finishBootRender() {
   state.currentDate = startOfWeek(new Date());
   const todayDow = new Date().getDay();
   const activeDays = getActiveDays();
-  if (activeDays.includes(todayDow)) {
-    state.selectedDay = todayDow;
-  } else {
-    let found = activeDays.find(d => d > todayDow);
-    state.selectedDay = found || activeDays[0] || 1;
-  }
+  state.selectedDay = activeDays.includes(todayDow) ? todayDow : (activeDays.find(d => d > todayDow) || activeDays[0] || 1);
   renderDayTabs();
   renderWeekMeta();
   setView('feed');
   updateSyncStatus();
   renderNoticeBanners();
-  // realtime feed subscription is started by loadCurrentSchoolData()
 }
 
 init();
@@ -5675,14 +5891,19 @@ function instrMatchesRules(instr, rules) {
 }
 
 function resolveGroupMembers(group) {
-  // Combines dynamic (rule-based) + static members
-  const all = allInstructors().map(i => ({ ...i, schoolId: state.schoolId }));
-  const dynamic = group.rules?.length ? all.filter(i => instrMatchesRules(i, group.rules)) : [];
-  const staticIds = new Set((group.members || []).map(m => m.user_id || m.userId));
-  const staticMembers = all.filter(i => staticIds.has(i.id));
-  // Merge, deduplicate
-  const seen = new Set(dynamic.map(i => i.id));
-  return [...dynamic, ...staticMembers.filter(i => !seen.has(i.id))];
+  // Combines dynamic (rule-based) + static members. Network groups (school_id === null)
+  // resolve across every school; school-scoped groups resolve within the active school.
+  const pool = (group.school_id === null)
+    ? allInstructorsAllSchools()
+    : allInstructors().map(i => ({ ...i, schoolId: state.schoolId }));
+  const dynamic = group.rules?.length ? pool.filter(i => instrMatchesRules(i, group.rules)) : [];
+  const memberMatch = i => (group.members || []).some(m =>
+    (m.user_id || m.userId) === i.id &&
+    ((m.school_id || m.schoolId || i.schoolId) === i.schoolId));
+  const staticMembers = pool.filter(memberMatch);
+  // Merge, deduplicate by school+id
+  const seen = new Set(dynamic.map(i => i.schoolId + ':' + i.id));
+  return [...dynamic, ...staticMembers.filter(i => !seen.has(i.schoolId + ':' + i.id))];
 }
 
 function resolveTargetAudience(post) {
@@ -6412,6 +6633,8 @@ function openGroupEditor(groupId) {
   document.getElementById('groupIsNetwork').checked = existing?.school_id === null;
   // Hide network option for non-superadmins
   document.getElementById('groupIsNetwork').closest('label').style.display = can.switchAnySchool() ? '' : 'none';
+  // Toggling network scope swaps the member pool between this school and all schools.
+  document.getElementById('groupIsNetwork').onchange = () => renderGroupStaticMembers(_editingStaticMembers);
   document.getElementById('groupDeleteBtn').style.display = existing ? 'block' : 'none';
   renderGroupRules(_editingRules);
   renderGroupStaticMembers(_editingStaticMembers);
@@ -6491,24 +6714,40 @@ function renderGroupStaticMembers(members) {
   _editingStaticMembers = [...members];
   const container = document.getElementById('groupMembersContainer');
   if (!container) return;
-  const memberIds = new Set(_editingStaticMembers.map(m => m.user_id || m.userId));
-  const instrs = allInstructors();
-  container.innerHTML = `<div style="font-size:11px;color:var(--grey-500);margin-bottom:6px;">
-    Static members (always in this group regardless of rules):
-  </div>` + instrs.map(i => `
-    <label style="display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px;cursor:pointer;">
-      <input type="checkbox" ${memberIds.has(i.id)?'checked':''} onchange="groupMemberToggle('${i.id}',this.checked)" style="width:16px;height:16px;accent-color:var(--red);">
-      ${escapeHtml(i.name)} ${roleBadge(i.role)}
-    </label>`).join('');
-}
+  const keyOf = m => (m.user_id || m.userId) + '@' + (m.school_id || m.schoolId || state.schoolId);
+  const memberKeys = new Set(_editingStaticMembers.map(keyOf));
+  const netToggle = document.getElementById('groupIsNetwork');
+  const isNetwork = !!(netToggle && netToggle.checked && can.switchAnySchool());
 
-function groupMemberToggle(userId, checked) {
-  if (checked) {
-    if (!_editingStaticMembers.find(m => (m.user_id||m.userId) === userId)) {
-      _editingStaticMembers.push({ user_id: userId, school_id: state.schoolId });
+  const row = (i, withSchool) => `
+    <label style="display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px;cursor:pointer;">
+      <input type="checkbox" ${memberKeys.has(i.id + '@' + i.schoolId) ? 'checked' : ''} onchange="groupMemberToggle('${i.id}',this.checked,'${i.schoolId}')" style="width:16px;height:16px;accent-color:var(--red);">
+      ${escapeHtml(i.name)} ${roleBadge(i.role)}${withSchool ? ` <span style="font-size:10px;color:var(--grey-500);">· ${escapeHtml(i.schoolName)}</span>` : ''}
+    </label>`;
+
+  let html = `<div style="font-size:11px;color:var(--grey-500);margin-bottom:6px;">Static members (always in this group regardless of rules):</div>`;
+  if (isNetwork) {
+    const all = allInstructorsAllSchools();
+    const bySchool = {};
+    for (const i of all) (bySchool[i.schoolName] = bySchool[i.schoolName] || []).push(i);
+    for (const sname of Object.keys(bySchool).sort()) {
+      html += `<div style="font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--grey-500);margin:8px 0 2px;">${escapeHtml(sname)}</div>`;
+      html += bySchool[sname].map(i => row(i, false)).join('');
     }
   } else {
-    _editingStaticMembers = _editingStaticMembers.filter(m => (m.user_id||m.userId) !== userId);
+    const instrs = allInstructors().map(i => ({ ...i, schoolId: state.schoolId }));
+    html += instrs.map(i => row(i, false)).join('');
+  }
+  container.innerHTML = html;
+}
+
+function groupMemberToggle(userId, checked, schoolId) {
+  schoolId = schoolId || state.schoolId;
+  const matches = m => (m.user_id || m.userId) === userId && (m.school_id || m.schoolId || state.schoolId) === schoolId;
+  if (checked) {
+    if (!_editingStaticMembers.find(matches)) _editingStaticMembers.push({ user_id: userId, school_id: schoolId });
+  } else {
+    _editingStaticMembers = _editingStaticMembers.filter(m => !matches(m));
   }
 }
 
@@ -6537,9 +6776,9 @@ async function saveGroup() {
   else state.groups.push(group);
 
   await DB.saveGroup(group);
-  // Save static members
+  // Save static members (preserve each member's own school for cross-location groups)
   for (const m of _editingStaticMembers) {
-    await DB.saveGroupMember(id, m.user_id || m.userId, state.schoolId, state.user?.name);
+    await DB.saveGroupMember(id, m.user_id || m.userId, m.school_id || m.schoolId || state.schoolId, state.user?.name);
   }
 
   closeModal('modalGroupEditor');
@@ -6772,7 +7011,6 @@ function previewBulkImport(rows) {
       <th style="padding:5px 8px;text-align:left;border-bottom:1px solid var(--grey-200);">Row</th>
       <th style="padding:5px 8px;text-align:left;border-bottom:1px solid var(--grey-200);">Name</th>
       <th style="padding:5px 8px;text-align:left;border-bottom:1px solid var(--grey-200);">Role</th>
-      <th style="padding:5px 8px;text-align:left;border-bottom:1px solid var(--grey-200);">PIN</th>
       <th style="padding:5px 8px;text-align:left;border-bottom:1px solid var(--grey-200);">Status</th>
     </tr></thead>
     <tbody>
@@ -6784,7 +7022,6 @@ function previewBulkImport(rows) {
           ${r.errors.length ? `<span style="font-size:9px;color:var(--red);">${r.errors.join(', ')}</span>` : ''}
         </td>
         <td style="padding:4px 8px;border-bottom:1px solid var(--grey-100);">${roleBadge(r.role)}</td>
-        <td style="padding:4px 8px;border-bottom:1px solid var(--grey-100);font-family:'JetBrains Mono',monospace;">${escapeHtml(r.pin)}</td>
         <td style="padding:4px 8px;border-bottom:1px solid var(--grey-100);">${escapeHtml(r.status)}</td>
       </tr>`).join('')}
     </tbody>
@@ -8448,7 +8685,7 @@ async function openAllSchoolsOverview() {
       id, name,
       incidents: incList.length,
       gradings: gradList.length,
-      openGradings: gradList.filter(g => (g.candidates || []).some(c => !c.result)).length,
+      openGradings: gradList.filter(g => (g.candidates || []).some(c => !candidateFinalised(c))).length,
     });
     allIncidents.push(...incList);
     allGradings.push(...gradList);
@@ -8462,7 +8699,7 @@ function renderAllSchoolsData(perSchool, allIncidents, allGradings) {
   perSchool.sort((a, b) => a.name.localeCompare(b.name));
   const totIncidents = allIncidents.length;
   const totGradings = allGradings.length;
-  const totOpenGradings = allGradings.filter(g => (g.candidates || []).some(c => !c.result)).length;
+  const totOpenGradings = allGradings.filter(g => (g.candidates || []).some(c => !candidateFinalised(c))).length;
 
   // Recent incidents across all schools
   const recentIncidents = [...allIncidents].sort((a, b) => (b.date || '').localeCompare(a.date || '')).slice(0, 12);
@@ -8522,7 +8759,7 @@ function renderAllSchoolsData(perSchool, allIncidents, allGradings) {
     for (const g of sortedGradings) {
       const syl = GRADING_SYLLABI[g.syllabus];
       const cands = g.candidates || [];
-      const graded = cands.filter(c => c.result).length;
+      const graded = cands.filter(candidateFinalised).length;
       html += `<div style="display:flex;align-items:center;gap:10px;background:var(--white);border:1px solid var(--grey-200);border-left:4px solid ${syl?.colour || '#999'};border-radius:var(--r-sm);padding:10px 12px;cursor:pointer;" onclick="gotoSchoolFromOverview('${g.schoolId}','grading')">
         <div style="flex:1;min-width:0;">
           <div style="font-weight:700;">${escapeHtml(syl?.label || g.syllabus)} · <span style="color:var(--grey-500);font-weight:400;">${escapeHtml(g.schoolName)}</span></div>
