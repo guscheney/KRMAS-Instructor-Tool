@@ -119,7 +119,7 @@
   }
   .week-meta .num { color: var(--red); }
 
-  main { flex: 1; padding: 14px 16px calc(80px + env(safe-area-inset-bottom)); }
+  main { flex: 1; padding: 14px 16px calc(var(--bottom-nav-h, 150px) + 12px); }
 
   .day-head {
     display: flex; align-items: baseline; justify-content: space-between;
@@ -900,7 +900,7 @@
   }
 
   @media (max-width: 380px) {
-    main { padding: 12px 12px calc(80px + env(safe-area-inset-bottom)); }
+    main { padding: 12px 12px calc(var(--bottom-nav-h, 150px) + 12px); }
     .card-inner { padding: 10px 12px 10px 16px; }
   }
 

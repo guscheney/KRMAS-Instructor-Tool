@@ -229,9 +229,13 @@ function getSchoolData(schoolId) {
   if (!seed && !custom) return null;
   if (!seed) return custom;
   if (!custom) return seed;
-  // Merge: custom data (instructors, defaults, contact from wizard) overlays the seed schedule
+  // Merge: custom data (schedule, instructors, defaults, contact) overlays the seed.
+  // A non-empty custom.schedule means the timetable has been edited for this school
+  // (saveScheduleSlot copies the seed in first), so it takes precedence — otherwise
+  // edits to seeded schools like Edgeworth would silently never apply.
   return {
     ...seed,
+    schedule:    (custom.schedule && custom.schedule.length) ? custom.schedule : (seed.schedule || []),
     instructors: custom.instructors?.length ? custom.instructors : (seed.instructors || []),
     defaults:    custom.defaults    ? custom.defaults    : (seed.defaults || {}),
     contact:     custom.contact     ? custom.contact     : (seed.contact || {}),
@@ -712,6 +716,7 @@ function setView(v) {
   const incTab = document.querySelector('[data-view="incidents"]');
   if (incTab) incTab.style.display = can.viewIncidents() ? '' : 'none';
   refreshAuthUI();
+  syncNavHeight(); // nav row-count can change with which tabs are visible
 
   if (v === 'roster') {
     renderDay();
@@ -1298,6 +1303,19 @@ function refreshAuthUI() {
     btn.style.display = 'none';
   }
 }
+
+// The bottom nav is a 5-column grid that wraps to 2-3 rows depending on how many
+// tabs are visible (role-dependent) and the viewport width, so its height isn't
+// fixed. Measure it and expose it as --bottom-nav-h so content padding always
+// clears it (offsetHeight already includes the safe-area-inset padding).
+function syncNavHeight() {
+  const nav = document.querySelector('.bottom-nav');
+  if (!nav) return;
+  const h = nav.offsetHeight || 0;
+  if (h) document.documentElement.style.setProperty('--bottom-nav-h', h + 'px');
+}
+window.addEventListener('resize', syncNavHeight);
+window.addEventListener('orientationchange', () => setTimeout(syncNavHeight, 100));
 
 // ---------- PIN overrides ----------
 // Edgeworth's instructors are seeded with PIN 0000. To let each instructor
@@ -5478,6 +5496,10 @@ async function init() {
 }
 
 init();
+
+// Ensure content clears the bottom nav once layout/fonts settle.
+window.addEventListener('load', syncNavHeight);
+setTimeout(syncNavHeight, 300);
 
 // ====================================================================
 // App-update check — compares the running version against the served
