@@ -1144,12 +1144,19 @@ const DB = (() => {
         return sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname } });
       },
       async signOut() { const sb = sbClient(); if (sb) await sb.auth.signOut(); _uid = null; },
-      onChange(cb) { const sb = sbClient(); if (!sb) return; sb.auth.onAuthStateChange((_e, session) => cb(session)); },
+      onChange(cb) {
+        const sb = sbClient(); if (!sb) return;
+        // Defer outside the auth callback: calling Supabase auth methods *inside* the
+        // onAuthStateChange callback deadlocks against its internal lock (hangs sign-in).
+        sb.auth.onAuthStateChange((_e, session) => { setTimeout(() => cb(session), 0); });
+      },
       currentUid() { return _uid; },
       async myProfile() {
         const sb = sbClient(); if (!sb) return null;
-        const { data: u } = await sb.auth.getUser(); if (!u || !u.user) return null;
-        const { data, error } = await sb.from('profiles').select('*').eq('id', u.user.id).single();
+        let uid = _uid;
+        if (!uid) { try { const { data: u } = await sb.auth.getUser(); uid = u && u.user ? u.user.id : null; } catch (e) { uid = null; } }
+        if (!uid) return null;
+        const { data, error } = await sb.from('profiles').select('*').eq('id', uid).single();
         if (error) { console.warn('[DB] profile:', error.message); return null; }
         return data;
       },
