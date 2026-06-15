@@ -1268,6 +1268,14 @@ function showLoginGate(msg) {
 }
 function hideLoginGate() { try { closeModal('modalLogin'); } catch (e) {} }
 
+function togglePasswordVisibility() {
+  const inp = document.getElementById('loginPassword');
+  const btn = document.getElementById('loginPwToggle');
+  if (!inp) return;
+  if (inp.type === 'password') { inp.type = 'text'; if (btn) btn.textContent = 'Hide'; }
+  else { inp.type = 'password'; if (btn) btn.textContent = 'Show'; }
+}
+
 async function signIn() {
   const email = ((document.getElementById('loginEmail') || {}).value || '').trim();
   const password = (document.getElementById('loginPassword') || {}).value || '';

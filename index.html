@@ -1005,13 +1005,18 @@
     <div class="form-row">
       <label>Email</label>
       <input id="loginEmail" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com"
+             onkeydown="if(event.key==='Enter'){signIn();}"
              style="width:100%;padding:11px 12px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:16px;" />
     </div>
     <div class="form-row">
       <label>Password</label>
-      <input id="loginPassword" type="password" autocomplete="current-password" placeholder="••••••••"
-             onkeydown="if(event.key==='Enter'){signIn();}"
-             style="width:100%;padding:11px 12px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:16px;" />
+      <div style="position:relative;">
+        <input id="loginPassword" type="password" autocomplete="current-password" placeholder="••••••••"
+               onkeydown="if(event.key==='Enter'){signIn();}"
+               style="width:100%;padding:11px 56px 11px 12px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:16px;" />
+        <button type="button" id="loginPwToggle" onclick="togglePasswordVisibility()"
+                style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:12px;font-weight:700;padding:4px;color:var(--red);text-transform:uppercase;letter-spacing:.04em;">Show</button>
+      </div>
     </div>
     <div class="pin-error" id="loginError"></div>
     <button class="btn" id="loginSendBtn" onclick="signIn()"
@@ -2567,7 +2572,7 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '47';
+  window.KRMAS_APP_VERSION = '48';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
