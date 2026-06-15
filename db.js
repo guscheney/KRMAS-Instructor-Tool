@@ -968,6 +968,18 @@ const DB = (() => {
     } catch (e) { return false; }
   }
 
+  // Trigger a push to subscribed devices via the send-push-notification Edge
+  // Function. Best-effort and non-blocking — never throws into the caller.
+  // payload: { title, body, tag, url, schoolId, targetUserIds, excludeUserId }
+  async function sendPushNotification(payload) {
+    if (!isSB()) return false;
+    try {
+      const { data, error } = await sbClient().functions.invoke('send-push-notification', { body: payload });
+      if (error) { console.warn('[DB] push invoke failed:', error.message); return false; }
+      return data || true;
+    } catch (e) { console.warn('[DB] push invoke error:', e.message); return false; }
+  }
+
   // ── Onboarding ───────────────────────────────────────────────────
   async function loadOnboardingChecklists(schoolId) {
     if (!isSB()) return (await lGet('onboarding:' + schoolId)) || [];
@@ -1131,7 +1143,7 @@ const DB = (() => {
     loadOnboardingChecklists, saveOnboardingChecklist,
 
     // Push
-    savePushSubscription, removePushSubscription,
+    savePushSubscription, removePushSubscription, sendPushNotification,
 
     // Realtime
     subscribeFeed, subscribeNotices, unsubscribe,

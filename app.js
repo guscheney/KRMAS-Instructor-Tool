@@ -379,7 +379,15 @@ function formatDate(d) {
 function formatDateShort(d) {
   return String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0') + '/' + d.getFullYear();
 }
-function isoDate(d) { return d.toISOString().slice(0, 10); }
+function isoDate(d) {
+  // Local date components (NOT toISOString, which is UTC and shifts the day for
+  // users ahead of UTC like Sydney — that broke dateKey round-trips so per-card
+  // buttons like "Create lesson plan"/"Edit roster" silently did nothing).
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
 function isSameDay(a, b) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
 
 // ---------- Rotation ----------
@@ -1060,6 +1068,7 @@ async function renderMe() {
     ${can.changePin() ? `<button class="btn" onclick="openChangePin()" style="width:100%;">Change PIN</button>` : ''}
     <button class="btn" onclick="toggleDarkMode()" style="width:100%;">${document.body.classList.contains('dark-mode') ? '☀ Light mode' : '🌙 Dark mode'}</button>
     ${'PushManager' in window ? `<button class="btn" onclick="${_pushEnabled ? 'disablePush' : 'requestPushPermission'}()" style="width:100%;">🔔 ${_pushEnabled ? 'Disable notifications' : 'Enable notifications'}</button>` : ''}
+    ${('PushManager' in window && _pushEnabled) ? `<button class="btn" onclick="sendTestNotification()" style="width:100%;">📨 Send test notification</button>` : ''}
     <button class="btn" onclick="signOut()" style="width:100%;">Sign out</button>
   </div>`;
   main.innerHTML = html;
@@ -4240,7 +4249,7 @@ function parseGradingImport() {
   const validResults = GRADING_RESULTS.map(r => r.value).filter(Boolean);
 
   let lines = text.split(/\r?\n/).filter(l => l.trim() && l.replace(/[,\s]/g, '') !== '');
-  if (lines.length === 0) { status.textContent = 'Nothing to import yet.'; preview.innerHTML = ''; document.getElementById('giCommitBtn').style.display = 'none'; return; }
+  if (lines.length === 0) { _gradingImportRows = []; status.textContent = 'Nothing to import yet.'; preview.innerHTML = ''; document.getElementById('giCommitBtn').style.display = 'none'; return; }
 
   const headerCells = splitCsvLine(lines[0]).map(h => h.toLowerCase().replace(/\uFEFF/g, '').trim());
   // A header row is detected only when at least two cells EXACTLY match known
@@ -4296,7 +4305,7 @@ function parseGradingImport() {
     const grade = gradeMatch || ladder[0] || '';
     let result = (resultRaw || '').toLowerCase().replace(/\s+/g, '-');
     if (/distinction/.test(result)) result = 'distinction';
-    else if (/probation/.test(result)) result = 'pass-probationary';
+    else if (/probation|not-yet-complete/.test(result)) result = 'pass-probationary';
     else if (/incomplete|retest|re-test/.test(result)) result = 'incomplete';
     else if (/^pass$/.test(result)) result = 'pass';
     if (!validResults.includes(result)) result = '';
@@ -5390,6 +5399,22 @@ async function saveNotice() {
   closeModal('modalNoticeEditor');
   renderNoticesBoard();
   renderNoticeBanners();
+
+  // Push for newly-created notices (best-effort, fire-and-forget).
+  if (!state.editingNoticeId) {
+    try {
+      const emoji = notice.type === 'urgent' ? '🚨' : (notice.type === 'warning' ? '⚠️' : '📣');
+      DB.sendPushNotification({
+        title: emoji + ' ' + notice.title,
+        body: (notice.body || '').slice(0, 140) || 'Open KRMAS to read.',
+        tag: 'krmas-notice-' + notice.id,
+        url: './',
+        schoolId: notice.schoolId,   // null = network notice = everyone
+        targetUserIds: null,
+        excludeUserId: state.user?.id || null,
+      });
+    } catch (e) { /* push is best-effort */ }
+  }
 }
 
 async function deleteNotice() {
@@ -5427,27 +5452,14 @@ async function runMigration() {
 // ---------- Boot ----------
 async function init() {
   await loadCustomSchools();
-  await loadEdits();
-  await loadPlans();
-  await loadIncidents();
-  await loadStudents();
-  await loadProgressions();
-  await loadPathways();
-  await loadPinOverrides();
-  await loadGrading();
-  await loadNotices();
-  await loadFeedData();
-  await loadGroupsData();
-  await loadClassAssignmentsData();
-  await loadCalendarData();
-  state.lastLogins = (await DB.loadLastLogins(state.schoolId)) || {};
-  state.classTypeOverrides = (await DB.loadClassTypeOverrides(state.schoolId)) || {};
-  state.documents = await DB.loadDocuments(state.schoolId);
-  state.onboardingChecklists = await DB.loadOnboardingChecklists(state.schoolId);
-  state.onboardingTemplate = await DB.loadOnboardingTemplate(state.schoolId);
-  state.complianceRecords = await DB.loadInstructorCompliance(state.schoolId);
+  // Restore the saved session (user + schoolId) BEFORE loading any per-school
+  // data, then use the one canonical loader. Previously the loads below ran
+  // with the DEFAULT schoolId and only restored the real school afterwards —
+  // so on refresh you could briefly load the wrong location's plans/incidents.
+  // loadCurrentSchoolData also covers complianceReqs (which init used to miss)
+  // and re-subscribes the realtime feed.
   await loadUserAsync();
-  state.myDocuments = state.user ? await DB.loadInstructorDocuments(state.user.id) : [];
+  await loadCurrentSchoolData();
   state.currentDate = startOfWeek(new Date());
   const todayDow = new Date().getDay();
   const activeDays = getActiveDays();
@@ -5462,7 +5474,7 @@ async function init() {
   setView('feed');
   updateSyncStatus();
   renderNoticeBanners();
-  startRealtimeFeed();
+  // realtime feed subscription is started by loadCurrentSchoolData()
 }
 
 init();
@@ -6236,6 +6248,26 @@ async function submitPost() {
   renderFeed();
   renderNoticeBanners();
   await DB.saveFeedPost(post);
+
+  // Push notification for new required-reading posts and notices (best-effort,
+  // fire-and-forget). Targets the same audience the post is visible to.
+  if (!existing && (post.requiredReading || post.noticeType)) {
+    try {
+      const audience = resolveTargetAudience(post); // Set of user ids, or null = everyone
+      const targetUserIds = audience ? [...audience].filter(id => id !== post.authorId) : null;
+      if (!(audience && targetUserIds.length === 0)) { // skip if precise audience is empty
+        DB.sendPushNotification({
+          title: post.requiredReading ? '📢 Required reading' : '📣 New notice',
+          body: (post.body || '').slice(0, 140) || 'Open KRMAS to read.',
+          tag: 'krmas-post-' + post.id,
+          url: './',
+          schoolId: post.schoolId || null,
+          targetUserIds,
+          excludeUserId: post.authorId,
+        });
+      }
+    } catch (e) { /* push is best-effort */ }
+  }
 }
 
 // ---------- Realtime feed subscription ----------
@@ -8328,6 +8360,34 @@ function urlBase64ToUint8Array(base64String) {
   const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
   const raw = atob(base64);
   return new Uint8Array([...raw].map(c => c.charCodeAt(0)));
+}
+
+// Send a push to your own device(s) to confirm the pipeline end-to-end.
+// Targets only the current user and does NOT exclude them (it's a self-test).
+async function sendTestNotification() {
+  if (!state.user) { openLogin(); return; }
+  if (!('PushManager' in window)) { alert('Push notifications are not supported on this device/browser.'); return; }
+  const enabled = await isPushEnabled();
+  if (!enabled) { alert('Turn on “Enable notifications” first, then send a test.'); return; }
+  const res = await DB.sendPushNotification({
+    title: '🔔 KRMAS test',
+    body: 'Push notifications are working on this device.',
+    tag: 'krmas-test-' + Date.now(),
+    url: './',
+    targetUserIds: [state.user.id], // just you
+    excludeUserId: null,            // include yourself — this is a self-test
+  });
+  if (res && typeof res === 'object' && typeof res.sent === 'number') {
+    if (res.sent > 0) {
+      alert(`Test sent to ${res.sent} device${res.sent === 1 ? '' : 's'}. It should arrive in a few seconds.`);
+    } else {
+      alert('No active subscriptions were found for your account on the server. Try disabling and re-enabling notifications, then test again.');
+    }
+  } else if (res) {
+    alert('Test request sent. If nothing arrives, confirm the send-push-notification Edge Function is deployed with the VAPID secrets set.');
+  } else {
+    alert('Couldn’t reach the push service. Make sure the send-push-notification Edge Function is deployed and Supabase is reachable.');
+  }
 }
 
 // ====================================================================

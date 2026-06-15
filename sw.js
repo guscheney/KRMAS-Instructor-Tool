@@ -1,5 +1,5 @@
 /* KRMAS Instructor App — service worker (offline support) */
-const CACHE = 'krmas-roster-v44';
+const CACHE = 'krmas-roster-v45';
 const ASSETS = [
   './',
   './index.html',
