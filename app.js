@@ -1268,22 +1268,38 @@ function showLoginGate(msg) {
 }
 function hideLoginGate() { try { closeModal('modalLogin'); } catch (e) {} }
 
+async function signIn() {
+  const email = ((document.getElementById('loginEmail') || {}).value || '').trim();
+  const password = (document.getElementById('loginPassword') || {}).value || '';
+  const err = document.getElementById('loginError');
+  const btn = document.getElementById('loginSendBtn');
+  if (err) err.textContent = '';
+  if (!email || !password) { if (err) err.textContent = 'Enter your email and password.'; return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Signing in…'; }
+  try {
+    const res = await DB.auth.signInWithPassword(email, password);
+    if (res && res.error) { if (err) err.textContent = res.error.message || 'Sign in failed.'; }
+    // on success, the auth-state listener calls enterAppWithSession()
+  } catch (e) {
+    if (err) err.textContent = (e && e.message) || 'Sign in failed.';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Sign in'; }
+  }
+}
+
+// Optional magic-link sign-in (kept available; not wired to the default button).
 async function sendMagicLink() {
   const emailEl = document.getElementById('loginEmail');
   const err = document.getElementById('loginError');
   const status = document.getElementById('loginStatus');
-  const btn = document.getElementById('loginSendBtn');
   const email = ((emailEl && emailEl.value) || '').trim();
   if (err) err.textContent = '';
   if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { if (err) err.textContent = 'Enter a valid email address.'; return; }
-  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
   try {
     await DB.auth.signInWithEmail(email);
     if (status) { status.style.display = 'block'; status.textContent = 'Check your email for a sign-in link from KRMAS, then tap it on this device.'; }
   } catch (e) {
     if (err) err.textContent = 'Could not send link: ' + ((e && e.message) || 'please try again');
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Send sign-in link'; }
   }
 }
 
@@ -5685,8 +5701,8 @@ async function enterAppWithSession(session) {
     if (school) { const el = document.getElementById('schoolName'); if (el) el.textContent = school.name; }
   }
   try { recordLastLogin(state.user.id); } catch (e) {}
-  await loadCustomSchools();
-  await loadCurrentSchoolData();
+  try { await loadCustomSchools(); } catch (e) { console.warn('loadCustomSchools:', e && e.message); }
+  try { await loadCurrentSchoolData(); } catch (e) { console.warn('loadCurrentSchoolData:', e && e.message); }
   finishBootRender();
   if (typeof refreshAuthUI === 'function') refreshAuthUI();
   DB.loadInstructorDocuments(state.user.id).then(d => { state.myDocuments = d || []; }).catch(() => {});

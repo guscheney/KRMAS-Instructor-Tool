@@ -1138,6 +1138,7 @@ const DB = (() => {
     // ── Auth (Supabase session is the real boundary) ──
     auth: {
       async getSession() { const sb = sbClient(); if (!sb) return null; const { data } = await sb.auth.getSession(); return data.session; },
+      async signInWithPassword(email, password) { const sb = sbClient(); if (!sb) throw new Error('Supabase unavailable'); return sb.auth.signInWithPassword({ email, password }); },
       async signInWithEmail(email) {
         const sb = sbClient(); if (!sb) throw new Error('Supabase unavailable');
         return sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname } });

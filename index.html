@@ -1001,16 +1001,22 @@
   <div class="modal">
     <div class="modal-handle"></div>
     <h2>Sign in</h2>
-    <p class="modal-sub">Enter your email and we'll send a one-tap sign-in link.</p>
+    <p class="modal-sub">Enter your email and password.</p>
     <div class="form-row">
       <label>Email</label>
       <input id="loginEmail" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com"
              style="width:100%;padding:11px 12px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:16px;" />
     </div>
+    <div class="form-row">
+      <label>Password</label>
+      <input id="loginPassword" type="password" autocomplete="current-password" placeholder="••••••••"
+             onkeydown="if(event.key==='Enter'){signIn();}"
+             style="width:100%;padding:11px 12px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:16px;" />
+    </div>
     <div class="pin-error" id="loginError"></div>
-    <button class="btn" id="loginSendBtn" onclick="sendMagicLink()"
+    <button class="btn" id="loginSendBtn" onclick="signIn()"
             style="width:100%;margin-top:6px;background:var(--red);color:var(--white);border-color:var(--red);font-weight:700;">
-      Send sign-in link</button>
+      Sign in</button>
     <p id="loginStatus" style="display:none;font-size:13px;color:var(--grey-500);margin-top:12px;text-align:center;line-height:1.5;"></p>
   </div>
 </div>
@@ -2561,7 +2567,7 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '46';
+  window.KRMAS_APP_VERSION = '47';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
