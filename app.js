@@ -435,6 +435,37 @@ function getWeekNumber(date) {
   return mod + 1;
 }
 
+// A roster role is either a fixed instructor id (string) or a week-based rotation:
+//   { rotate: [ { id: 'gus', weeks: [1,3,5,7,9,11] }, { id: 'david', weeks: [2,4,...] } ] }
+// Resolve it to the instructor id that should teach in the given week (1–12).
+function resolveRosterRole(value, weekNum) {
+  if (value && typeof value === 'object' && Array.isArray(value.rotate)) {
+    const slot = value.rotate.find(s => s && Array.isArray(s.weeks) && s.weeks.includes(weekNum));
+    return slot ? (slot.id || null) : null;
+  }
+  return value || null;
+}
+
+// True when a value is a rotation (vs a fixed id / null).
+function isRotation(value) {
+  return !!(value && typeof value === 'object' && Array.isArray(value.rotate));
+}
+
+// Validate a rotation. Overlaps (two people on one week) are a hard error.
+// Gaps (a week with nobody) are allowed — some roles are intentionally unfilled
+// some weeks — so they're reported as a warning, not a block.
+// Returns { ok (fully covered, no overlaps), blocking (has overlaps), missing, overlaps }.
+function validateRotation(rotate) {
+  const arr = Array.isArray(rotate) ? rotate : [];
+  const missing = [], overlaps = [];
+  for (let w = 1; w <= 12; w++) {
+    const n = arr.filter(s => s && Array.isArray(s.weeks) && s.weeks.includes(w)).length;
+    if (n === 0) missing.push(w);
+    else if (n > 1) overlaps.push(w);
+  }
+  return { ok: missing.length === 0 && overlaps.length === 0, blocking: overlaps.length > 0, missing, overlaps };
+}
+
 function getTopicForClass(classType, date) {
   const dow = date.getDay();
   const idxMap = { 1: 0, 2: 1, 3: 2, 4: 3, 6: 4 };
@@ -506,6 +537,7 @@ function rosterForDay(date) {
     const dateKey = `${isoDate(date)}-${c.start}-${effectiveType}`;
     const def = defaults[key] || { lead: null, assist: null, junior: null, backup: null };
     const override = state.edits[dateKey] || {};
+    const wk = getWeekNumber(startOfWeek(date)); // 1–12, for week-based rotations
     const meta = CLASS_TYPES[effectiveType];
     if (!meta) return null; // unknown class type — skip gracefully
     const topicNum = getTopicForClass(c.type, date);
@@ -516,10 +548,10 @@ function rosterForDay(date) {
       day: c.day, start: c.start, end: c.end, type: effectiveType,
       label: c.label || null,
       meta,
-      lead:    override.lead    !== undefined ? override.lead    : def.lead,
-      assist:  override.assist  !== undefined ? override.assist  : def.assist,
-      junior:  override.junior  !== undefined ? override.junior  : def.junior,
-      backup:  override.backup  !== undefined ? override.backup  : def.backup,
+      lead:    resolveRosterRole(override.lead    !== undefined ? override.lead    : def.lead,    wk),
+      assist:  resolveRosterRole(override.assist  !== undefined ? override.assist  : def.assist,  wk),
+      junior:  resolveRosterRole(override.junior  !== undefined ? override.junior  : def.junior,  wk),
+      backup:  resolveRosterRole(override.backup  !== undefined ? override.backup  : def.backup,  wk),
       status:  override.status  || 'confirmed',
       topicNum, topicContent,
       plan,
