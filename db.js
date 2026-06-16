@@ -1162,7 +1162,16 @@ const DB = (() => {
         const sb = sbClient(); if (!sb) return;
         // Defer outside the auth callback: calling Supabase auth methods *inside* the
         // onAuthStateChange callback deadlocks against its internal lock (hangs sign-in).
-        sb.auth.onAuthStateChange((_e, session) => { setTimeout(() => cb(session), 0); });
+        sb.auth.onAuthStateChange((evt, session) => { setTimeout(() => cb(session, evt), 0); });
+      },
+      async sendPasswordReset(email) {
+        const sb = sbClient(); if (!sb) throw new Error('Supabase unavailable');
+        return sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin + location.pathname });
+      },
+      async updatePassword(newPassword) {
+        const sb = sbClient(); if (!sb) throw new Error('Supabase unavailable');
+        // Clears the must_change flag at the same time the new password is set.
+        return sb.auth.updateUser({ password: newPassword, data: { must_change: false } });
       },
       currentUid() { return _uid; },
       async myProfile() {
@@ -1194,6 +1203,7 @@ const DB = (() => {
       invite: (email, role, schoolId, name) => invokeFn('manage-users', { action: 'invite', email, role, school_id: schoolId, name }),
       setRole: (uid, role, schoolId) => invokeFn('manage-users', { action: 'setRole', uid, role, school_id: schoolId }),
       remove: (uid) => invokeFn('manage-users', { action: 'remove', uid }),
+      resetPassword: (uid) => invokeFn('manage-users', { action: 'resetPassword', uid }),
     },
 
     // KV data (per-school blobs)

@@ -1034,7 +1034,56 @@
     <button class="btn" id="loginSendBtn" onclick="signIn()"
             style="width:100%;margin-top:6px;background:var(--red);color:var(--white);border-color:var(--red);font-weight:700;">
       Sign in</button>
+    <button class="btn btn-ghost btn-sm" onclick="openForgotPassword()" style="width:100%;margin-top:8px;color:var(--grey-500);">Forgot password?</button>
     <p id="loginStatus" style="display:none;font-size:13px;color:var(--grey-500);margin-top:12px;text-align:center;line-height:1.5;"></p>
+  </div>
+</div>
+
+<div class="modal-bg" id="modalForgot">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2>Reset your password</h2>
+    <p class="modal-sub">If email is set up for your dojo, we'll send a reset link. If it doesn't arrive, ask your school admin to reset it for you — they can give you a temporary password.</p>
+    <div class="form-row">
+      <label>Email</label>
+      <input id="forgotEmail" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com"
+             onkeydown="if(event.key==='Enter'){submitForgotPassword();}"
+             style="width:100%;padding:11px 12px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:16px;" />
+    </div>
+    <div class="pin-error" id="forgotError"></div>
+    <p id="forgotStatus" style="display:none;font-size:13px;color:var(--ok);margin-top:6px;line-height:1.5;"></p>
+    <div class="detail-actions" style="margin-top:8px;">
+      <button class="btn btn-primary" id="forgotSendBtn" onclick="submitForgotPassword()" style="flex:1;">Email me a reset link</button>
+      <button class="btn" onclick="closeModal('modalForgot')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="modalSetPassword">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2 id="setPwTitle">Set a new password</h2>
+    <p class="modal-sub" id="setPwSub">Choose a new password to finish signing in.</p>
+    <div class="form-row">
+      <label>New password</label>
+      <div style="position:relative;">
+        <input id="setPwNew" type="password" autocomplete="new-password" placeholder="At least 8 characters"
+               style="width:100%;padding:11px 56px 11px 12px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:16px;" />
+        <button type="button" id="setPwToggle" onclick="toggleSetPwVisibility()"
+                style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:12px;font-weight:700;padding:4px;color:var(--red);text-transform:uppercase;letter-spacing:.04em;">Show</button>
+      </div>
+    </div>
+    <div class="form-row">
+      <label>Confirm new password</label>
+      <input id="setPwConfirm" type="password" autocomplete="new-password" placeholder="Re-enter password"
+             onkeydown="if(event.key==='Enter'){submitSetPassword();}"
+             style="width:100%;padding:11px 12px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:16px;" />
+    </div>
+    <div class="pin-error" id="setPwError"></div>
+    <div class="detail-actions" style="margin-top:8px;">
+      <button class="btn btn-primary" id="setPwSaveBtn" onclick="submitSetPassword()" style="flex:1;">Save password</button>
+      <button class="btn" id="setPwCancel" style="display:none;" onclick="closeModal('modalSetPassword')">Cancel</button>
+    </div>
   </div>
 </div>
 
@@ -1874,6 +1923,7 @@
       <button class="btn btn-primary" onclick="saveUser()" style="flex:1;">Save</button>
       <button class="btn" onclick="closeModal('modalUserEditor')">Cancel</button>
     </div>
+    <button class="btn btn-ghost btn-sm" id="userResetPwBtn" style="width:100%;margin-top:8px;display:none;" onclick="adminResetPassword()">🔑 Reset password…</button>
     <button class="btn btn-ghost" id="userDeleteBtn" style="width:100%;margin-top:6px;color:var(--red);display:none;" onclick="deleteUser()">Delete user</button>
   </div>
 </div>
@@ -2652,7 +2702,7 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '58';
+  window.KRMAS_APP_VERSION = '59';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';

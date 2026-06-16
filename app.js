@@ -1163,6 +1163,7 @@ async function renderMe() {
   // Settings
   html += `<div style="margin-top:12px;display:grid;gap:8px;">
     ${can.changePin() ? `<button class="btn" onclick="openChangePin()" style="width:100%;">Device PIN</button>` : ''}
+    ${DB.isSupabase ? `<button class="btn" onclick="openSetPassword('change')" style="width:100%;">🔑 Change password</button>` : ''}
     <button class="btn" onclick="toggleDarkMode()" style="width:100%;">${document.body.classList.contains('dark-mode') ? '☀ Light mode' : '🌙 Dark mode'}</button>
     ${'PushManager' in window ? `<button class="btn" onclick="${_pushEnabled ? 'disablePush' : 'requestPushPermission'}()" style="width:100%;">🔔 ${_pushEnabled ? 'Disable notifications' : 'Enable notifications'}</button>` : ''}
     ${('PushManager' in window && _pushEnabled) ? `<button class="btn" onclick="sendTestNotification()" style="width:100%;">📨 Send test notification</button>` : ''}
@@ -1360,6 +1361,122 @@ async function signIn() {
     if (err) err.textContent = (e && e.message) || 'Sign in failed.';
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Sign in'; }
+  }
+}
+
+// ---------- Password reset / set ----------
+let _setPwMode = 'change';   // 'first' | 'recovery' | 'change'
+
+function openForgotPassword() {
+  const le = ((document.getElementById('loginEmail') || {}).value || '').trim();
+  const f = document.getElementById('forgotEmail'); if (f) f.value = le;
+  const err = document.getElementById('forgotError'); if (err) err.textContent = '';
+  const st = document.getElementById('forgotStatus'); if (st) { st.style.display = 'none'; st.textContent = ''; }
+  openModal('modalForgot');
+  setTimeout(() => { const el = document.getElementById('forgotEmail'); if (el) el.focus(); }, 50);
+}
+
+async function submitForgotPassword() {
+  const email = ((document.getElementById('forgotEmail') || {}).value || '').trim();
+  const err = document.getElementById('forgotError');
+  const st = document.getElementById('forgotStatus');
+  const btn = document.getElementById('forgotSendBtn');
+  if (err) err.textContent = '';
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { if (err) err.textContent = 'Enter a valid email.'; return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  try {
+    await DB.auth.sendPasswordReset(email);
+  } catch (e) {
+    // Stay neutral — don't reveal whether the address exists or whether email is configured.
+    console.warn('reset email:', e && e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Email me a reset link'; }
+  }
+  if (st) {
+    st.style.display = 'block';
+    st.textContent = "If that email has an account and email is enabled for your dojo, a reset link is on its way. If it doesn't arrive, ask your admin to reset your password.";
+  }
+}
+
+function toggleSetPwVisibility() {
+  const inp = document.getElementById('setPwNew');
+  const btn = document.getElementById('setPwToggle');
+  if (!inp) return;
+  if (inp.type === 'password') { inp.type = 'text'; if (btn) btn.textContent = 'Hide'; }
+  else { inp.type = 'password'; if (btn) btn.textContent = 'Show'; }
+}
+
+function openSetPassword(mode) {
+  _setPwMode = mode || 'change';
+  const titleEl = document.getElementById('setPwTitle');
+  const subEl = document.getElementById('setPwSub');
+  const cancelEl = document.getElementById('setPwCancel');
+  const nw = document.getElementById('setPwNew'); if (nw) { nw.value = ''; nw.type = 'password'; }
+  const cf = document.getElementById('setPwConfirm'); if (cf) cf.value = '';
+  const tg = document.getElementById('setPwToggle'); if (tg) tg.textContent = 'Show';
+  const err = document.getElementById('setPwError'); if (err) err.textContent = '';
+  if (_setPwMode === 'change') {
+    if (titleEl) titleEl.textContent = 'Change password';
+    if (subEl) subEl.textContent = 'Choose a new password for your account.';
+    if (cancelEl) cancelEl.style.display = '';
+  } else if (_setPwMode === 'recovery') {
+    if (titleEl) titleEl.textContent = 'Set a new password';
+    if (subEl) subEl.textContent = 'Choose a new password to finish resetting your account.';
+    if (cancelEl) cancelEl.style.display = 'none';
+  } else { // first login after invite / admin reset
+    if (titleEl) titleEl.textContent = 'Set your password';
+    if (subEl) subEl.textContent = 'For security, choose your own password before continuing.';
+    if (cancelEl) cancelEl.style.display = 'none';
+  }
+  if (_setPwMode !== 'change') hideLoginGate();
+  openModal('modalSetPassword');
+  setTimeout(() => { const el = document.getElementById('setPwNew'); if (el) el.focus(); }, 50);
+}
+
+async function submitSetPassword() {
+  const nw = ((document.getElementById('setPwNew') || {}).value || '');
+  const cf = ((document.getElementById('setPwConfirm') || {}).value || '');
+  const err = document.getElementById('setPwError');
+  const btn = document.getElementById('setPwSaveBtn');
+  if (err) err.textContent = '';
+  if (nw.length < 8) { if (err) err.textContent = 'Use at least 8 characters.'; return; }
+  if (nw !== cf) { if (err) err.textContent = "Passwords don't match."; return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  try {
+    const res = await DB.auth.updatePassword(nw);
+    if (res && res.error) { if (err) err.textContent = res.error.message || 'Could not update password.'; return; }
+    closeModal('modalSetPassword');
+    if (_setPwMode === 'change') {
+      alert('Password updated.');
+    } else {
+      // first-login or recovery: enter the app with the now-current session
+      _enteredOnce = false;
+      const s = await DB.auth.getSession();
+      if (s) await enterAppWithSession(s);
+      else showLoginGate('Password set — please sign in.');
+    }
+  } catch (e) {
+    if (err) err.textContent = (e && e.message) || 'Could not update password.';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Save password'; }
+  }
+}
+
+async function adminResetPassword() {
+  if (!requireRole('admin')) return;
+  const id = state.editingUserId;
+  const instr = id ? allInstructors().find(i => i.id === id) : null;
+  if (!instr || !instr.uid) { alert('This person has no login yet. Add their email and Save first, then you can reset it.'); return; }
+  if (!confirm('Reset password for ' + (instr.name || 'this user') + '?\n\nThey will get a one-time temporary password and be asked to set their own when they next sign in.')) return;
+  try {
+    const res = await DB.users.resetPassword(instr.uid);
+    if (res && res.tempPassword) {
+      alert('Password reset for ' + (instr.name || instr.email) + '.\n\nTemporary password (share privately — shown only once):\n\n' + res.tempPassword + '\n\nThey will be asked to set their own password when they next sign in.');
+    } else {
+      alert('Reset completed, but no temporary password was returned.');
+    }
+  } catch (e) {
+    alert('Could not reset password:\n' + ((e && e.message) || 'unknown') + "\n\n(If the manage-users function isn't deployed yet, that's the cause.)");
   }
 }
 
@@ -5555,6 +5672,8 @@ function openUserEditor(instrId) {
   _editingUserAvatar = instr?.avatar || null;
   renderUserAvatarPreview();
   document.getElementById('userDeleteBtn').style.display = instr ? 'block' : 'none';
+  const rpBtn = document.getElementById('userResetPwBtn');
+  if (rpBtn) rpBtn.style.display = (instr && instr.uid && DB.isSupabase) ? 'block' : 'none';
   openModal('modalUserEditor');
 }
 
@@ -6144,12 +6263,19 @@ async function init() {
 
 // Re-run whenever auth changes (magic-link callback completing, sign-out, token refresh).
 let _enteredOnce = false;
-DB.auth && DB.auth.onChange(async (session) => {
+DB.auth && DB.auth.onChange(async (session, evt) => {
+  if (evt === 'PASSWORD_RECOVERY') { openSetPassword('recovery'); return; }
   if (session) { if (!_enteredOnce) await enterAppWithSession(session); }
   else { _enteredOnce = false; state.user = null; showLoginGate(); }
 });
 
 async function enterAppWithSession(session) {
+  // Temp-password accounts (from an invite or an admin reset) must choose their own
+  // password before they can enter. updatePassword() clears the flag.
+  if (session && session.user && session.user.user_metadata && session.user.user_metadata.must_change) {
+    openSetPassword('first');
+    return;
+  }
   hideLoginGate();
   const prof = await DB.auth.myProfile();
   if (!prof) {
