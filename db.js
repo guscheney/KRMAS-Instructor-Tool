@@ -82,6 +82,20 @@ const DB = (() => {
     return true;
   }
 
+  // Invoke an Edge Function and surface its JSON {error} body (supabase-js otherwise
+  // hides the message behind a generic non-2xx error).
+  async function invokeFn(name, body) {
+    const sb = sbClient(); if (!sb) throw new Error('Supabase unavailable');
+    const { data, error } = await sb.functions.invoke(name, { body });
+    if (error) {
+      let msg = (error && error.message) || 'Request failed';
+      try { if (error.context && error.context.json) { const j = await error.context.json(); if (j && j.error) msg = j.error; } } catch (e) {}
+      throw new Error(msg);
+    }
+    if (data && data.error) throw new Error(data.error);
+    return data;
+  }
+
   // ── localStorage helpers ─────────────────────────────────────────
   async function lGet(key) {
     try { const r = localStorage.getItem(key); return r ? JSON.parse(r) : null; }
@@ -1166,10 +1180,20 @@ const DB = (() => {
     },
 
     // Privileged CSV import → Edge Function (service role stays server-side)
-    bulkImportStudents: async (schoolId, students) => {
-      const sb = sbClient(); if (!sb) throw new Error('Supabase unavailable');
-      const { data, error } = await sb.functions.invoke('bulk-import', { body: { schoolId, students } });
-      if (error) throw error; return data;
+    bulkImportStudents: (schoolId, students) => invokeFn('bulk-import', { schoolId, students }),
+
+    // Login-user administration (profiles). Reads are RLS-gated and direct; create /
+    // delete go through the service-role manage-users Edge Function.
+    users: {
+      async list() {
+        const sb = sbClient(); if (!sb) return [];
+        const { data, error } = await sb.from('profiles').select('id,display_name,email,role,school_id').order('display_name');
+        if (error) { console.warn('[DB] users.list:', error.message); return []; }
+        return data || [];
+      },
+      invite: (email, role, schoolId, name) => invokeFn('manage-users', { action: 'invite', email, role, school_id: schoolId, name }),
+      setRole: (uid, role, schoolId) => invokeFn('manage-users', { action: 'setRole', uid, role, school_id: schoolId }),
+      remove: (uid) => invokeFn('manage-users', { action: 'remove', uid }),
     },
 
     // KV data (per-school blobs)

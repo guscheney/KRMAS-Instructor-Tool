@@ -253,7 +253,7 @@
 
   .modal-bg {
     position: fixed; inset: 0; background: rgba(0,0,0,0.55);
-    display: none; align-items: flex-end; justify-content: center; z-index: 100;
+    display: none; flex-direction: column; justify-content: flex-end; align-items: center; z-index: 100;
     backdrop-filter: blur(4px);
   }
   .modal-bg.open { display: flex; }
@@ -262,7 +262,7 @@
     border-top-left-radius: 12px; border-top-right-radius: 12px;
     padding: 18px;
     padding-bottom: calc(18px + env(safe-area-inset-bottom));
-    max-height: 92vh; overflow-y: auto;
+    max-height: 92vh; overflow: hidden auto; overflow-wrap: break-word;
     box-shadow: var(--shadow-lg);
     border-top: 4px solid var(--red);
   }
@@ -324,7 +324,19 @@
   }
   .form-row textarea { resize: vertical; min-height: 70px; line-height: 1.5; }
   .form-row select:focus, .form-row input:focus, .form-row textarea:focus { outline: 2px solid var(--red); outline-offset: -1px; border-color: var(--red); }
-  .form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .form-grid-2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+  /* Mobile overflow hardening. Grid/flex children default to min-width:auto, so a
+     native date/time/number/select field can refuse to shrink and force its row —
+     and then every width:100% field below it — wider than the screen, anchoring the
+     whole form to the left. Letting rows shrink (above + below) stops that. */
+  .form-row, .form-grid-2 > * { min-width: 0; }
+  .form-row input, .form-row select, .form-row textarea { max-width: 100%; }
+  .ir-section, .lp-section { min-width: 0; overflow-wrap: break-word; }
+  /* On phones, stack paired fields into one column — easier to read and tap than
+     two cramped columns, and removes any chance of a paired row overflowing. */
+  @media (max-width: 430px) {
+    .form-grid-2 { grid-template-columns: 1fr; gap: 0; }
+  }
 
   .bottom-nav {
     flex: none;
@@ -1545,8 +1557,8 @@
 <div class="modal-bg" id="modalChangePin">
   <div class="modal">
     <div class="modal-handle"></div>
-    <h2 id="changePinTitle">Change PIN</h2>
-    <p class="modal-sub">Choose a 4-digit PIN you'll remember. Default is 0000.</p>
+    <h2 id="changePinTitle">Device PIN</h2>
+    <p class="modal-sub">Set a 4-digit PIN to lock this app on your device. It never leaves your device in readable form.</p>
     <div class="pin-display" id="changePinDisplay"></div>
     <div class="pin-error" id="changePinError"></div>
     <div class="pin-pad">
@@ -1567,7 +1579,32 @@
   </div>
 </div>
 
-<!-- ===== Modal: Grading session setup ===== -->
+<!-- ===== Modal: Device PIN lock (unlock on open) ===== -->
+<div class="modal-bg" id="modalPinLock" style="z-index:6000;background:var(--bg,#fff);">
+  <div class="modal">
+    <div class="modal-handle" style="visibility:hidden;"></div>
+    <h2 id="pinLockTitle">Enter your PIN</h2>
+    <p class="modal-sub">This app is locked on this device.</p>
+    <div class="pin-display" id="pinLockDisplay"></div>
+    <div class="pin-error" id="pinLockError"></div>
+    <div class="pin-pad">
+      <button class="pin-btn" onclick="pinLockPress('1')">1</button>
+      <button class="pin-btn" onclick="pinLockPress('2')">2</button>
+      <button class="pin-btn" onclick="pinLockPress('3')">3</button>
+      <button class="pin-btn" onclick="pinLockPress('4')">4</button>
+      <button class="pin-btn" onclick="pinLockPress('5')">5</button>
+      <button class="pin-btn" onclick="pinLockPress('6')">6</button>
+      <button class="pin-btn" onclick="pinLockPress('7')">7</button>
+      <button class="pin-btn" onclick="pinLockPress('8')">8</button>
+      <button class="pin-btn" onclick="pinLockPress('9')">9</button>
+      <button class="pin-btn" onclick="pinLockClear()">⌫</button>
+      <button class="pin-btn" onclick="pinLockPress('0')">0</button>
+      <button class="pin-btn" style="background: var(--black); color: var(--white); border-color: var(--black);" onclick="pinLockSubmit()">OK</button>
+    </div>
+    <button class="btn btn-ghost" style="width:100%;margin-top:10px;color:var(--red);" onclick="signOut()">Sign out instead</button>
+  </div>
+</div>
+
 <!-- ===== Modal: Grading session setup ===== -->
 <div class="modal-bg" id="modalGradingSession">
   <div class="modal">
@@ -1723,10 +1760,36 @@
   <div class="modal">
     <div class="modal-handle"></div>
     <h2>User management</h2>
-    <p class="modal-sub">Add, edit, or remove instructors. Set roles, status, PINs, and profile pictures.</p>
-    <button class="btn btn-primary" style="width:100%;margin-bottom:12px;" onclick="openUserEditor(null)">+ Add user</button>
+    <p class="modal-sub">Add a person once. Give them an email and they can sign in — the role you set here is their access level. No email means roster-only.</p>
+    <button class="btn btn-primary" style="width:100%;margin-bottom:12px;" onclick="openUserEditor(null)">+ Add person</button>
     <div id="instrManagerBody" style="max-height:60vh;overflow-y:auto;"></div>
-    <button class="btn btn-ghost" style="width:100%;margin-top:10px;" onclick="closeModal('modalInstructorManager')">Close</button>
+    <button class="btn btn-ghost btn-sm" style="width:100%;margin-top:10px;" onclick="openUserManager()">All sign-in accounts…</button>
+    <button class="btn btn-ghost" style="width:100%;margin-top:6px;" onclick="closeModal('modalInstructorManager')">Close</button>
+  </div>
+</div>
+
+<!-- ===== Modal: App logins (auth users / profiles) ===== -->
+<div class="modal-bg" id="modalUsers">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2>App logins</h2>
+    <p class="modal-sub">People who can sign in, and their access level. Inviting creates a login and shows a one-time temporary password to share.</p>
+    <div style="border:1px solid var(--grey-200);border-radius:var(--r-md);padding:12px;margin-bottom:12px;">
+      <div style="font-weight:700;margin-bottom:8px;">Invite a login</div>
+      <input id="inviteName" placeholder="Name (optional)" style="width:100%;padding:9px 11px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:15px;margin-bottom:6px;" />
+      <input id="inviteEmail" type="email" inputmode="email" placeholder="email@example.com" style="width:100%;padding:9px 11px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:15px;margin-bottom:6px;" />
+      <select id="inviteRole" style="width:100%;padding:9px 11px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:15px;margin-bottom:8px;">
+        <option value="junior">Junior</option>
+        <option value="instructor" selected>Instructor</option>
+        <option value="admin">Admin</option>
+        <option value="superadmin">Superadmin</option>
+      </select>
+      <div class="pin-error" id="inviteError"></div>
+      <button class="btn btn-primary" style="width:100%;" id="inviteBtn" onclick="userInvite()">Send invite</button>
+      <div id="inviteResult"></div>
+    </div>
+    <div id="usersList" style="max-height:46vh;overflow-y:auto;"></div>
+    <button class="btn btn-ghost" style="width:100%;margin-top:10px;" onclick="closeModal('modalUsers')">Close</button>
   </div>
 </div>
 
@@ -2127,7 +2190,7 @@
   <div class="modal">
     <div class="modal-handle"></div>
     <h2>🏫 Schools &amp; locations</h2>
-    <button class="btn btn-primary" style="width:100%;margin-bottom:12px;" onclick="openSchoolEditor(null)">+ Add new school</button>
+    <button class="btn btn-primary" id="addSchoolBtn" style="width:100%;margin-bottom:12px;" onclick="openSchoolEditor(null)">+ Add new school</button>
     <div id="schoolManagerBody" style="max-height:60vh;overflow-y:auto;"></div>
     <button class="btn btn-ghost" style="width:100%;margin-top:10px;" onclick="closeModal('modalSchoolManager')">Close</button>
   </div>
@@ -2572,7 +2635,7 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '49';
+  window.KRMAS_APP_VERSION = '56';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';

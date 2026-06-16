@@ -47,6 +47,7 @@ const state = {
   pinChangeStage: 'current',
   pinChangeBuffer: '',
   pinChangeNew: '',
+  pinLockBuffer: '',
   grading: {},
   gradingSessionId: null,
   editingGradingSessionId: null,
@@ -122,6 +123,13 @@ const can = {
   manageRoles:       () => hasRole('admin'),
   viewAuditLog:      () => hasRole('admin'),
 };
+
+// A school admin may edit only their own school; a superadmin may edit any.
+function canEditSchool(schoolId) {
+  if (!hasRole('admin')) return false;
+  if (can.switchAnySchool()) return true;
+  return !!schoolId && schoolId === state.schoolId;
+}
 
 function requireRole(minRole, msg) {
   if (!hasRole(minRole)) {
@@ -218,7 +226,7 @@ function canEditPlan(dateKey) {
   if (isNaN(date)) return can.editRoster();
   const c = rosterForDay(date).find(x => x.dateKey === dateKey);
   if (!c) return can.editRoster();
-  return [c.lead, c.assist, c.junior, c.backup].includes(state.user.id);
+  return isMyClass(c);
 }
 
 // ---------- School data accessor ----------
@@ -456,6 +464,36 @@ function getInstructor(id) {
   return currentInstructors().find(i => i.id === id) || null;
 }
 
+// ── Roster identity ──────────────────────────────────────────────────
+// Roster slots (lead/assist/junior/backup) store INSTRUCTOR ids, but the signed-in
+// session is an auth UID. These bridge the two so "my classes", cover routing, and
+// avatar/hours work for a logged-in user. Resolved once per session in enterAppWithSession.
+function resolveMyInstructorId() {
+  if (!state.user) return null;
+  const list = currentInstructors();
+  let m = list.find(i => i.uid && i.uid === state.user.id);
+  if (m) return m.id;
+  const em = (state.user.email || '').toLowerCase();
+  if (em) { m = list.find(i => (i.email || '').toLowerCase() === em); if (m) return m.id; }
+  return null;
+}
+function myInstructorId() { return (state.user && state.user.instructorId) || null; }
+function uidForInstructorId(instrId) {
+  if (!instrId) return null;
+  const i = currentInstructors().find(x => x.id === instrId);
+  return (i && i.uid) || null;
+}
+function isMyClass(c) {
+  const id = myInstructorId();
+  return !!id && c && (c.lead === id || c.assist === id || c.junior === id || c.backup === id);
+}
+// Resolve a roster class from a dateKey ({YYYY-MM-DD}-{start}-{type}).
+function classForDateKey(dateKey) {
+  const date = new Date((dateKey || '').slice(0, 10) + 'T00:00:00');
+  if (isNaN(date)) return null;
+  return rosterForDay(date).find(x => x.dateKey === dateKey) || null;
+}
+
 function rosterForDay(date) {
   const dow = date.getDay();
   const schedule = currentSchedule();
@@ -538,9 +576,7 @@ function renderDay() {
   const today = new Date();
   const isToday = isSameDay(date, today);
   const unassigned = classes.filter(c => !c.lead || c.status === 'needs-cover');
-  const myClasses = state.user ? classes.filter(c =>
-    c.lead === state.user.id || c.assist === state.user.id || c.junior === state.user.id
-  ) : [];
+  const myClasses = state.user ? classes.filter(c => isMyClass(c)) : [];
 
   // Today's briefing bar
   let briefingHtml = '';
@@ -605,7 +641,7 @@ function renderDay() {
     const assistInstr = getInstructor(c.assist);
     const juniorInstr = getInstructor(c.junior);
     const backupInstr = getInstructor(c.backup);
-    const isMe = state.user && (c.lead === state.user.id || c.assist === state.user.id || c.junior === state.user.id || c.backup === state.user.id);
+    const isMe = isMyClass(c);
     const needsCover = !c.lead || c.status === 'needs-cover';
 
     let badges = '';
@@ -1005,7 +1041,7 @@ async function renderMe() {
     </div>`;
     return;
   }
-  const me = getInstructor(state.user.id);
+  const me = getInstructor(myInstructorId());
   if (!me) {
     main.innerHTML = `<div class="empty" style="padding-top: 30px;">
       <h2>Instructor not found</h2>
@@ -1094,7 +1130,7 @@ async function renderMe() {
 
   // Settings
   html += `<div style="margin-top:12px;display:grid;gap:8px;">
-    ${can.changePin() ? `<button class="btn" onclick="openChangePin()" style="width:100%;">Change PIN</button>` : ''}
+    ${can.changePin() ? `<button class="btn" onclick="openChangePin()" style="width:100%;">Device PIN</button>` : ''}
     <button class="btn" onclick="toggleDarkMode()" style="width:100%;">${document.body.classList.contains('dark-mode') ? '☀ Light mode' : '🌙 Dark mode'}</button>
     ${'PushManager' in window ? `<button class="btn" onclick="${_pushEnabled ? 'disablePush' : 'requestPushPermission'}()" style="width:100%;">🔔 ${_pushEnabled ? 'Disable notifications' : 'Enable notifications'}</button>` : ''}
     ${('PushManager' in window && _pushEnabled) ? `<button class="btn" onclick="sendTestNotification()" style="width:100%;">📨 Send test notification</button>` : ''}
@@ -1127,7 +1163,7 @@ async function removeMyAvatar() {
 
 async function setMyAvatar(dataUrl) {
   const instrs = ensureCustomInstructors();
-  const instr = instrs.find(i => i.id === state.user.id);
+  const instr = instrs.find(i => i.id === myInstructorId());
   if (!instr) return;
   if (dataUrl) instr.avatar = dataUrl; else delete instr.avatar;
   await saveCustomSchools();
@@ -1405,10 +1441,12 @@ function effectivePin(instructorId) {
   return instr ? (instr.pin || '0000') : '0000';
 }
 
-function openChangePin() {
+async function openChangePin() {
   if (!state.user) return;
-  state.pinChangeStage = 'current';
   state.pinChangeBuffer = '';
+  state.pinChangeNew = '';
+  const has = DB.isSupabase ? await DB.auth.hasPin() : false;
+  state.pinChangeStage = has ? 'current' : 'new';
   renderChangePinModal();
   openModal('modalChangePin');
 }
@@ -1450,7 +1488,8 @@ async function changePinAdvance() {
     return;
   }
   if (state.pinChangeStage === 'current') {
-    if (buf !== effectivePin(state.user.id)) {
+    const ok = DB.isSupabase ? await DB.auth.checkPin(buf) : false;
+    if (!ok) {
       document.getElementById('changePinError').textContent = 'Wrong PIN.';
       state.pinChangeBuffer = '';
       renderChangePinModal();
@@ -1473,12 +1512,48 @@ async function changePinAdvance() {
       renderChangePinModal();
       return;
     }
-    // Save it
-    state.pinOverrides[state.user.id] = state.pinChangeNew;
-    await savePinOverrides();
-    closeModal('modalChangePin');
-    alert('PIN updated.');
+    try {
+      if (DB.isSupabase) await DB.auth.setPin(state.pinChangeNew);
+      state._pinUnlocked = true;
+      closeModal('modalChangePin');
+      alert('Device PIN set. You\u2019ll be asked for it when you open the app on this device.');
+    } catch (e) {
+      document.getElementById('changePinError').textContent = 'Could not save: ' + ((e && e.message) || 'error');
+    }
   }
+}
+
+// ---------- Device PIN lock (unlock on open) ----------
+function showPinLock() {
+  state.pinLockBuffer = '';
+  renderPinLock();
+  openModal('modalPinLock');
+}
+function renderPinLock() {
+  const disp = document.getElementById('pinLockDisplay');
+  if (!disp) return;
+  let dots = '';
+  for (let i = 0; i < 4; i++) dots += `<span class="dot ${i < (state.pinLockBuffer || '').length ? '' : 'empty-dot'}"></span>`;
+  disp.innerHTML = dots;
+  const err = document.getElementById('pinLockError'); if (err) err.textContent = '';
+}
+function pinLockPress(d) {
+  if ((state.pinLockBuffer || '').length >= 4) return;
+  state.pinLockBuffer = (state.pinLockBuffer || '') + d;
+  renderPinLock();
+  if (state.pinLockBuffer.length === 4) setTimeout(pinLockSubmit, 120);
+}
+function pinLockClear() { state.pinLockBuffer = (state.pinLockBuffer || '').slice(0, -1); renderPinLock(); }
+async function pinLockSubmit() {
+  const buf = state.pinLockBuffer || '';
+  if (buf.length < 4) { const e = document.getElementById('pinLockError'); if (e) e.textContent = 'Enter all 4 digits.'; return; }
+  const ok = DB.isSupabase ? await DB.auth.checkPin(buf) : true;
+  if (!ok) {
+    const e = document.getElementById('pinLockError'); if (e) e.textContent = 'Wrong PIN.';
+    state.pinLockBuffer = ''; renderPinLock(); return;
+  }
+  state._pinUnlocked = true;
+  closeModal('modalPinLock');
 }
 
 // ---------- School picker ----------
@@ -1859,6 +1934,7 @@ function openEdit(dateKey) {
 }
 
 async function saveEdit() {
+  if (!requireRole('admin')) return;
   const key = state.editingKey;
   if (!key) return;
   const notes = document.getElementById('editNotes').value.trim();
@@ -1883,6 +1959,42 @@ async function markNeedsCover(dateKey) {
   state.edits[dateKey] = { ...existing, status: 'needs-cover' };
   await saveEdits();
   renderDay();
+  notifyBackupOfCover(dateKey); // alert the listed backup — best-effort, non-blocking
+}
+
+// Send a push to the class's listed backup. The in-app banner (myBackupCoverAlerts)
+// is derived separately, so the backup sees it on next open even without push enabled.
+async function notifyBackupOfCover(dateKey) {
+  try {
+    const c = classForDateKey(dateKey);
+    if (!c || !c.backup) return;
+    const backupUid = uidForInstructorId(c.backup);
+    if (!backupUid || backupUid === state.user.id) return; // no linked login, or you are the backup
+    const date = new Date(dateKey.slice(0, 10) + 'T00:00:00');
+    const when = `${DAY_NAMES[date.getDay()]} ${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}`;
+    const cls = (CLASS_TYPES[c.type] && CLASS_TYPES[c.type].name) || c.type;
+    await DB.sendPushNotification({
+      title: 'Cover needed',
+      body: `${cls} on ${when} (${c.start}) needs cover — you're the listed backup.`,
+      url: './', tag: 'cover-' + dateKey, schoolId: state.schoolId,
+      targetUserIds: [backupUid], excludeUserId: state.user.id,
+    });
+  } catch (e) { /* best-effort */ }
+}
+
+// Upcoming classes (next 28 days) that need cover AND list the current user as backup.
+function myBackupCoverAlerts() {
+  const id = myInstructorId();
+  if (!id) return [];
+  const out = []; const today = new Date();
+  for (let i = 0; i < 28; i++) {
+    const date = addDays(today, i);
+    if (!getActiveDays().includes(date.getDay())) continue;
+    for (const c of rosterForDay(date)) {
+      if (c.status === 'needs-cover' && c.backup === id) out.push({ c, date, daysOut: i });
+    }
+  }
+  return out;
 }
 
 async function volunteerToCover(dateKey) {
@@ -1890,7 +2002,7 @@ async function volunteerToCover(dateKey) {
   const existing = state.edits[dateKey] || {};
   state.edits[dateKey] = {
     ...existing,
-    lead: state.user.id,
+    lead: myInstructorId() || state.user.id,
     status: 'confirmed'
   };
   await saveEdits();
@@ -5094,7 +5206,7 @@ function renderInstructorManagerModal() {
         ${avatarHtml(instr, 40)}
         <div style="flex:1;min-width:0;">
           <div style="font-weight:700;">${escapeHtml(instr.name)}</div>
-          <div style="font-size:11px;color:var(--grey-500);margin-top:2px;">${instr.email ? escapeHtml(instr.email) + ' · ' : ''}ID: ${escapeHtml(instr.id)}${state.lastLogins[instr.id] ? ' · ' + timeAgo(state.lastLogins[instr.id]) : ' · Never logged in'}</div>
+          <div style="font-size:11px;color:var(--grey-500);margin-top:2px;">${instr.email ? escapeHtml(instr.email) + ' · ' : ''}${instr.uid ? '<span style="color:#16a34a;font-weight:600;">Can sign in</span>' : (instr.email ? 'No login — re-save to enable' : 'No login (add an email)')}</div>
         </div>
         ${roleBadge(instr.role)}
         ${instr.status === 'leave' ? '<span style="font-size:9px;background:#fef3c7;color:#92400e;padding:2px 7px;border-radius:999px;font-weight:700;text-transform:uppercase;">On leave</span>' : ''}
@@ -5112,13 +5224,90 @@ function renderInstructorManagerModal() {
           <option value="inactive"${instr.active === false && instr.status !== 'leave' ? ' selected' : ''}>Inactive</option>
         </select>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:6px;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;">
         <button class="btn btn-sm" style="font-size:11px;" onclick="openUserEditor('${instr.id}')">✎ Edit</button>
         <button class="btn btn-sm" style="font-size:11px;" onclick="openInstrDocsViewer('${instr.id}')">📄 Docs</button>
-        <button class="btn btn-ghost btn-sm" style="font-size:11px;" onclick="instrResetPin('${instr.id}')">Reset PIN</button>
       </div>
     </div>
   `).join('');
+}
+
+// ── App logins manager (auth users / profiles) ──
+async function openUserManager() {
+  if (!requireRole('admin')) return;
+  if (!DB.isSupabase) { alert('Login management needs the app to be online.'); return; }
+  openModal('modalUsers');
+  const ir = document.getElementById('inviteResult'); if (ir) ir.innerHTML = '';
+  const ie = document.getElementById('inviteError'); if (ie) ie.textContent = '';
+  await renderUserManager();
+}
+
+async function renderUserManager() {
+  const list = document.getElementById('usersList');
+  if (!list) return;
+  list.innerHTML = '<div style="font-size:13px;color:var(--grey-500);padding:8px;">Loading…</div>';
+  let users = [];
+  try { users = await DB.users.list(); }
+  catch (e) { list.innerHTML = '<div style="color:var(--red);font-size:13px;padding:8px;">Could not load logins: ' + escapeHtml((e && e.message) || '') + '</div>'; return; }
+  if (!users.length) { list.innerHTML = '<div style="font-size:13px;color:var(--grey-500);padding:8px;">No login accounts yet. Invite someone above.</div>'; return; }
+  const me = state.user && state.user.id;
+  const schools = (typeof KRMAS_SCHOOLS !== 'undefined') ? KRMAS_SCHOOLS : [];
+  list.innerHTML = users.map(u => {
+    const isMe = u.id === me;
+    const schoolName = (schools.find(s => s.id === u.school_id) || {}).name || (u.school_id || 'Network');
+    const safeName = (u.display_name || 'this user').replace(/['\\]/g, '');
+    return `<div style="background:var(--white);border:1px solid var(--grey-200);border-radius:var(--r-md);padding:12px 14px;margin-bottom:8px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:700;">${escapeHtml(u.display_name || '(no name)')}${isMe ? ' <span style="font-size:10px;color:var(--grey-400);">(you)</span>' : ''}</div>
+          <div style="font-size:11px;color:var(--grey-500);">${u.email ? escapeHtml(u.email) + ' · ' : ''}${escapeHtml(schoolName)}</div>
+        </div>
+        ${roleBadge(u.role)}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr auto;gap:6px;align-items:center;">
+        <select ${isMe ? 'disabled' : ''} onchange="userSetRole('${u.id}', this.value)" style="padding:6px 8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;${isMe ? 'opacity:.5;' : ''}">
+          ${['superadmin', 'admin', 'instructor', 'junior'].map(r => `<option value="${r}"${u.role === r ? ' selected' : ''}>${r.charAt(0).toUpperCase() + r.slice(1)}</option>`).join('')}
+        </select>
+        ${isMe ? '' : `<button class="btn btn-ghost btn-sm" style="font-size:11px;color:var(--red);" onclick="userRemove('${u.id}','${escapeHtml(safeName)}')">Remove</button>`}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function userInvite() {
+  const name = (document.getElementById('inviteName').value || '').trim();
+  const email = (document.getElementById('inviteEmail').value || '').trim();
+  const role = document.getElementById('inviteRole').value;
+  const err = document.getElementById('inviteError');
+  const btn = document.getElementById('inviteBtn');
+  const result = document.getElementById('inviteResult');
+  if (err) err.textContent = '';
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { if (err) err.textContent = 'Enter a valid email.'; return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Inviting…'; }
+  try {
+    const res = await DB.users.invite(email, role, state.schoolId, name || null);
+    if (result) result.innerHTML = `<div style="margin-top:10px;padding:10px;border:1px solid var(--grey-200);border-radius:var(--r-sm);background:var(--off-white);font-size:13px;">
+      Login created for <b>${escapeHtml(email)}</b>. Share this temporary password privately — it won't be shown again:
+      <div style="font-family:'JetBrains Mono',monospace;font-weight:700;font-size:16px;margin-top:6px;">${escapeHtml((res && res.tempPassword) || '')}</div></div>`;
+    document.getElementById('inviteName').value = '';
+    document.getElementById('inviteEmail').value = '';
+    await renderUserManager();
+  } catch (e) {
+    if (err) err.textContent = (e && e.message) || 'Invite failed.';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Send invite'; }
+  }
+}
+
+async function userSetRole(uid, role) {
+  try { await DB.users.setRole(uid, role); }
+  catch (e) { alert('Could not change role: ' + ((e && e.message) || '')); await renderUserManager(); }
+}
+
+async function userRemove(uid, name) {
+  if (!confirm('Remove the login for ' + name + '?\n\nThey will no longer be able to sign in. This does not delete any roster or scheduling data.')) return;
+  try { await DB.users.remove(uid); await renderUserManager(); }
+  catch (e) { alert('Could not remove: ' + ((e && e.message) || '')); }
 }
 
 // ── User editor (add / edit) — change 4 ──
@@ -5229,6 +5418,31 @@ async function saveUser() {
     saveUserAsync();
   }
 
+  // Unified people model: a person with an email also gets a login (profile),
+  // linked back via instr.uid. Role stays in sync; existing logins are reused.
+  if (DB.isSupabase && email) {
+    try {
+      if (instr.uid) {
+        await DB.users.setRole(instr.uid, role);
+      } else {
+        const existing = (await DB.users.list()).find(u => (u.email || '').toLowerCase() === email.toLowerCase());
+        if (existing) {
+          instr.uid = existing.id;
+          if (existing.role !== role) await DB.users.setRole(existing.id, role);
+          await saveCustomSchools();
+        } else {
+          const res = await DB.users.invite(email, role, state.schoolId, name);
+          if (res && res.uid) { instr.uid = res.uid; await saveCustomSchools(); }
+          if (res && res.tempPassword) {
+            alert('Login created for ' + email + '.\n\nTemporary password (share privately — shown only once):\n\n' + res.tempPassword);
+          }
+        }
+      }
+    } catch (e) {
+      alert('Saved to the roster, but setting up their login failed:\n' + ((e && e.message) || 'unknown') + '\n\nEdit them again to retry.');
+    }
+  }
+
   closeModal('modalUserEditor');
   renderInstructorManagerModal();
 }
@@ -5241,7 +5455,11 @@ async function deleteUser() {
   const instrs = ensureCustomInstructors();
   const instr = instrs.find(i => i.id === id);
   if (!instr) return;
-  if (!confirm(`Delete "${instr.name}"? This removes them from this school. Cannot be undone.`)) return;
+  if (!confirm(`Delete "${instr.name}"? This removes them from this school and revokes their login. Cannot be undone.`)) return;
+  if (DB.isSupabase && instr.uid) {
+    try { await DB.users.remove(instr.uid); }
+    catch (e) { alert('Could not remove their login (' + ((e && e.message) || '') + '). Removing from roster anyway.'); }
+  }
   state.customSchools[state.schoolId].instructors = instrs.filter(i => i.id !== id);
   await saveCustomSchools();
   closeModal('modalUserEditor');
@@ -5276,6 +5494,10 @@ async function instrSetRole(instrId, newRole) {
     if (!confirm('You are changing your own role. You may lose admin access. Continue?')) { renderInstructorManagerModal(); return; }
   }
   await saveCustomSchools();
+  if (DB.isSupabase && target.uid) {
+    try { await DB.users.setRole(target.uid, newRole); }
+    catch (e) { alert('Updated on the roster, but their login role change failed: ' + ((e && e.message) || '')); }
+  }
   renderInstructorManagerModal();
   if (instrId === state.user?.id) { state.user.role = newRole; saveUserAsync(); }
 }
@@ -5324,13 +5546,7 @@ async function instrToggleActive(instrId) {
 }
 
 async function instrResetPin(instrId) {
-  if (!requireRole('admin')) return;
-  if (!confirm('Reset this instructor\'s PIN to 0000?')) return;
-  if (!state.pinOverrides) state.pinOverrides = {};
-  state.pinOverrides[instrId] = '0000';
-  await savePinOverrides();
-  renderInstructorManagerModal();
-  alert('PIN reset to 0000.');
+  alert('PINs are no longer used to sign in. Everyone signs in with their email and password (manage those under "Manage app logins"). The optional on-device PIN is a personal lock each person sets on their own device.');
 }
 
 // ---------- Audit log ----------
@@ -5458,6 +5674,28 @@ function renderNoticeBanners() {
       badge.style.color = 'var(--black)';
       badge.textContent = unread > 9 ? '9+' : unread;
       meBtn.appendChild(badge);
+    }
+  }
+
+  // Cover alerts: classes you're the listed backup for that need cover.
+  const cont = document.getElementById('noticeBanners');
+  if (cont) {
+    const alerts = myBackupCoverAlerts();
+    if (alerts.length) {
+      const html = alerts.map(({ c, date, daysOut }) => {
+        const cls = (CLASS_TYPES[c.type] && CLASS_TYPES[c.type].name) || c.type;
+        const dayLabel = daysOut === 0 ? 'Today' : daysOut === 1 ? 'Tomorrow' : DAY_NAMES[date.getDay()];
+        const ds = `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}`;
+        return `<div style="background:#fef2f2;border:1px solid #fecaca;border-left:4px solid var(--red);border-radius:var(--r-md);padding:10px 12px;margin-bottom:6px;display:flex;align-items:flex-start;gap:8px;">
+          <span style="font-size:16px;flex-shrink:0;line-height:1.3;">⚠️</span>
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:700;font-size:13px;color:var(--red);">Cover needed — you're the backup</div>
+            <div style="font-size:12px;color:#7f1d1d;margin-top:3px;line-height:1.4;">${escapeHtml(cls)} · ${dayLabel} ${ds} · ${c.start}–${c.end}</div>
+          </div>
+          <button class="btn btn-primary btn-sm" style="flex-shrink:0;" onclick="volunteerToCover('${c.dateKey}');setView('cover')">Take it</button>
+        </div>`;
+      }).join('');
+      cont.innerHTML = html + cont.innerHTML; // above any notices
     }
   }
 }
@@ -5702,7 +5940,7 @@ async function enterAppWithSession(session) {
     return;
   }
   _enteredOnce = true;
-  state.user = { id: session.user.id, name: prof.display_name || session.user.email, role: prof.role };
+  state.user = { id: session.user.id, name: prof.display_name || session.user.email, role: prof.role, email: session.user.email || null };
   if (prof.school_id) {
     state.schoolId = prof.school_id;
     const school = (typeof KRMAS_SCHOOLS !== 'undefined') && KRMAS_SCHOOLS.find(s => s.id === state.schoolId);
@@ -5711,8 +5949,12 @@ async function enterAppWithSession(session) {
   try { recordLastLogin(state.user.id); } catch (e) {}
   try { await loadCustomSchools(); } catch (e) { console.warn('loadCustomSchools:', e && e.message); }
   try { await loadCurrentSchoolData(); } catch (e) { console.warn('loadCurrentSchoolData:', e && e.message); }
+  state.user.instructorId = resolveMyInstructorId(); // bridge auth uid -> roster instructor id
   finishBootRender();
   if (typeof refreshAuthUI === 'function') refreshAuthUI();
+  if (DB.isSupabase && !state._pinUnlocked) {
+    try { if (await DB.auth.hasPin()) showPinLock(); } catch (e) {}
+  }
   DB.loadInstructorDocuments(state.user.id).then(d => { state.myDocuments = d || []; }).catch(() => {});
 }
 
@@ -5834,7 +6076,7 @@ function renderCoverRequests() {
   const renderCoverCard = ({ c, date, daysOut }) => {
     const syl = CLASS_TYPES[c.type];
     const colour = syl?.colour || '--grey-300';
-    const isMe = state.user && (c.lead === state.user.id || c.assist === state.user.id || c.junior === state.user.id || c.backup === state.user.id);
+    const isMe = isMyClass(c);
     const dayLabel = daysOut === 0 ? 'Today' : daysOut === 1 ? 'Tomorrow' : DAY_NAMES[date.getDay()];
     const dateStr = `${String(date.getDate()).padStart(2,'0')}/${String(date.getMonth()+1).padStart(2,'0')}`;
     return `<div style="background:var(--white);border:1px solid var(--grey-200);border-left:4px solid var(${colour});border-radius:var(--r-md);padding:12px 14px;margin-bottom:8px;box-shadow:var(--shadow);">
@@ -7060,9 +7302,11 @@ async function confirmBulkImport() {
   if (!rows || rows.length === 0) { alert('No data to import. Upload a file first.'); return; }
   const valid = rows.filter(r => r.errors.length === 0);
   if (valid.length === 0) { alert('No valid rows to import.'); return; }
-  if (!confirm(`Import ${valid.length} instructor${valid.length===1?'':'s'} into ${KRMAS_SCHOOLS.find(s=>s.id===state.schoolId)?.name || state.schoolId}?\n\nExisting instructors with matching names will be updated.`)) return;
+  const schoolName = KRMAS_SCHOOLS.find(s => s.id === state.schoolId)?.name || state.schoolId;
+  const withEmail = valid.filter(r => r.email).length;
+  if (!confirm(`Import ${valid.length} instructor${valid.length === 1 ? '' : 's'} into ${schoolName}?\n\n${withEmail} with an email will also get a login account (a temporary password is shown after import for you to share). Existing names are updated.`)) return;
 
-  // Ensure custom schools overlay exists
+  // Roster side (custom-schools overlay) — no PINs anymore.
   if (!state.customSchools[state.schoolId]) {
     const seed = SCHOOL_DATA_SEED[state.schoolId];
     state.customSchools[state.schoolId] = {
@@ -7072,60 +7316,71 @@ async function confirmBulkImport() {
   }
   const instrs = state.customSchools[state.schoolId].instructors;
 
-  let added = 0, updated = 0;
+  let added = 0, updated = 0; const newNames = [];
   for (const r of valid) {
-    const id = r.existing?.id || ('USR-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2,5).toUpperCase());
     const existing = instrs.find(i => i.name.toLowerCase() === r.name.toLowerCase());
     if (existing) {
-      existing.role   = r.role;
-      existing.status = r.status;
-      existing.active = r.status === 'active';
+      existing.role = r.role; existing.status = r.status; existing.active = r.status === 'active';
       if (r.email) existing.email = r.email;
-      // Update PIN override if provided and not 0000
-      if (r.pin && r.pin !== '0000') {
-        if (!state.pinOverrides) state.pinOverrides = {};
-        state.pinOverrides[existing.id] = r.pin;
-      }
       updated++;
     } else {
-      instrs.push({
-        id,
-        name:   r.name,
-        short:  r.name.split(' ')[0],
-        role:   r.role,
-        pin:    r.pin,
-        status: r.status,
-        active: r.status === 'active',
-        email:  r.email || '',
-      });
-      // Set PIN override if not 0000
-      if (r.pin && r.pin !== '0000') {
-        if (!state.pinOverrides) state.pinOverrides = {};
-        state.pinOverrides[id] = r.pin;
-      }
-      added++;
+      const id = 'USR-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 5).toUpperCase();
+      instrs.push({ id, name: r.name, short: r.name.split(' ')[0], role: r.role, status: r.status, active: r.status === 'active', email: r.email || '' });
+      newNames.push(r.name); added++;
     }
   }
-
   await saveCustomSchools();
-  await savePinOverrides();
 
-  // Create onboarding checklists for newly added instructors
+  for (const name of newNames) {
+    const ni = instrs.find(i => i.name.toLowerCase() === name.toLowerCase());
+    if (ni) { try { await createOnboardingForInstructor(ni.id); } catch (e) {} }
+  }
+
+  // Login accounts — created server-side via the manage-users Edge Function.
+  const creds = []; const loginErrors = [];
+  document.getElementById('bulkImportStatus').textContent = 'Creating login accounts…';
   for (const r of valid) {
-    if (!r.existing) {
-      const newInstr = instrs.find(i => i.name.toLowerCase() === r.name.toLowerCase());
-      if (newInstr) await createOnboardingForInstructor(newInstr.id);
+    if (!r.email) continue;
+    try {
+      const res = await DB.users.invite(r.email, r.role, state.schoolId, r.name);
+      if (res && res.uid) { const ti = instrs.find(i => i.name.toLowerCase() === r.name.toLowerCase()); if (ti) ti.uid = res.uid; }
+      if (res && res.tempPassword) creds.push({ name: r.name, email: r.email, pw: res.tempPassword });
+    } catch (e) {
+      loginErrors.push(r.email + ' — ' + ((e && e.message) || 'failed'));
     }
   }
+  await saveCustomSchools(); // persist uid links
 
   window._bulkImportRows = null;
-  document.getElementById('bulkImportStatus').textContent = `✓ Done: ${added} added, ${updated} updated.`;
-  document.getElementById('bulkImportPreview').innerHTML = '';
+  renderBulkImportResult(added, updated, creds, loginErrors);
   document.getElementById('bulkImportFile').value = '';
-
-  // Refresh instructor manager if open
   const mgr = document.getElementById('instrManagerBody');
   if (mgr) renderInstructorManagerModal();
+}
+
+// Show import summary + any new temp passwords for the admin to distribute.
+function renderBulkImportResult(added, updated, creds, loginErrors) {
+  const status = document.getElementById('bulkImportStatus');
+  const preview = document.getElementById('bulkImportPreview');
+  if (status) status.textContent = `✓ Roster: ${added} added, ${updated} updated. Logins created: ${creds.length}.`;
+  if (!preview) return;
+  let html = '';
+  if (creds.length) {
+    html += `<div style="margin-top:10px;padding:10px;border:1px solid var(--grey-200);border-radius:var(--r-sm);background:var(--off-white);">
+      <div style="font-weight:700;margin-bottom:6px;">New login accounts — copy these now and share them privately. They won't be shown again.</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr><th style="text-align:left;padding:3px 6px;">Name</th><th style="text-align:left;padding:3px 6px;">Email</th><th style="text-align:left;padding:3px 6px;">Temporary password</th></tr></thead>
+        <tbody>${creds.map(c => `<tr>
+          <td style="padding:3px 6px;">${escapeHtml(c.name)}</td>
+          <td style="padding:3px 6px;">${escapeHtml(c.email)}</td>
+          <td style="padding:3px 6px;font-family:'JetBrains Mono',monospace;font-weight:700;">${escapeHtml(c.pw)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>`;
+  }
+  if (loginErrors.length) {
+    html += `<div style="margin-top:8px;font-size:12px;color:var(--grey-500);">Some logins were skipped (often because the email already has an account):<br>${loginErrors.map(escapeHtml).join('<br>')}</div>`;
+  }
+  preview.innerHTML = html;
 }
 
 // ---------- Composer attachments ----------
@@ -9019,7 +9274,7 @@ function renderDocuments() {
 // ====================================================================
 
 function openSchoolManager() {
-  if (!requireRole('superadmin')) return;
+  if (!requireRole('admin')) return;
   renderSchoolManager();
   openModal('modalSchoolManager');
 }
@@ -9027,7 +9282,13 @@ function openSchoolManager() {
 function renderSchoolManager() {
   const body = document.getElementById('schoolManagerBody');
   if (!body) return;
-  body.innerHTML = KRMAS_SCHOOLS.map(s => {
+  const all = can.switchAnySchool();
+  const schools = all ? KRMAS_SCHOOLS : KRMAS_SCHOOLS.filter(s => s.id === state.schoolId);
+  // "+ Add new school" is a superadmin action only.
+  const addBtn = document.getElementById('addSchoolBtn');
+  if (addBtn) addBtn.style.display = all ? '' : 'none';
+  body.innerHTML = (all ? '' : `<div style="font-size:12px;color:var(--grey-500);margin-bottom:8px;">You can manage your own school here. Other schools are managed by a superadmin.</div>`) +
+    schools.map(s => {
     const custom = state.customSchools[s.id];
     const instrCount = custom?.instructors?.length || SCHOOL_DATA_SEED[s.id]?.instructors?.length || 0;
     const schedCount = (custom?.schedule || SCHOOL_DATA_SEED[s.id]?.schedule || []).length;
@@ -9048,6 +9309,8 @@ function renderSchoolManager() {
 }
 
 function openSchoolEditor(schoolId) {
+  if (!requireRole('admin')) return;
+  if (!can.switchAnySchool() && (!schoolId || schoolId !== state.schoolId)) { alert('You can only edit your own school.'); return; }
   const school = KRMAS_SCHOOLS.find(s => s.id === schoolId);
   const isNew = !schoolId;
   const custom = schoolId ? (state.customSchools[schoolId] || {}) : {};
@@ -9084,6 +9347,7 @@ async function saveSchoolDetails() {
     schoolId = newId;
   }
 
+  if (isNew ? !can.switchAnySchool() : !canEditSchool(schoolId)) { alert('You can only edit your own school.'); return; }
   const name = document.getElementById('schoolEdName').value.trim();
   if (!name) { alert('Enter a school name.'); return; }
 
@@ -9165,7 +9429,8 @@ async function deleteSchool(schoolId) {
 
 // ── Schedule editor ──
 function openScheduleEditor(schoolId) {
-  if (!requireRole('superadmin')) return;
+  if (!requireRole('admin')) return;
+  if (!can.switchAnySchool() && schoolId !== state.schoolId) { alert('You can only edit your own school\u2019s timetable.'); return; }
   state._editingScheduleSchool = schoolId;
   renderScheduleEditor();
   openModal('modalScheduleEditor');
@@ -9243,6 +9508,7 @@ function editScheduleSlot(dow, idx) {
 
 async function saveScheduleSlot() {
   const schoolId = state._editingScheduleSchool;
+  if (!canEditSchool(schoolId)) { alert('You can only edit your own school.'); return; }
   const dow = parseInt(document.getElementById('slotEdDow').value);
   const idx = parseInt(document.getElementById('slotEdIdx').value);
   const start = document.getElementById('slotEdStart').value;
@@ -9284,6 +9550,7 @@ async function saveScheduleSlot() {
 
 async function removeScheduleSlot(dow, idx) {
   const schoolId = state._editingScheduleSchool;
+  if (!canEditSchool(schoolId)) { alert('You can only edit your own school.'); return; }
   if (!confirm('Remove this class from the timetable?')) return;
 
   if (!state.customSchools[schoolId]) {
