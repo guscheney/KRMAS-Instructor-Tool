@@ -1945,6 +1945,189 @@ async function resetEdit() {
   if (state.view === 'roster') renderDay();
 }
 
+// ===== Recurring roster + week rotation editor (Stage 2) =====
+// Edits the DEFAULT assignment for a class (every week), incl. per-week rotation.
+// A role value is either a fixed instructor id (string), null, or { rotate:[{id,weeks:[]}] }.
+let _rotationKey = null;
+let _rotationDraft = null;
+const ROT_ROLES = [['lead','Lead'],['assist','Assistant'],['junior','Junior assistant'],['backup','Backup']];
+
+function openRotationFromEdit() {
+  if (!requireRole('admin')) return;
+  const key = state.editingClassKey;
+  if (!key) return;
+  closeModal('modalEdit');
+  openRotationEditor(key);
+}
+
+function openRotationEditor(key) {
+  if (!requireRole('admin')) return;
+  _rotationKey = key;
+  const def = currentDefaults()[key] || {};
+  _rotationDraft = {};
+  ROT_ROLES.forEach(([r]) => {
+    const v = def[r];
+    _rotationDraft[r] = isRotation(v)
+      ? { rotate: v.rotate.map(s => ({ id: s.id || '', weeks: (s.weeks || []).slice() })) }
+      : (v || null);
+  });
+  const parts = key.split('-');
+  const day = +parts[0], start = parts[1], type = parts.slice(2).join('-');
+  const meta = CLASS_TYPES[type];
+  const sub = document.getElementById('rotationSub');
+  if (sub) sub.innerHTML =
+    `<strong>${DAY_NAMES[day]} ${start} · ${escapeHtml(meta ? meta.name : type)}</strong><br>` +
+    `Sets the recurring roster for <em>every</em> ${DAY_NAMES[day]}. One-off changes on a specific date stay separate.`;
+  renderRotationBody();
+  openModal('modalRotation');
+}
+
+function instrOptions(selected) {
+  return '<option value="">— Unassigned —</option>' +
+    currentInstructors().map(i => `<option value="${i.id}"${i.id === selected ? ' selected' : ''}>${escapeHtml(i.name)}</option>`).join('');
+}
+
+function renderRotationBody() {
+  const body = document.getElementById('rotationBody');
+  if (!body) return;
+  body.innerHTML = ROT_ROLES.map(([role, label]) => {
+    const v = _rotationDraft[role];
+    const rotating = isRotation(v);
+    let inner;
+    if (rotating) {
+      const rows = v.rotate.map((s, i) => `
+        <div style="display:flex;gap:6px;margin-bottom:6px;align-items:center;">
+          <select id="rot-${role}-${i}-id" onchange="syncRot('${role}')" style="flex:1;min-width:0;padding:8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:14px;">${instrOptions(s.id)}</select>
+          <input id="rot-${role}-${i}-wk" oninput="syncRot('${role}')" value="${(s.weeks || []).join(',')}" inputmode="numeric" placeholder="1,3,5" title="Weeks 1-12, comma separated" style="width:84px;flex:none;padding:8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:14px;" />
+          <button onclick="rotRemoveRow('${role}',${i})" title="Remove" style="background:none;border:none;color:var(--grey-500);font-size:20px;line-height:1;cursor:pointer;padding:0 4px;flex:none;">&times;</button>
+        </div>`).join('');
+      inner = `${rows}
+        <button class="btn btn-ghost btn-sm" onclick="rotAddRow('${role}')" style="margin-top:2px;">+ Add instructor</button>
+        <div id="rot-${role}-status" style="font-size:12px;margin-top:6px;"></div>`;
+    } else {
+      inner = `<select onchange="rotSetFixed('${role}',this.value)" style="width:100%;padding:9px 11px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:14px;">${instrOptions(v)}</select>`;
+    }
+    return `
+      <div style="background:var(--off-white);border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:10px 12px;margin-bottom:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;">
+          <label style="margin:0;font-weight:700;">${label}</label>
+          <div style="display:flex;gap:4px;flex:none;">
+            <button onclick="rotSetMode('${role}','fixed')" class="btn btn-sm" style="${!rotating ? 'background:var(--black);color:var(--white);' : 'background:var(--white);'}padding:4px 10px;font-size:11px;">Fixed</button>
+            <button onclick="rotSetMode('${role}','rotate')" class="btn btn-sm" style="${rotating ? 'background:var(--black);color:var(--white);' : 'background:var(--white);'}padding:4px 10px;font-size:11px;">Rotate</button>
+          </div>
+        </div>
+        ${inner}
+      </div>`;
+  }).join('');
+  ROT_ROLES.forEach(([r]) => { if (isRotation(_rotationDraft[r])) updateRotStatus(r); });
+}
+
+function parseWeeks(str) {
+  const out = [];
+  (str || '').split(',').forEach(p => {
+    const n = parseInt(p.trim(), 10);
+    if (n >= 1 && n <= 12 && !out.includes(n)) out.push(n);
+  });
+  return out.sort((a, b) => a - b);
+}
+
+function syncRot(role) {
+  const v = _rotationDraft[role];
+  if (!isRotation(v)) return;
+  v.rotate.forEach((s, i) => {
+    const idEl = document.getElementById(`rot-${role}-${i}-id`);
+    const wkEl = document.getElementById(`rot-${role}-${i}-wk`);
+    if (idEl) s.id = idEl.value || '';
+    if (wkEl) s.weeks = parseWeeks(wkEl.value);
+  });
+  updateRotStatus(role);
+}
+
+function updateRotStatus(role) {
+  const v = _rotationDraft[role];
+  const el = document.getElementById(`rot-${role}-status`);
+  if (!el || !isRotation(v)) return;
+  const res = validateRotation(v.rotate);
+  if (res.overlaps.length) {
+    el.innerHTML = `<span style="color:var(--red);font-weight:600;">&#9888; Two people on week${res.overlaps.length > 1 ? 's' : ''} ${res.overlaps.join(', ')} — fix before saving.</span>`;
+  } else if (res.missing.length) {
+    el.innerHTML = `<span style="color:#92400e;">No one on week${res.missing.length > 1 ? 's' : ''} ${res.missing.join(', ')} (left unassigned — that's allowed).</span>`;
+  } else {
+    el.innerHTML = `<span style="color:var(--ok);font-weight:600;">&#10003; Weeks 1–12 all covered.</span>`;
+  }
+}
+
+function rotSetMode(role, mode) {
+  syncRot(role);
+  const cur = _rotationDraft[role];
+  if (mode === 'rotate' && !isRotation(cur)) {
+    _rotationDraft[role] = { rotate: [{ id: cur || '', weeks: [1,2,3,4,5,6,7,8,9,10,11,12] }] };
+  } else if (mode === 'fixed' && isRotation(cur)) {
+    const first = cur.rotate.find(s => s.id);
+    _rotationDraft[role] = first ? first.id : null;
+  }
+  renderRotationBody();
+}
+
+function rotSetFixed(role, val) { _rotationDraft[role] = val || null; }
+
+function rotAddRow(role) {
+  syncRot(role);
+  if (isRotation(_rotationDraft[role])) {
+    _rotationDraft[role].rotate.push({ id: '', weeks: [] });
+    renderRotationBody();
+  }
+}
+
+function rotRemoveRow(role, i) {
+  syncRot(role);
+  if (isRotation(_rotationDraft[role])) {
+    _rotationDraft[role].rotate.splice(i, 1);
+    if (!_rotationDraft[role].rotate.length) _rotationDraft[role] = null;
+    renderRotationBody();
+  }
+}
+
+// Make sure the current school has an editable custom copy (seeded from the
+// merged view) so writing a rotation never silently drops seed schedule/defaults.
+function ensureEditableSchool() {
+  const sid = state.schoolId;
+  const merged = getSchoolData(sid) || {};
+  if (!state.customSchools[sid]) state.customSchools[sid] = {};
+  const cs = state.customSchools[sid];
+  if (!Array.isArray(cs.instructors) || !cs.instructors.length) cs.instructors = JSON.parse(JSON.stringify(merged.instructors || []));
+  if (!Array.isArray(cs.schedule) || !cs.schedule.length) cs.schedule = JSON.parse(JSON.stringify(merged.schedule || []));
+  if (!cs.defaults || !Object.keys(cs.defaults).length) cs.defaults = JSON.parse(JSON.stringify(merged.defaults || {}));
+  return cs;
+}
+
+async function saveRotation() {
+  if (!requireRole('admin')) return;
+  ROT_ROLES.forEach(([r]) => syncRot(r));
+  const bad = ROT_ROLES.filter(([r]) => isRotation(_rotationDraft[r]) && validateRotation(_rotationDraft[r].rotate).overlaps.length);
+  if (bad.length) { alert("Two people can't be on the same week in one role. Fix the highlighted weeks, then save."); return; }
+  const out = {};
+  ROT_ROLES.forEach(([r]) => {
+    const v = _rotationDraft[r];
+    if (isRotation(v)) {
+      const rows = v.rotate.filter(s => s.id && s.weeks.length);
+      out[r] = rows.length ? { rotate: rows } : null;
+    } else {
+      out[r] = v || null;
+    }
+  });
+  const cs = ensureEditableSchool();
+  cs.defaults[_rotationKey] = out;
+  try {
+    await saveCustomSchools();
+  } catch (e) {
+    alert('Could not save: ' + (e && e.message ? e.message : e));
+    return;
+  }
+  closeModal('modalRotation');
+  if (state.view === 'roster') renderDay();
+}
+
 function openEdit(dateKey) {
   if (!state.user) { openLogin(); return; }
   state.editingKey = dateKey;
@@ -1962,6 +2145,9 @@ function openEdit(dateKey) {
   document.getElementById('editBackup').value = c.backup || '';
   document.getElementById('editStatus').value = c.status || 'confirmed';
   document.getElementById('editNotes').value  = state.edits[dateKey]?.notes || '';
+  state.editingClassKey = c.key;
+  const rotBtn = document.getElementById('editRotationBtn');
+  if (rotBtn) rotBtn.style.display = can.manageInstructors() ? 'block' : 'none';
   openModal('modalEdit');
 }
 
