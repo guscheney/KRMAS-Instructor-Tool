@@ -6,7 +6,8 @@
 <meta name="theme-color" content="#000000">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>KRMAS Instructor App</title>
+<title>Kumiai Ryu Instructors</title>
+<meta name="apple-mobile-web-app-title" content="Kumiai Ryu Instructors">
 <link rel="manifest" href="manifest.json">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1903,7 +1904,7 @@
     <div class="form-grid-2">
       <div class="form-row compact">
         <label>Role</label>
-        <select id="userRole">
+        <select id="userRole" onchange="onUserRoleChange()">
           <option value="superadmin">Superadmin</option>
           <option value="admin">Admin</option>
           <option value="instructor" selected>Instructor</option>
@@ -1918,6 +1919,10 @@
           <option value="inactive">Inactive</option>
         </select>
       </div>
+    </div>
+    <div class="form-row compact" id="userSchoolsRow" style="display:none;margin-top:4px;">
+      <label>Schools <span style="font-weight:400;color:var(--grey-500);font-size:11px;">— teaches at (and can see) every school ticked</span></label>
+      <div id="userSchoolsList" style="display:flex;flex-direction:column;gap:2px;max-height:150px;overflow-y:auto;border:1px solid var(--grey-200);border-radius:8px;padding:8px;"></div>
     </div>
     <div class="detail-actions" style="margin-top:8px;">
       <button class="btn btn-primary" onclick="saveUser()" style="flex:1;">Save</button>
@@ -2702,7 +2707,7 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '59';
+  window.KRMAS_APP_VERSION = '61';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';

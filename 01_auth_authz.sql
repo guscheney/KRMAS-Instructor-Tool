@@ -22,6 +22,7 @@ end $$;
 create table if not exists public.profiles (
   id           uuid primary key references auth.users(id) on delete cascade,
   display_name text,
+  email        text,
   role         text not null default 'junior'
                check (role in ('superadmin','admin','instructor','junior')),
   school_id    text,                       -- null only for superadmin (network-wide)
@@ -29,6 +30,15 @@ create table if not exists public.profiles (
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now()
 );
+alter table public.profiles add column if not exists email text;  -- for existing installs
+-- Multi-school membership. `school_id` stays the "home" school (drives the default
+-- view + the school_id JWT claim); `schools` is the full set a user may act in. Only
+-- instructors are multi-school; admins/superadmin keep one (or null for superadmin).
+alter table public.profiles add column if not exists schools text[];
+update public.profiles
+   set schools = array[school_id]
+ where (schools is null or array_length(schools,1) is null)
+   and school_id is not null;
 alter table public.profiles enable row level security;
 
 -- ----------------------------------------------------------------------------
@@ -53,6 +63,25 @@ language sql stable security definer set search_path = public as $$
   );
 $$;
 
+-- The full set of schools the caller may act in. Prefers the JWT 'schools' claim;
+-- falls back to profiles.schools so a freshly-changed membership resolves before the
+-- next token refresh; finally falls back to the single home school.
+create or replace function public.my_schools() returns text[]
+language sql stable security definer set search_path = public as $$
+  with j as (
+    select case when jsonb_typeof(auth.jwt() -> 'schools') = 'array'
+                then array(select jsonb_array_elements_text(auth.jwt() -> 'schools'))
+                else null end as s
+  ),
+  p as ( select schools as s from public.profiles where id = auth.uid() )
+  select coalesce(
+    (select s from j where s is not null and array_length(s,1) >= 1),
+    (select s from p where s is not null and array_length(s,1) >= 1),
+    case when current_school_id() is not null then array[current_school_id()]
+         else array[]::text[] end
+  );
+$$;
+
 create or replace function public.role_rank(r text) returns int
 language sql immutable as $$
   select case r when 'superadmin' then 4 when 'admin' then 3
@@ -71,11 +100,11 @@ language sql stable as $$ select current_app_role() = 'superadmin'; $$;
 -- Row belongs to the caller's school (superadmin sees all). For tables that ALSO
 -- have network rows (school_id null) readable by everyone, see can_read_scope().
 create or replace function public.my_school(row_school text) returns boolean
-language sql stable as $$ select is_superadmin() or row_school = current_school_id(); $$;
+language sql stable as $$ select is_superadmin() or row_school = any(my_schools()); $$;
 
 create or replace function public.can_read_scope(row_school text) returns boolean
 language sql stable as $$
-  select is_superadmin() or row_school is null or row_school = current_school_id();
+  select is_superadmin() or row_school is null or row_school = any(my_schools());
 $$;
 
 -- ----------------------------------------------------------------------------
@@ -84,13 +113,19 @@ $$;
 -- ----------------------------------------------------------------------------
 create or replace function public.custom_access_token_hook(event jsonb)
 returns jsonb language plpgsql stable as $$
-declare claims jsonb; r text; s text;
+declare claims jsonb; r text; s text; sch text[];
 begin
-  select role, school_id into r, s from public.profiles where id = (event->>'user_id')::uuid;
+  select role, school_id, schools into r, s, sch
+    from public.profiles where id = (event->>'user_id')::uuid;
   claims := coalesce(event->'claims','{}'::jsonb);
   if r is not null then
     claims := jsonb_set(claims, '{app_role}',  to_jsonb(r));
     claims := jsonb_set(claims, '{school_id}', coalesce(to_jsonb(s), 'null'::jsonb));
+    -- Full membership set; defaults to [home] when not explicitly set.
+    claims := jsonb_set(claims, '{schools}',
+      coalesce(to_jsonb(case when sch is not null and array_length(sch,1) >= 1 then sch
+                             when s is not null then array[s]
+                             else array[]::text[] end), '[]'::jsonb));
   end if;
   return jsonb_set(event, '{claims}', claims);
 end; $$;
@@ -130,6 +165,10 @@ create policy profiles_delete on public.profiles for delete to authenticated
 create or replace function public.guard_profile_changes() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
+  -- This guard only constrains authenticated END-USERS acting through the app.
+  -- Trusted backend contexts (SQL editor as postgres, Edge Functions as service_role)
+  -- carry no end-user JWT, so auth.uid() is null — let them through.
+  if auth.uid() is null then return new; end if;
   if is_superadmin() then return new; end if;
   if is_admin() then
     if new.role = 'superadmin' then
@@ -140,8 +179,10 @@ begin
     end if;
     return new;
   end if;
-  -- non-admin editing own profile: role and school are immutable
-  if new.role is distinct from old.role or new.school_id is distinct from old.school_id then
+  -- non-admin editing own profile: role, school and membership are immutable
+  if new.role is distinct from old.role
+     or new.school_id is distinct from old.school_id
+     or new.schools is distinct from old.schools then
     raise exception 'You cannot change your own role or school';
   end if;
   return new;
@@ -353,6 +394,7 @@ language sql immutable as $$
     when 'roster-edits'         then 'junior'
     when 'class-type-overrides' then 'junior'
     when 'custom-schools'       then 'junior'
+    when 'school-seed'          then 'junior'
     when 'pathways'             then 'instructor'
     when 'grading'              then 'instructor'
     when 'last-login'           then 'instructor'
@@ -364,11 +406,12 @@ language sql immutable as $$
     when 'lesson-plans'         then 'junior'
     when 'progressions'         then 'junior'
     when 'last-login'           then 'junior'
-    when 'roster-edits'         then 'admin'
+    when 'roster-edits'         then 'junior'   -- instructors flag cover, juniors volunteer (school-scoped)
     when 'pathways'             then 'admin'
     when 'grading'              then 'admin'
     when 'class-type-overrides' then 'admin'
     when 'custom-schools'       then 'admin'
+    when 'school-seed'          then 'admin'
     else 'superadmin' end;
 $$;
 
@@ -376,19 +419,19 @@ create policy kv_select on public.kv_store for select to authenticated
   using (
     key not in ('students','incidents','pin-overrides')
     and has_min_role(kv_min_read_role(key))
-    and ( is_superadmin() or school_id = current_school_id() or school_id in ('network','global') )
+    and ( is_superadmin() or school_id = any(my_schools()) or school_id in ('network','global') )
   );
 create policy kv_write on public.kv_store for all to authenticated
   using (
     key not in ('students','incidents','pin-overrides')
     and has_min_role(kv_min_write_role(key))
-    and ( is_superadmin() or school_id = current_school_id()
+    and ( is_superadmin() or school_id = any(my_schools())
           or (school_id in ('network','global') and is_admin()) )
   )
   with check (
     key not in ('students','incidents','pin-overrides')
     and has_min_role(kv_min_write_role(key))
-    and ( is_superadmin() or school_id = current_school_id()
+    and ( is_superadmin() or school_id = any(my_schools())
           or (school_id in ('network','global') and is_admin()) )
   );
 

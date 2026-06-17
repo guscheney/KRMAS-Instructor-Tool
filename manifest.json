@@ -1,6 +1,6 @@
 {
-  "name": "KRMAS Instructor App",
-  "short_name": "Roster",
+  "name": "Kumiai Ryu Instructors",
+  "short_name": "Kumiai Ryu Instructors",
   "description": "Kumiai Ryu Martial Arts class roster and topic reference for instructors.",
   "start_url": "./",
   "scope": "./",

@@ -1,92 +1,185 @@
-// Supabase Edge Function: bulk-import
-// Privileged bulk student import. The service-role key lives ONLY in this function's
-// secrets (Deno.env) and never reaches the browser. The caller's identity, role and
-// school are verified server-side from `profiles` before any row is written, so a
-// non-admin (or an admin importing into another school) is rejected even though the
-// insert itself runs with the service role.
+// Supabase Edge Function: manage-users
+// In-app user administration. Creating or deleting an auth user needs the service
+// role, which lives ONLY here (never in the browser). Every action re-verifies the
+// caller's role + school from `profiles` server-side, so an instructor can't invite
+// anyone and a school admin can't create a superadmin or touch another school.
 //
-// Deploy:  supabase functions deploy bulk-import
-// Secrets: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY  (set via `supabase secrets set`)
+// Deploy:  supabase functions deploy manage-users
+// Secrets: SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are injected automatically.
 //
-// Request (from the authenticated client, Authorization: Bearer <user jwt>):
-//   { "schoolId": "edgeworth",
-//     "students": [{ "id": "...", "name": "...", "dob": "2012-01-01",
-//                    "memberNum": "123" }, ...] }
-// Response: { imported: N }  | { error: "..." } with an appropriate status.
+// Request (Authorization: Bearer <caller jwt>):
+//   { action: "invite", email, role, school_id, name }   -> { email, tempPassword }
+//   { action: "setRole", uid, role, school_id }          -> { ok: true }
+//   { action: "remove", uid }                            -> { ok: true }
+//   { action: "resetPassword", uid }                     -> { uid, tempPassword }
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const RANK: Record<string, number> = { superadmin: 4, admin: 3, instructor: 2, junior: 1 };
+const ROLES = ["superadmin", "admin", "instructor", "junior"];
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
+const json = (b: unknown, s = 200) =>
+  new Response(JSON.stringify(b), { status: s, headers: { ...cors, "Content-Type": "application/json" } });
+
+function tempPassword(): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+  const a = new Uint8Array(12); crypto.getRandomValues(a);
+  return Array.from(a).map((x) => chars[x % chars.length]).join("");
+}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
-  const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-  const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!SUPABASE_URL || !SERVICE_KEY) return json({ error: "Server not configured" }, 500);
+  const URL = Deno.env.get("SUPABASE_URL");
+  const KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!URL || !KEY) return json({ error: "Server not configured" }, 500);
+  const admin = createClient(URL, KEY, { auth: { persistSession: false } });
 
-  // Privileged client — service role. Never exposed to the browser.
-  const admin = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
-
-  // 1. Authenticate the caller from their bearer token.
+  // 1. Authenticate caller.
   const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
   if (!token) return json({ error: "Missing authorization" }, 401);
-  const { data: userData, error: userErr } = await admin.auth.getUser(token);
-  if (userErr || !userData?.user) return json({ error: "Invalid session" }, 401);
-  const uid = userData.user.id;
+  const { data: ud, error: ue } = await admin.auth.getUser(token);
+  if (ue || !ud?.user) return json({ error: "Invalid session" }, 401);
 
-  // 2. Authorize from the server-side source of truth (profiles), not client claims.
-  const { data: prof, error: profErr } = await admin
-    .from("profiles").select("role, school_id").eq("id", uid).single();
-  if (profErr || !prof) return json({ error: "No profile" }, 403);
-  if ((RANK[prof.role] ?? 0) < RANK.admin) return json({ error: "Admins only" }, 403);
+  // 2. Authorize from profiles (server-side source of truth).
+  const { data: me, error: pe } = await admin
+    .from("profiles").select("role, school_id").eq("id", ud.user.id).single();
+  if (pe || !me) return json({ error: "No profile" }, 403);
+  if ((RANK[me.role] ?? 0) < RANK.admin) return json({ error: "Admins only" }, 403);
+  const callerSuper = me.role === "superadmin";
 
-  // 3. Parse + validate payload.
-  let body: { schoolId?: string; students?: any[] };
+  let body: any;
   try { body = await req.json(); } catch { return json({ error: "Bad JSON" }, 400); }
-  const targetSchool = String(body.schoolId ?? "").trim();
-  if (!targetSchool) return json({ error: "schoolId required" }, 400);
-  if (!Array.isArray(body.students) || body.students.length === 0)
-    return json({ error: "students[] required" }, 400);
-  if (body.students.length > 2000) return json({ error: "Too many rows" }, 400);
+  const action = String(body.action || "");
 
-  // 4. School scope: only a superadmin may import into a school other than their own.
-  if (prof.role !== "superadmin" && targetSchool !== prof.school_id)
-    return json({ error: "Cannot import into another school" }, 403);
+  // Helper: can the caller assign this role in this school?
+  function checkTarget(role: string, schoolId: string | null): string | null {
+    if (!ROLES.includes(role)) return "Invalid role";
+    if (role === "superadmin" && !callerSuper) return "Only a superadmin can grant superadmin";
+    if (!callerSuper && schoolId !== me.school_id) return "You can only manage your own school";
+    return null;
+  }
 
-  // 5. Build rows. school_id is forced to targetSchool — never taken per-row from the client.
-  const rows = body.students
-    .filter((s) => s && (s.name ?? "").toString().trim())
-    .map((s) => ({
-      id: (s.id ?? crypto.randomUUID()).toString(),
-      school_id: targetSchool,
-      name: s.name.toString().trim(),
-      dob: s.dob ? String(s.dob).slice(0, 10) : null,
-      member_num: s.memberNum ? String(s.memberNum) : null,
-      source: "import",
-      updated_by: uid,
-    }));
-  if (rows.length === 0) return json({ error: "No valid rows" }, 400);
+  // Resolve the multi-school membership set. Only instructors may belong to more than
+  // one school; everyone else is pinned to a single school (null for superadmin). The
+  // caller must control every school in the set (superadmin: any; admin: own only).
+  function resolveSchools(role: string, schoolId: string | null, raw: any):
+    { schools: string[] | null; home: string | null; error: string | null } {
+    if (role !== "instructor") {
+      return { schools: schoolId ? [schoolId] : null, home: schoolId, error: null };
+    }
+    let arr: string[] = Array.isArray(raw) ? raw.map((x) => String(x)).filter(Boolean) : [];
+    arr = Array.from(new Set(arr));
+    if (arr.length === 0 && schoolId) arr = [schoolId];
+    if (arr.length === 0) return { schools: null, home: null, error: "An instructor needs at least one school" };
+    for (const s of arr) {
+      if (!callerSuper && s !== me.school_id) return { schools: null, home: null, error: "You can only assign your own school" };
+    }
+    const home = (schoolId && arr.includes(schoolId)) ? schoolId : arr[0];
+    return { schools: arr, home, error: null };
+  }
 
-  // 6. Upsert with the service role (bypasses RLS — already authorized above).
-  const { error: insErr } = await admin.from("students").upsert(rows, { onConflict: "id" });
-  if (insErr) return json({ error: insErr.message }, 400);
+  if (action === "invite") {
+    const email = String(body.email || "").trim().toLowerCase();
+    const role = String(body.role || "junior");
+    const schoolId = body.school_id ? String(body.school_id) : me.school_id;
+    const name = body.name ? String(body.name) : null;
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return json({ error: "Valid email required" }, 400);
+    const sset = resolveSchools(role, schoolId, body.schools);
+    if (sset.error) return json({ error: sset.error }, 403);
+    const bad = checkTarget(role, sset.home); if (bad) return json({ error: bad }, 403);
 
-  // 7. Lightweight audit (best-effort).
-  await admin.from("audit_log").insert({
-    actor: uid, actor_role: prof.role, school_id: targetSchool,
-    action: "bulk_import", table_name: "students",
-    detail: { count: rows.length },
-  });
+    const pw = tempPassword();
+    const { data: created, error: ce } = await admin.auth.admin.createUser({
+      email, password: pw, email_confirm: true,
+      user_metadata: { must_change: true },
+    });
+    if (ce || !created?.user) {
+      // Most common: the user already exists — surface that clearly.
+      return json({ error: ce?.message || "Could not create user" }, 400);
+    }
+    const { error: ie } = await admin.from("profiles").insert({
+      id: created.user.id, role, school_id: sset.home, schools: sset.schools, display_name: name, email,
+    });
+    if (ie) { // roll back the auth user so we don't leave an orphan
+      await admin.auth.admin.deleteUser(created.user.id);
+      return json({ error: ie.message }, 400);
+    }
+    await admin.from("audit_log").insert({
+      actor: ud.user.id, actor_role: me.role, school_id: schoolId,
+      action: "user_invite", table_name: "profiles", row_id: created.user.id,
+      detail: { email, role },
+    });
+    return json({ email, tempPassword: pw, uid: created.user.id });
+  }
 
-  return json({ imported: rows.length });
+  if (action === "setRole") {
+    const uid = String(body.uid || "");
+    const role = String(body.role || "");
+    if (!uid) return json({ error: "uid required" }, 400);
+    const { data: target } = await admin.from("profiles").select("school_id").eq("id", uid).single();
+    const schoolId = body.school_id ? String(body.school_id) : (target?.school_id ?? me.school_id);
+    // caller must control both the target's current school and the destination school
+    if (!callerSuper && target && target.school_id !== me.school_id)
+      return json({ error: "That user isn't in your school" }, 403);
+    const sset = resolveSchools(role, schoolId, body.schools);
+    if (sset.error) return json({ error: sset.error }, 403);
+    const bad = checkTarget(role, sset.home); if (bad) return json({ error: bad }, 403);
+    // Only rewrite membership when it was explicitly provided, or when the user is
+    // leaving the instructor role (non-instructors are always single-school). This
+    // stops a single-school admin's edit from silently collapsing a multi-school
+    // instructor they didn't intend to touch.
+    const upd: Record<string, unknown> = { role, school_id: sset.home };
+    if (body.schools !== undefined || role !== "instructor") upd.schools = sset.schools;
+    const { error: se } = await admin.from("profiles").update(upd).eq("id", uid);
+    if (se) return json({ error: se.message }, 400);
+    return json({ ok: true });
+  }
+
+  if (action === "remove") {
+    const uid = String(body.uid || "");
+    if (!uid) return json({ error: "uid required" }, 400);
+    if (uid === ud.user.id) return json({ error: "You can't remove yourself" }, 400);
+    const { data: target } = await admin.from("profiles").select("school_id, role").eq("id", uid).single();
+    if (target) {
+      if (!callerSuper && target.school_id !== me.school_id) return json({ error: "Not in your school" }, 403);
+      if (target.role === "superadmin" && !callerSuper) return json({ error: "Only a superadmin can remove a superadmin" }, 403);
+    }
+    const { error: de } = await admin.auth.admin.deleteUser(uid); // cascades profile via FK
+    if (de) return json({ error: de.message }, 400);
+    await admin.from("audit_log").insert({
+      actor: ud.user.id, actor_role: me.role, school_id: me.school_id,
+      action: "user_remove", table_name: "profiles", row_id: uid, detail: {},
+    });
+    return json({ ok: true });
+  }
+
+  if (action === "resetPassword") {
+    const uid = String(body.uid || "");
+    if (!uid) return json({ error: "uid required" }, 400);
+    const { data: target } = await admin.from("profiles").select("school_id, role").eq("id", uid).single();
+    if (target) {
+      if (!callerSuper && target.school_id !== me.school_id) return json({ error: "That user isn't in your school" }, 403);
+      if (target.role === "superadmin" && !callerSuper) return json({ error: "Only a superadmin can reset a superadmin" }, 403);
+    }
+    const pw = tempPassword();
+    // Preserve any existing metadata; just flip the must_change flag.
+    const { data: got } = await admin.auth.admin.getUserById(uid);
+    const meta = { ...((got?.user?.user_metadata) || {}), must_change: true };
+    const { error: ue } = await admin.auth.admin.updateUserById(uid, { password: pw, user_metadata: meta });
+    if (ue) return json({ error: ue.message }, 400);
+    await admin.from("audit_log").insert({
+      actor: ud.user.id, actor_role: me.role, school_id: target?.school_id ?? me.school_id,
+      action: "user_reset_password", table_name: "profiles", row_id: uid, detail: {},
+    });
+    return json({ uid, tempPassword: pw });
+  }
+
+  return json({ error: "Unknown action" }, 400);
 });

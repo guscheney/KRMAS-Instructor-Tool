@@ -368,8 +368,33 @@ async function loadPathways()    { state.pathways    = (await DB.loadPathways(st
 async function savePathways()    { await DB.savePathways(state.schoolId, state.pathways); }
 async function loadPinOverrides(){ state.pinOverrides = (await DB.loadPinOverrides(state.schoolId)) || {}; }
 async function savePinOverrides(){ await DB.savePinOverrides(state.schoolId, state.pinOverrides); }
-async function loadCustomSchools(){ state.customSchools = (await DB.loadCustomSchools()) || {}; }
-async function saveCustomSchools(){ await DB.saveCustomSchools(state.customSchools); }
+async function loadCustomSchools(){
+  // School structure (timetables, instructors, defaults, contact) now lives in
+  // per-school DB rows, RLS-isolated, instead of being compiled into the client.
+  // Load ONLY the schools this user belongs to (superadmin loads all), then populate
+  // the in-memory SCHOOL_DATA_SEED in place so every existing getSchoolData() and
+  // SCHOOL_DATA_SEED[id] call site keeps working unchanged — a non-member simply has
+  // no entry for another school (which is exactly the isolation we want).
+  const isSuper = state.user && state.user.role === 'superadmin';
+  const ids = isSuper
+    ? (typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS.map(s => s.id) : [])
+    : ((state.userSchools && state.userSchools.length) ? state.userSchools.slice()
+        : (state.schoolId ? [state.schoolId] : []));
+  const struct = (await DB.loadSchoolStructures(ids)) || { seeds: {}, customs: {} };
+  if (typeof SCHOOL_DATA_SEED !== 'undefined') {
+    Object.keys(SCHOOL_DATA_SEED).forEach(k => { delete SCHOOL_DATA_SEED[k]; });
+    Object.assign(SCHOOL_DATA_SEED, struct.seeds || {});
+  }
+  state.customSchools = struct.customs || {};
+}
+async function saveCustomSchools(schoolId){
+  // Edits target a specific school (defaults to the active one); persist just that
+  // school's overlay row. Callers editing another school (cross-school management)
+  // pass its id explicitly so the right per-school row is written.
+  const sid = schoolId || state.schoolId;
+  if (!sid) return;
+  await DB.saveSchoolCustom(sid, state.customSchools[sid] || {});
+}
 async function loadUserAsync() {
   const saved = await DB.loadUser();
   if (saved) {
@@ -1708,7 +1733,13 @@ async function pinLockSubmit() {
 // ---------- School picker ----------
 function openSchoolPicker() {
   const list = document.getElementById('schoolList');
-  list.innerHTML = KRMAS_SCHOOLS.map(s => {
+  // Everyone is restricted to the schools they're assigned to; superadmins (and the
+  // logged-out setup flow) see them all. Multi-school instructors see their full set.
+  const isSuper = !state.user || (state.user && state.user.role === 'superadmin');
+  let visible = isSuper ? KRMAS_SCHOOLS
+                        : KRMAS_SCHOOLS.filter(s => (state.userSchools || []).includes(s.id));
+  if (!visible.length) visible = KRMAS_SCHOOLS.filter(s => s.id === state.schoolId);
+  list.innerHTML = visible.map(s => {
     const configured = isSchoolConfigured(s.id);
     const seed = SCHOOL_DATA_SEED[s.id];
     const classCount = seed?.schedule?.length || 0;
@@ -2037,8 +2068,8 @@ async function finishWizard() {
     defaults: w.defaults,
     contact: w.contact
   };
+  state.schoolId = w.schoolId;   // switch first so the per-school save targets this new school
   await saveCustomSchools();
-  state.schoolId = w.schoolId;
   document.getElementById('schoolName').textContent = w.schoolName;
   closeModal('modalWizard');
   const schoolName = w.schoolName;
@@ -5674,7 +5705,35 @@ function openUserEditor(instrId) {
   document.getElementById('userDeleteBtn').style.display = instr ? 'block' : 'none';
   const rpBtn = document.getElementById('userResetPwBtn');
   if (rpBtn) rpBtn.style.display = (instr && instr.uid && DB.isSupabase) ? 'block' : 'none';
+  renderUserSchoolsChecklist(instr);
   openModal('modalUserEditor');
+}
+
+// Multi-school membership UI. Only a superadmin may assign it, and only instructors
+// are multi-school — so the checklist is hidden for every other case (the school
+// stays implicit/single). The ticked set flows to profiles.schools via the edge fn.
+function renderUserSchoolsChecklist(instr) {
+  const row = document.getElementById('userSchoolsRow');
+  const listEl = document.getElementById('userSchoolsList');
+  if (!row || !listEl) return;
+  const role = document.getElementById('userRole').value;
+  const isSuper = !!(state.user && state.user.role === 'superadmin');
+  if (!isSuper || role !== 'instructor') { row.style.display = 'none'; listEl.innerHTML = ''; return; }
+  const current = (instr && Array.isArray(instr.schools) && instr.schools.length)
+    ? instr.schools.slice()
+    : [state.schoolId];
+  listEl.innerHTML = KRMAS_SCHOOLS.map(s => {
+    const checked = current.includes(s.id) ? 'checked' : '';
+    return `<label style="display:flex;align-items:center;gap:8px;font-weight:500;cursor:pointer;padding:2px 0;">
+      <input type="checkbox" class="userSchoolChk" value="${s.id}" ${checked} style="width:auto;margin:0;">
+      <span>${escapeHtml(s.name)}</span></label>`;
+  }).join('');
+  row.style.display = '';
+}
+
+function onUserRoleChange() {
+  const instr = state.editingUserId ? allInstructors().find(i => i.id === state.editingUserId) : null;
+  renderUserSchoolsChecklist(instr);
 }
 
 let _editingUserAvatar = null;
@@ -5747,6 +5806,19 @@ async function saveUser() {
   instr.active = statusSel !== 'inactive';
   if (_editingUserAvatar) instr.avatar = _editingUserAvatar; else delete instr.avatar;
 
+  // Multi-school membership: only a superadmin assigns it, and only for instructors.
+  // Collect the ticked schools; otherwise leave `schools` undefined so the server
+  // preserves the existing set (on edit) or derives a single home school (on create).
+  let schools;
+  const isSuperEditor = !!(state.user && state.user.role === 'superadmin');
+  if (isSuperEditor && role === 'instructor') {
+    schools = Array.from(document.querySelectorAll('.userSchoolChk')).filter(c => c.checked).map(c => c.value);
+    if (!schools.length) schools = [state.schoolId];
+    instr.schools = schools.slice();
+  } else if (role !== 'instructor' && instr.schools) {
+    delete instr.schools; // collapsing to a single-school role
+  }
+
   await saveCustomSchools();
 
   // If editing yourself, sync the session
@@ -5760,15 +5832,15 @@ async function saveUser() {
   if (DB.isSupabase && email) {
     try {
       if (instr.uid) {
-        await DB.users.setRole(instr.uid, role);
+        await DB.users.setRole(instr.uid, role, undefined, schools);
       } else {
         const existing = (await DB.users.list()).find(u => (u.email || '').toLowerCase() === email.toLowerCase());
         if (existing) {
           instr.uid = existing.id;
-          if (existing.role !== role) await DB.users.setRole(existing.id, role);
+          if (existing.role !== role || schools !== undefined) await DB.users.setRole(existing.id, role, undefined, schools);
           await saveCustomSchools();
         } else {
-          const res = await DB.users.invite(email, role, state.schoolId, name);
+          const res = await DB.users.invite(email, role, state.schoolId, name, schools);
           if (res && res.uid) { instr.uid = res.uid; await saveCustomSchools(); }
           if (res && res.tempPassword) {
             alert('Login created for ' + email + '.\n\nTemporary password (share privately — shown only once):\n\n' + res.tempPassword);
@@ -6285,6 +6357,12 @@ async function enterAppWithSession(session) {
   }
   _enteredOnce = true;
   state.user = { id: session.user.id, name: prof.display_name || session.user.email, role: prof.role, email: session.user.email || null };
+  // Multi-school membership (instructors may belong to more than one school). Falls
+  // back to the single home school for everyone else. Drives the school-pill filter.
+  state.user.schools = (Array.isArray(prof.schools) && prof.schools.length)
+    ? prof.schools.slice()
+    : (prof.school_id ? [prof.school_id] : []);
+  state.userSchools = state.user.schools;
   if (prof.school_id) {
     state.schoolId = prof.school_id;
     const school = (typeof KRMAS_SCHOOLS !== 'undefined') && KRMAS_SCHOOLS.find(s => s.id === state.schoolId);
@@ -7095,12 +7173,35 @@ async function submitPost() {
     state.feed.unshift(post);
   }
 
-  _pendingAttachments = [];
-  state.editingPostId = null;
+  const _attachmentsForRetry = _pendingAttachments;
   closeModal('modalPostComposer');
   renderFeed();
   renderNoticeBanners();
-  await DB.saveFeedPost(post);
+
+  const saveRes = await DB.saveFeedPost(post);
+  if (saveRes !== true) {
+    // The DB write failed (offline, or a schema/permission error). Roll the optimistic
+    // change back so the feed shows only what actually saved, restore the composer so
+    // nothing the user wrote is lost, and tell them — never silently drop a post.
+    if (existing) {
+      const idx = state.feed.findIndex(p => p.id === post.id);
+      if (idx !== -1) state.feed[idx] = existing;
+    } else {
+      state.feed = state.feed.filter(p => p.id !== post.id);
+    }
+    renderFeed();
+    renderNoticeBanners();
+    _pendingAttachments = _attachmentsForRetry;
+    const bodyEl = document.getElementById('composerBody');
+    if (bodyEl) bodyEl.value = body;
+    openModal('modalPostComposer');
+    alert('Your post could not be saved' + ((saveRes && saveRes.error) ? (':\n' + saveRes.error) : '.') +
+          '\n\nNothing was lost — your draft is still in the composer. Please try again.');
+    return;
+  }
+
+  _pendingAttachments = [];
+  state.editingPostId = null;
 
   // Push notification for new required-reading posts and notices (best-effort,
   // fire-and-forget). Targets the same audience the post is visible to.
@@ -9747,7 +9848,7 @@ async function saveSchoolDetails() {
     state.customSchools[schoolId].activeDays = details.activeDays;
   }
 
-  await saveCustomSchools();
+  await saveCustomSchools(schoolId);
   closeModal('modalSchoolEditor');
   renderSchoolManager();
   // Update school pill if editing current school
@@ -9763,7 +9864,7 @@ async function deleteSchool(schoolId) {
   const idx = KRMAS_SCHOOLS.findIndex(s => s.id === schoolId);
   if (idx !== -1) KRMAS_SCHOOLS.splice(idx, 1);
   delete state.customSchools[schoolId];
-  await saveCustomSchools();
+  await saveCustomSchools(schoolId);
   closeModal('modalSchoolEditor');
   renderSchoolManager();
   if (schoolId === state.schoolId && KRMAS_SCHOOLS.length > 0) {
@@ -9887,7 +9988,7 @@ async function saveScheduleSlot() {
     }
   }
 
-  await saveCustomSchools();
+  await saveCustomSchools(schoolId);
   closeModal('modalSlotEditor');
   renderScheduleEditor();
 }
@@ -9913,7 +10014,7 @@ async function removeScheduleSlot(dow, idx) {
     if (realIdx !== -1) schedule.splice(realIdx, 1);
   }
 
-  await saveCustomSchools();
+  await saveCustomSchools(schoolId);
   renderScheduleEditor();
 }
 

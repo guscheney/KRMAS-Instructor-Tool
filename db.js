@@ -152,7 +152,7 @@ const DB = (() => {
 
   async function sbGet(schoolId, key) {
     const sb = sbClient();
-    if (!sb) return null;
+    if (!sb) return lGet(schoolId + ':' + key);
     try {
       const { data, error } = await sb
         .from('kv_store')
@@ -161,11 +161,48 @@ const DB = (() => {
         .eq('key', key)
         .maybeSingle();
       if (error) throw error;
-      return data?.value ?? null;
+      const val = data?.value ?? null;
+      // Read-through cache for offline resilience. School structure especially used to
+      // be bundled in data.js (always available offline); now it loads from the DB, so
+      // cache it locally on first read so going offline after login still works.
+      if (val !== null && (key === 'school-seed' || key === 'custom-schools')) lSet(schoolId + ':' + key, val);
+      return val;
     } catch (e) {
       console.warn('[DB] sbGet fallback:', key, e.message);
       return lGet(schoolId + ':' + key);
     }
+  }
+
+  // Batch-load per-school structure: the bootstrap 'school-seed' + the 'custom-schools'
+  // overlay, for the given schools ONLY (replaces the old single global blob so a user
+  // pulls just their own school(s)). Each row is cached locally for offline use.
+  async function loadSchoolStructures(ids) {
+    const seeds = {}, customs = {};
+    if (!Array.isArray(ids) || !ids.length) return { seeds, customs };
+    const sb = sbClient();
+    if (isSB() && sb) {
+      try {
+        const { data, error } = await sb
+          .from('kv_store')
+          .select('school_id,key,value')
+          .in('school_id', ids)
+          .in('key', ['school-seed', 'custom-schools']);
+        if (error) throw error;
+        for (const row of (data || [])) {
+          if (row.key === 'school-seed')        { seeds[row.school_id]   = row.value; lSet(row.school_id + ':school-seed', row.value); }
+          else if (row.key === 'custom-schools'){ customs[row.school_id] = row.value; lSet(row.school_id + ':custom-schools', row.value); }
+        }
+        return { seeds, customs };
+      } catch (e) {
+        console.warn('[DB] loadSchoolStructures fallback:', e.message);
+      }
+    }
+    // Offline / pure-local: use whatever was cached on a previous online load.
+    for (const id of ids) {
+      const s = await lGet(id + ':school-seed');    if (s) seeds[id]   = s;
+      const c = await lGet(id + ':custom-schools'); if (c) customs[id] = c;
+    }
+    return { seeds, customs };
   }
 
   async function sbSet(schoolId, key, value) {
@@ -386,7 +423,7 @@ const DB = (() => {
       return true;
     } catch (e) {
       console.warn('[DB] saveFeedPost failed:', e.message);
-      return false;
+      return { error: e.message || 'save failed' };
     }
   }
 
@@ -1132,7 +1169,6 @@ const DB = (() => {
       ['pathways:' + schoolId,       'pathways',       schoolId],
       ['pin-overrides:' + schoolId,  'pin-overrides',  schoolId],
       ['grading:' + schoolId,        'grading',        schoolId],
-      ['custom-schools:global',      'custom-schools', 'global'],
     ];
     let migrated = 0;
     for (const [localKey, namespace, sid] of keys) {
@@ -1200,8 +1236,8 @@ const DB = (() => {
         if (error) { console.warn('[DB] users.list:', error.message); return []; }
         return data || [];
       },
-      invite: (email, role, schoolId, name) => invokeFn('manage-users', { action: 'invite', email, role, school_id: schoolId, name }),
-      setRole: (uid, role, schoolId) => invokeFn('manage-users', { action: 'setRole', uid, role, school_id: schoolId }),
+      invite: (email, role, schoolId, name, schools) => invokeFn('manage-users', { action: 'invite', email, role, school_id: schoolId, name, schools }),
+      setRole: (uid, role, schoolId, schools) => invokeFn('manage-users', { action: 'setRole', uid, role, school_id: schoolId, schools }),
       remove: (uid) => invokeFn('manage-users', { action: 'remove', uid }),
       resetPassword: (uid) => invokeFn('manage-users', { action: 'resetPassword', uid }),
     },
@@ -1238,8 +1274,9 @@ const DB = (() => {
     flushQueue, pendingCount,
 
     // Global / device-local
-    loadCustomSchools: () => get('custom-schools:global'),
-    saveCustomSchools: (d) => set('custom-schools:global', d),
+    // Per-school structure (school-seed bootstrap + custom-schools overlay), RLS-isolated
+    loadSchoolStructures: (ids) => loadSchoolStructures(ids),
+    saveSchoolCustom: (schoolId, data) => set('custom-schools:' + schoolId, data),
     loadUser:  () => lGet('roster-user:session'),   // always local — device session
     saveUser:  (d) => lSet('roster-user:session', d),
 
