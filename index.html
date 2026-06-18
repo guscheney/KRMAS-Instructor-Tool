@@ -120,7 +120,9 @@
     margin-left: auto; flex-shrink: 0;
     font-family: 'Oswald', sans-serif; font-size: 11px; font-weight: 700;
     color: var(--grey-300); letter-spacing: 0.08em; text-transform: uppercase;
+    display: flex; flex-direction: column; align-items: flex-end; line-height: 1.2; text-align: right;
   }
+  .week-meta .month { color: var(--grey-200); white-space: nowrap; }
   .week-meta .num { color: var(--red); }
 
   main { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 14px 16px 16px; }
@@ -948,7 +950,7 @@
       <button class="week-nav" onclick="changeWeek(-1)" aria-label="Previous week">‹</button>
       <div id="dayTabs" style="display: flex; gap: 4px;"></div>
       <button class="week-nav" onclick="changeWeek(1)" aria-label="Next week">›</button>
-      <div class="week-meta">WK <span class="num" id="weekMeta">11</span></div>
+      <div class="week-meta"><span class="month" id="monthMeta"></span><span class="wk">WK <span class="num" id="weekMeta">11</span></span></div>
       <button class="week-nav" onclick="toggleSearch()" aria-label="Search" title="Search classes">⌕</button>
       <button class="week-nav" id="acctBtn" onclick="acctButtonTap()" aria-label="Account" title="Account" style="display:none;">⏻</button>
     </div>
@@ -2760,7 +2762,7 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '65';
+  window.KRMAS_APP_VERSION = '66';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';

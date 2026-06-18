@@ -4,6 +4,7 @@
 
 const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 const DAY_SHORT = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const ACTIVE_DAYS = [1, 2, 3, 4, 6]; // Edgeworth default; overridden by getActiveDays()
 
 function getActiveDays() {
@@ -954,9 +955,12 @@ function renderDayTabs() {
   const tabs = document.getElementById('dayTabs');
   const today = new Date();
   let html = '';
+  let firstDate = null, lastDate = null;
   for (const dow of getActiveDays()) {
     const idx = dow === 0 ? 6 : dow - 1;
     const date = addDays(state.currentDate, idx);
+    if (!firstDate || date < firstDate) firstDate = date;
+    if (!lastDate  || date > lastDate)  lastDate  = date;
     const isActive = state.selectedDay === dow;
     const isToday = isSameDay(date, today);
     html += `<button class="day-tab ${isActive ? 'active' : ''} ${isToday ? 'today' : ''}" onclick="selectDay(${dow})">
@@ -965,6 +969,18 @@ function renderDayTabs() {
     </button>`;
   }
   tabs.innerHTML = html;
+  const mEl = document.getElementById('monthMeta');
+  if (mEl) mEl.textContent = firstDate ? monthSpanLabel(firstDate, lastDate) : '';
+}
+
+// Compact label for the month(s) the visible week falls in, e.g. "Jun 2026",
+// "Jun–Jul 2026" when the week straddles two months, or "Dec 2026–Jan 2027".
+function monthSpanLabel(d1, d2) {
+  const m1 = d1.getMonth(), y1 = d1.getFullYear();
+  const m2 = d2.getMonth(), y2 = d2.getFullYear();
+  if (m1 === m2 && y1 === y2) return `${MONTH_SHORT[m1]} ${y1}`;
+  if (y1 === y2)             return `${MONTH_SHORT[m1]}\u2013${MONTH_SHORT[m2]} ${y1}`;
+  return `${MONTH_SHORT[m1]} ${y1}\u2013${MONTH_SHORT[m2]} ${y2}`;
 }
 
 function renderWeekMeta() {
