@@ -626,6 +626,7 @@ function rosterForDay(date) {
       key, dateKey,
       day: c.day, start: c.start, end: c.end, type: effectiveType,
       label: c.label || null,
+      areaId: c.areaId || null,
       meta,
       lead:    resolveRosterRole(override.lead    !== undefined ? override.lead    : def.lead,    wk),
       assist:  resolveRosterRole(override.assist  !== undefined ? override.assist  : def.assist,  wk),
@@ -773,6 +774,7 @@ function renderDay() {
             <div class="card-title">
               <span>${c.meta.name}</span>
               ${c.topicNum ? `<span class="topic-num">#${c.topicNum}</span>` : ''}
+              ${slotAreaBadge(c.areaId)}
               ${badges}
             </div>
             ${c.topicContent ? `<div class="card-topic">${escapeHtml(c.topicContent.title)}</div>` : ''}
@@ -1214,6 +1216,7 @@ async function renderMe() {
         </div>
         <div style="font-family:'JetBrains Mono',monospace;font-size:12px;">${u.c.start}</div>
         <div style="font-weight:700;">${u.c.meta.name}</div>
+        ${slotAreaBadge(u.c.areaId)}
         <div style="margin-left:auto;font-size:11px;color:var(--red);font-weight:700;">Roster ›</div>
       </div>
       <div style="font-size:12px;color:var(--grey-500);margin-top:4px;font-family:'Oswald',sans-serif;text-transform:uppercase;letter-spacing:.06em;font-weight:600;">${u.role}</div>
@@ -10666,6 +10669,7 @@ function renderScheduleEditor() {
   }
 
   let html = `<div style="font-size:12px;color:var(--grey-500);margin-bottom:10px;">${escapeHtml(school?.name || schoolId)} · ${schedule.length} classes</div>`;
+  html += `<button class="btn btn-sm" onclick="openAreasEditor('${schoolId}')" style="margin-bottom:10px;">\ud83d\udccd Training areas${schoolAreas(schoolId).length ? ' (' + schoolAreas(schoolId).length + ')' : ''}</button>`;
 
   for (const dow of [0,1,2,3,4,5,6]) {
     const classes = (byDay[dow] || []).sort((a,b) => a.start.localeCompare(b.start));
@@ -10684,6 +10688,7 @@ function renderScheduleEditor() {
         <span style="width:10px;height:10px;border-radius:3px;background:var(${meta?.colour || '--grey-300'});flex-shrink:0;"></span>
         <span style="font-family:'JetBrains Mono',monospace;font-size:12px;flex-shrink:0;">${c.start}-${c.end}</span>
         <span style="flex:1;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(c.label || meta?.name || c.type)}</span>
+        ${slotAreaBadge(c.areaId, schoolId)}
         <button class="btn btn-sm" onclick="editScheduleSlot(${dow},${i})" style="padding:3px 8px;font-size:11px;">Edit</button>
         <button onclick="removeScheduleSlot(${dow},${i})" style="background:none;border:none;cursor:pointer;font-size:14px;color:var(--grey-400);">×</button>
       </div>`;
@@ -10711,6 +10716,7 @@ function addScheduleSlot(dow) {
   document.getElementById('slotEdEnd').value = '17:00';
   document.getElementById('slotEdLabel').value = '';
   populateClassTypeSelect('slotEdType', 'karate');
+  populateSlotAreaSelect(state._editingScheduleSchool, '');
   openModal('modalSlotEditor');
 }
 
@@ -10729,6 +10735,7 @@ function editScheduleSlot(dow, idx) {
   document.getElementById('slotEdEnd').value = c.end;
   document.getElementById('slotEdLabel').value = c.label || '';
   populateClassTypeSelect('slotEdType', c.type);
+  populateSlotAreaSelect(state._editingScheduleSchool, c.areaId || '');
   openModal('modalSlotEditor');
 }
 
@@ -10742,6 +10749,7 @@ async function saveScheduleSlot() {
   const end = document.getElementById('slotEdEnd').value;
   const label = document.getElementById('slotEdLabel').value.trim();
   const type = document.getElementById('slotEdType').value;
+  const areaId = document.getElementById('slotEdArea')?.value || null;
   if (!start || !end) { alert('Set start and end times.'); return; }
 
   // Ensure customSchools overlay exists
@@ -10755,7 +10763,7 @@ async function saveScheduleSlot() {
   }
   const schedule = state.customSchools[schoolId].schedule;
 
-  const slot = { day: dow, start, end, type, label: label || null };
+  const slot = { day: dow, start, end, type, label: label || null, areaId: areaId || null };
 
   if (idx === -1) {
     // Add new
@@ -10798,6 +10806,171 @@ async function removeScheduleSlot(dow, idx) {
 
   await saveCustomSchools(schoolId);
   renderScheduleEditor();
+}
+
+// ====================================================================
+// Training areas — per-school mats/spaces (Mat 1, Mat 2, …).
+// Stored on the per-school structure (state.customSchools[sid].areas) so they
+// inherit the existing per-school kv RLS — admins manage their own school,
+// superadmins any. A class slot carries `areaId`; the picker + roster badge
+// only appear once a school has 2+ areas (single-space schools see nothing).
+// ====================================================================
+
+// The areas array for a school (empty for schools that haven't defined any).
+function schoolAreas(schoolId) {
+  const sid = schoolId || state.schoolId;
+  const custom = state.customSchools[sid];
+  const seed = (typeof SCHOOL_DATA_SEED !== 'undefined' && SCHOOL_DATA_SEED[sid]) || null;
+  const a = (custom && custom.areas) || (seed && seed.areas) || [];
+  return Array.isArray(a) ? a : [];
+}
+
+// Display name for an areaId at a school ('' if none/unknown).
+function areaName(schoolId, areaId) {
+  if (!areaId) return '';
+  const a = schoolAreas(schoolId).find(x => x.id === areaId);
+  return a ? a.name : '';
+}
+
+// Stable, rename-safe id (renaming changes the name only; slots keep referencing this).
+function newAreaId() {
+  return 'AREA-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 5).toUpperCase();
+}
+
+// How many class slots at a school reference an area id.
+function areaInUse(sid, id) {
+  const overlay = state.customSchools[sid];
+  const sched = (overlay && overlay.schedule) || [];
+  let n = 0; for (const c of sched) if (c.areaId === id) n++;
+  return n;
+}
+
+// Ensure a writable per-school overlay exists, with an areas array.
+function ensureSchoolOverlay(sid) {
+  if (!state.customSchools[sid]) {
+    const seed = (typeof SCHOOL_DATA_SEED !== 'undefined' && SCHOOL_DATA_SEED[sid]) || {};
+    state.customSchools[sid] = {
+      instructors: JSON.parse(JSON.stringify(seed.instructors || [])),
+      schedule: JSON.parse(JSON.stringify(seed.schedule || [])),
+      defaults: {}, contact: seed.contact || {},
+    };
+  }
+  if (!Array.isArray(state.customSchools[sid].areas)) state.customSchools[sid].areas = [];
+  return state.customSchools[sid];
+}
+
+// A small neutral chip shown on the roster/personal cards. Hidden unless the
+// school has 2+ areas AND the slot is assigned — so simple schools never see it.
+function slotAreaBadge(areaId, schoolId) {
+  if (!areaId) return '';
+  const areas = schoolAreas(schoolId || state.schoolId);
+  if (areas.length < 2) return '';
+  const a = areas.find(x => x.id === areaId);
+  if (!a) return '';
+  return `<span class="badge" style="background:var(--off-white);color:var(--grey-500);border:1px solid var(--grey-200);">${escapeHtml(a.name)}</span>`;
+}
+
+function openAreasEditor(schoolId) {
+  if (!requireRole('admin')) return;
+  const sid = schoolId || state._editingScheduleSchool || state.schoolId;
+  if (!can.switchAnySchool() && sid !== state.schoolId) { alert('You can only edit your own school\u2019s training areas.'); return; }
+  state._editingAreasSchool = sid;
+  renderAreasEditor();
+  openModal('modalAreasEditor');
+}
+
+function renderAreasEditor() {
+  const body = document.getElementById('areasEditorBody');
+  if (!body) return;
+  const sid = state._editingAreasSchool;
+  const school = KRMAS_SCHOOLS.find(s => s.id === sid);
+  const areas = schoolAreas(sid);
+
+  let html = `<div style="font-size:12px;color:var(--grey-500);margin-bottom:10px;line-height:1.5;">
+    Training areas are the mats / spaces at ${escapeHtml(school?.name || sid)} — e.g. Mat 1, Mat 2, Main Hall.
+    Add two or more, then each class in the timetable can be assigned to one and it shows on the roster.
+    A school with a single space doesn't need any.</div>`;
+
+  if (areas.length === 0) {
+    html += `<div style="font-size:13px;color:var(--grey-400);padding:6px 0;">No training areas yet.</div>`;
+  }
+
+  html += areas.map(a => {
+    const id = escapeHtml(a.id);
+    const n = areaInUse(sid, a.id);
+    return `<div style="display:flex;align-items:center;gap:6px;padding:8px 0;border-bottom:1px solid var(--grey-100);">
+      <input id="arName-${id}" value="${escapeHtml(a.name)}" placeholder="Name" style="flex:1;min-width:0;padding:6px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;">
+      ${n ? `<span style="font-size:10px;color:var(--grey-400);white-space:nowrap;">${n} class${n === 1 ? '' : 'es'}</span>` : ''}
+      <button class="btn btn-sm" onclick="saveAreaEdit('${id}')" style="padding:4px 10px;font-size:11px;">Save</button>
+      <button onclick="deleteArea('${id}')" title="Delete" style="background:none;border:none;cursor:pointer;font-size:16px;color:var(--red);padding:0 4px;">\u00d7</button>
+    </div>`;
+  }).join('');
+
+  html += `<div style="margin-top:14px;padding-top:12px;border-top:2px solid var(--grey-200);">
+    <div class="section-sub" style="margin-bottom:6px;">Add a training area</div>
+    <div style="display:flex;gap:6px;">
+      <input id="arNewName" placeholder="e.g. Mat 2" style="flex:1;min-width:0;padding:7px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;">
+      <button class="btn btn-primary btn-sm" onclick="addArea()" style="padding:7px 14px;">Add</button>
+    </div>
+  </div>`;
+
+  body.innerHTML = html;
+}
+
+async function addArea() {
+  if (blockedByImpersonation()) return;
+  const sid = state._editingAreasSchool;
+  if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
+  const name = (document.getElementById('arNewName')?.value || '').trim();
+  if (!name) { alert('Give the area a name.'); return; }
+  const overlay = ensureSchoolOverlay(sid);
+  overlay.areas.push({ id: newAreaId(), name });
+  await saveCustomSchools(sid);
+  renderAreasEditor();
+}
+
+async function saveAreaEdit(id) {
+  if (blockedByImpersonation()) return;
+  const sid = state._editingAreasSchool;
+  if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
+  const name = (document.getElementById('arName-' + id)?.value || '').trim();
+  if (!name) { alert('Name cannot be empty.'); return; }
+  const overlay = ensureSchoolOverlay(sid);
+  const a = overlay.areas.find(x => x.id === id);
+  if (!a) return;
+  a.name = name;
+  await saveCustomSchools(sid);
+  renderAreasEditor();
+  if (state.view === 'roster') renderDay();
+}
+
+async function deleteArea(id) {
+  if (blockedByImpersonation()) return;
+  const sid = state._editingAreasSchool;
+  if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
+  const a = schoolAreas(sid).find(x => x.id === id);
+  const n = areaInUse(sid, id);
+  const warn = n ? `\n\n${n} class${n === 1 ? '' : 'es'} assigned to this area will become unassigned.` : '';
+  if (!confirm(`Delete training area "${a ? a.name : id}"?${warn}`)) return;
+  const overlay = ensureSchoolOverlay(sid);
+  overlay.areas = overlay.areas.filter(x => x.id !== id);
+  for (const slot of (overlay.schedule || [])) if (slot.areaId === id) slot.areaId = null;
+  await saveCustomSchools(sid);
+  renderAreasEditor();
+  if (state.view === 'roster') renderDay();
+}
+
+// Populate (and show/hide) the slot editor's area picker. Hidden unless 2+ areas.
+function populateSlotAreaSelect(schoolId, selectedId) {
+  const row = document.getElementById('slotEdAreaRow');
+  const sel = document.getElementById('slotEdArea');
+  if (!row || !sel) return;
+  const areas = schoolAreas(schoolId);
+  if (areas.length < 2) { row.style.display = 'none'; sel.innerHTML = ''; return; }
+  row.style.display = '';
+  sel.innerHTML = `<option value="">\u2014 Unassigned \u2014</option>` +
+    areas.map(a => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name)}</option>`).join('');
+  sel.value = selectedId || '';
 }
 
 // ====================================================================

@@ -14,23 +14,26 @@
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Open+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {
+    /* Brand palette — aligned to krmas.com.au (KRMAS red + cool neutrals). */
     --black: #010101;
     --black-2: #1a1a1a;
     --black-3: #2a2a2a;
-    --red: #d03428;
-    --red-2: #b02a20;
-    --red-3: #8f2017;
-    --red-soft: #fbe9e6;
+    --red: #d22c12;        /* KRMAS brand primary */
+    --red-2: #b3250f;      /* darker — hover/active */
+    --red-3: #931e0c;      /* darkest */
+    --red-soft: #fbe8e4;   /* light red tint (backgrounds) */
     --white: #ffffff;
-    --off-white: #f5f5f3;
-    --grey-100: #ececea;
-    --grey-200: #d8d6d2;
-    --grey-300: #a8a6a2;
-    --grey-400: #6e6c68;
-    --grey-500: #4a4845;
+    --off-white: #f5f5f4;
+    --grey-100: #e6e7e8;   /* brand gray-light */
+    --grey-200: #d3d5d8;
+    --grey-300: #a7abb0;
+    --grey-400: #69727d;   /* brand gray */
+    --grey-500: #3f444b;   /* brand gray-dark */
     --gold: #c9a14a;
     --ok: #2d7a4a;
     --warn: #d48a1a;
+    --blue: #62a3db;       /* brand accent blue */
+    --blue-light: #6ec1e4;
 
     --c-mln: #4a8fbf;
     --c-ln:  #2c6a9b;
@@ -2369,10 +2372,24 @@
       <label>Custom label (optional — overrides type name)</label>
       <input type="text" id="slotEdLabel" placeholder="e.g. Little Ninjas Karate 5-12yrs">
     </div>
+    <div class="form-row compact" id="slotEdAreaRow" style="display:none;">
+      <label>Training area</label>
+      <select id="slotEdArea"></select>
+    </div>
     <div class="detail-actions">
       <button class="btn btn-primary" onclick="saveScheduleSlot()" style="flex:1;">Save</button>
       <button class="btn" onclick="closeModal('modalSlotEditor')">Cancel</button>
     </div>
+  </div>
+</div>
+
+<!-- ===== Modal: Training areas (admin / superadmin) ===== -->
+<div class="modal-bg" id="modalAreasEditor">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2>📍 Training areas</h2>
+    <div id="areasEditorBody" style="max-height:62vh;overflow-y:auto;"></div>
+    <button class="btn btn-ghost" style="width:100%;margin-top:12px;" onclick="closeModal('modalAreasEditor')">Done</button>
   </div>
 </div>
 
@@ -2719,7 +2736,7 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '63';
+  window.KRMAS_APP_VERSION = '64';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
