@@ -9636,13 +9636,68 @@ function downloadDocument(docId) {
   document.body.removeChild(link);
 }
 
+// Mobile browsers (iOS Safari especially) won't render a PDF inside an iframe, so on
+// mobile we hand PDFs to the device's native viewer / a new tab instead. Images still
+// preview inline everywhere; desktop keeps the inline iframe preview that works well.
+let _pdfViewerObjectUrl = null;
+
+function isMobileDevice() {
+  try {
+    if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches && !window.matchMedia('(pointer: fine)').matches) return true;
+  } catch (e) {}
+  return /Android|iPhone|iPad|iPod|Mobile|Silk|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent || '');
+}
+
+// Turn a base64/encoded data: URL into a Blob object URL (more robust than a giant
+// data: URL, and required for a new-tab open on mobile).
+function dataUrlToBlobUrl(dataUrl) {
+  try {
+    const m = /^data:([^;,]+)?(;base64)?,([\s\S]*)$/.exec(dataUrl || '');
+    if (!m) return null;
+    const mime = m[1] || 'application/octet-stream';
+    const data = m[3] || '';
+    let bytes;
+    if (m[2]) { // base64
+      const bin = atob(data);
+      bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    } else {
+      bytes = new TextEncoder().encode(decodeURIComponent(data));
+    }
+    return URL.createObjectURL(new Blob([bytes], { type: mime }));
+  } catch (e) { return null; }
+}
+
+function closePdfViewer() {
+  const f = document.getElementById('pdfViewerFrame'); if (f) f.src = 'about:blank';
+  if (_pdfViewerObjectUrl) { try { URL.revokeObjectURL(_pdfViewerObjectUrl); } catch (e) {} _pdfViewerObjectUrl = null; }
+  closeModal('modalPdfViewer');
+}
+
 function viewDocument(docId) {
   const doc = findDocById(docId);
   if (!doc || !doc.fileData) { alert('Document data not available.'); return; }
+  const isPdf = /^data:application\/pdf/i.test(doc.fileData) || /\.pdf$/i.test(doc.filename || '');
+
+  // Release any previous preview blob before making a new one.
+  if (_pdfViewerObjectUrl) { try { URL.revokeObjectURL(_pdfViewerObjectUrl); } catch (e) {} _pdfViewerObjectUrl = null; }
+  const blobUrl = dataUrlToBlobUrl(doc.fileData);
+
+  // Mobile + PDF: an iframe would be blank, so open it in a new tab / native viewer.
+  // This runs inside the user's tap, so mobile browsers allow the window.open.
+  if (isPdf && isMobileDevice()) {
+    const w = window.open(blobUrl || doc.fileData, '_blank');
+    if (!w) { downloadDocument(docId); return; }                 // popup blocked → save instead
+    if (blobUrl) setTimeout(() => { try { URL.revokeObjectURL(blobUrl); } catch (e) {} }, 60000);
+    return;
+  }
+
+  // Desktop, or an image on any device: inline preview in the modal.
+  _pdfViewerObjectUrl = blobUrl;
   document.getElementById('pdfViewerTitle').textContent = doc.title || doc.filename;
-  document.getElementById('pdfViewerFrame').src = doc.fileData; // browsers render image/* and PDFs inline
-  const dlBtn = document.getElementById('pdfDownloadBtn');
-  dlBtn.onclick = () => downloadDocument(docId);
+  document.getElementById('pdfViewerFrame').src = blobUrl || doc.fileData; // browsers render image/* and PDFs inline
+  const dlBtn = document.getElementById('pdfDownloadBtn'); if (dlBtn) dlBtn.onclick = () => downloadDocument(docId);
+  const opBtn = document.getElementById('pdfOpenBtn'); if (opBtn) opBtn.onclick = () => { window.open(_pdfViewerObjectUrl || doc.fileData, '_blank'); };
   openModal('modalPdfViewer');
 }
 
