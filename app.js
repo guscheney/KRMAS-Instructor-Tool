@@ -605,11 +605,13 @@ function classForDateKey(dateKey) {
 }
 
 function rosterForDay(date) {
+  if (closureForDate(date)) return []; // school shut (public holiday / shutdown period)
   const dow = date.getDay();
   const schedule = currentSchedule();
   const defaults = currentDefaults();
-  const classes = schedule.filter(c => c.day === dow);
-  return classes.map(c => {
+  const ovr = dayOverrideFor(date);
+  const classes = (ovr && ovr.replaceNormal) ? [] : schedule.filter(c => c.day === dow);
+  const normalObjs = classes.map(c => {
     // Apply admin class-type override if one exists for this label
     const effectiveType = (c.label && state.classTypeOverrides[c.label]) || c.type;
     const key = `${c.day}-${c.start}-${effectiveType}`;
@@ -638,6 +640,313 @@ function rosterForDay(date) {
       gradingPrep: isGradingPrepClass(c, date)
     };
   }).filter(Boolean);
+  // Inject ad-hoc / grading classes for this date (special days, grading days).
+  const ovrObjs = (ovr && Array.isArray(ovr.slots)) ? ovr.slots.map(s => buildOverrideClass(s, date, ovr)).filter(Boolean) : [];
+  if (!ovrObjs.length) return normalObjs;
+  return [...normalObjs, ...ovrObjs].sort((a, b) => a.start.localeCompare(b.start));
+}
+
+// ====================================================================
+// Roster overrides — per-school, per-date exceptions to the recurring timetable.
+// Stored on the per-school structure (customSchools[sid]) so they inherit the same
+// admin-write / instructor-read RLS as the schedule and areas — no schema change.
+//   • closures: [{id, from, to, label}]  — school shut (single day: from===to, or a range)
+//   • overrides: { iso: {kind:'special'|'grading', label, replaceNormal, slots:[…], gradingId} }
+// Ad-hoc/grading classes are real classes (time/type/area/team); each carries a unique
+// dateKey ("<iso>-OVR-<slotId>") so the existing tap-to-assign flow staffs it unchanged.
+// ====================================================================
+
+function schoolClosures(sid) {
+  const s = sid || state.schoolId;
+  const c = state.customSchools[s] && state.customSchools[s].closures;
+  return Array.isArray(c) ? c : [];
+}
+function schoolDayOverrides(sid) {
+  const s = sid || state.schoolId;
+  const o = state.customSchools[s] && state.customSchools[s].overrides;
+  return (o && typeof o === 'object') ? o : {};
+}
+function closureForDate(date, sid) {
+  const iso = isoDate(date);
+  return schoolClosures(sid).find(c => c && iso >= c.from && iso <= c.to) || null; // ISO strings compare lexicographically
+}
+function dayOverrideFor(date, sid) {
+  return schoolDayOverrides(sid)[isoDate(date)] || null;
+}
+function newOvrId(p) { return (p || 'OVR') + '-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 5).toUpperCase(); }
+function fmtIsoNice(iso) { try { return formatDate(new Date(iso + 'T00:00:00')); } catch (e) { return iso; } }
+
+// Ensure the per-school overlay has the override stores.
+function ensureOverrideStores(sid) {
+  const o = ensureSchoolOverlay(sid); // reuses the areas overlay-creator
+  if (!Array.isArray(o.closures)) o.closures = [];
+  if (!o.overrides || typeof o.overrides !== 'object') o.overrides = {};
+  return o;
+}
+
+// Turn an override slot into a full roster class (same shape as a normal class, so
+// renderDay / the Me view / hours / the assignment editor all work on it unchanged).
+function buildOverrideClass(s, date, ovr) {
+  if (!s || !s.type) return null;
+  const meta = CLASS_TYPES[s.type];
+  if (!meta) return null;
+  const dateKey = `${isoDate(date)}-OVR-${s.id}`;
+  const e = state.edits[dateKey] || {};
+  const wk = getWeekNumber(startOfWeek(date));
+  return {
+    key: dateKey, dateKey,
+    day: date.getDay(), start: s.start, end: s.end, type: s.type,
+    label: s.label || null,
+    areaId: s.areaId || null,
+    meta,
+    lead:   resolveRosterRole(e.lead   !== undefined ? e.lead   : null, wk),
+    assist: resolveRosterRole(e.assist !== undefined ? e.assist : null, wk),
+    junior: resolveRosterRole(e.junior !== undefined ? e.junior : null, wk),
+    backup: resolveRosterRole(e.backup !== undefined ? e.backup : null, wk),
+    status: e.status || 'confirmed',
+    topicNum: null, topicContent: null,
+    plan: state.plans[dateKey] || null,
+    gradingPrep: false,
+    isOverride: true,
+    overrideKind: ovr ? ovr.kind : 'special',
+  };
+}
+
+function findGradingSessionForDate(iso) {
+  const g = state.grading || {};
+  for (const k in g) { if (g[k] && g[k].date === iso) return g[k].id || k; }
+  return null;
+}
+
+// ---------- Closures admin (single days + shutdown ranges) ----------
+function openClosuresAdmin() {
+  if (!requireRole('admin')) return;
+  state._closuresSchool = can.switchAnySchool() ? (state._closuresSchool || state.schoolId) : state.schoolId;
+  renderClosuresAdmin();
+  openModal('modalClosures');
+}
+function renderClosuresAdmin() {
+  const body = document.getElementById('closuresBody'); if (!body) return;
+  const sid = state._closuresSchool || state.schoolId;
+  const list = schoolClosures(sid).slice().sort((a, b) => a.from.localeCompare(b.from));
+  let html = `<div style="font-size:12px;color:var(--grey-500);margin-bottom:10px;line-height:1.5;">Dates the school is closed — a single public holiday (same start and end date) or a shutdown period (a range). Closed days show a "Closed" banner on the roster and run no classes.</div>`;
+  html += (list.map(c => {
+    const single = c.from === c.to;
+    return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--grey-100);">
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:600;font-size:13px;">${escapeHtml(c.label || 'Closed')}</div>
+        <div style="font-size:11px;color:var(--grey-400);">${single ? fmtIsoNice(c.from) : fmtIsoNice(c.from) + ' \u2192 ' + fmtIsoNice(c.to)}</div>
+      </div>
+      <button onclick="deleteClosure('${c.id}')" title="Delete" style="background:none;border:none;cursor:pointer;font-size:16px;color:var(--red);">\u00d7</button>
+    </div>`;
+  }).join('')) || `<div style="font-size:13px;color:var(--grey-400);padding:6px 0;">No closures yet.</div>`;
+  html += `<div style="margin-top:14px;padding-top:12px;border-top:2px solid var(--grey-200);">
+    <div class="section-sub" style="margin-bottom:6px;">Add a closure</div>
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <input id="clLabel" placeholder="Reason (e.g. Public Holiday, Christmas shutdown)" style="padding:7px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;">
+      <div style="display:flex;gap:6px;align-items:center;"><label style="font-size:11px;color:var(--grey-500);width:40px;">From</label><input type="date" id="clFrom" style="flex:1;padding:6px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;"></div>
+      <div style="display:flex;gap:6px;align-items:center;"><label style="font-size:11px;color:var(--grey-500);width:40px;">To</label><input type="date" id="clTo" style="flex:1;padding:6px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;"></div>
+      <div style="font-size:10px;color:var(--grey-400);">For a single day, leave "To" blank or set it the same as "From".</div>
+      <button class="btn btn-primary btn-sm" onclick="addClosure()">Add closure</button>
+    </div>
+  </div>`;
+  body.innerHTML = html;
+}
+async function addClosure() {
+  if (blockedByImpersonation()) return;
+  const sid = state._closuresSchool || state.schoolId;
+  if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
+  const label = (document.getElementById('clLabel')?.value || '').trim() || 'Closed';
+  const from = document.getElementById('clFrom')?.value || '';
+  let to = document.getElementById('clTo')?.value || '';
+  if (!from) { alert('Pick a start date.'); return; }
+  if (!to) to = from;
+  if (to < from) { alert('The end date is before the start date.'); return; }
+  const o = ensureOverrideStores(sid);
+  o.closures.push({ id: newOvrId('CLO'), from, to, label });
+  await saveCustomSchools(sid);
+  renderClosuresAdmin();
+  if (state.view === 'roster') renderDay();
+}
+async function deleteClosure(id) {
+  if (blockedByImpersonation()) return;
+  const sid = state._closuresSchool || state.schoolId;
+  if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
+  const o = ensureOverrideStores(sid);
+  o.closures = o.closures.filter(c => c.id !== id);
+  await saveCustomSchools(sid);
+  renderClosuresAdmin();
+  if (state.view === 'roster') renderDay();
+}
+
+// ---------- Per-day override (closed / special / grading), from the roster day ----------
+function rosterDisplayDate() {
+  const idx = state.selectedDay === 0 ? 6 : state.selectedDay - 1;
+  return addDays(state.currentDate, idx);
+}
+function openDayOverride() {
+  if (!requireRole('admin')) return;
+  if (!canEditSchool(state.schoolId)) { alert('You can only edit your own school.'); return; }
+  state._ovrDate = isoDate(rosterDisplayDate());
+  state._ovrDraft = null;
+  renderDayOverride();
+  openModal('modalDayOverride');
+}
+function defaultClassType() { return CLASS_TYPES['karate'] ? 'karate' : Object.keys(CLASS_TYPES)[0]; }
+
+function renderDayOverride() {
+  const body = document.getElementById('dayOverrideBody'); if (!body) return;
+  const iso = state._ovrDate;
+  const date = new Date(iso + 'T00:00:00');
+  const sid = state.schoolId;
+  const tEl = document.getElementById('dayOverrideTitle'); if (tEl) tEl.textContent = formatDate(date);
+  const closure = closureForDate(date, sid);
+
+  if (closure) {
+    body.innerHTML = `<div style="font-size:13px;color:var(--grey-500);margin-bottom:12px;line-height:1.5;">This day is part of a closure: <strong>${escapeHtml(closure.label || 'Closed')}</strong>${closure.from !== closure.to ? ' (' + fmtIsoNice(closure.from) + ' \u2192 ' + fmtIsoNice(closure.to) + ')' : ''}. No classes run.</div>
+      ${closure.from === closure.to
+        ? `<button class="btn" style="width:100%;" onclick="reopenSingleDay()">Reopen this day</button>`
+        : `<button class="btn" style="width:100%;" onclick="closeModal('modalDayOverride');openClosuresAdmin()">Manage in Closures \u2192</button>`}`;
+    return;
+  }
+
+  const draft = state._ovrDraft || dayOverrideFor(date, sid);
+  if (!draft) {
+    const dow = date.getDay();
+    const normalCount = currentSchedule().filter(c => c.day === dow).length;
+    body.innerHTML = `<div style="font-size:12px;color:var(--grey-500);margin-bottom:12px;line-height:1.5;">Make a one-off change to this day.</div>
+      <div style="display:grid;gap:8px;">
+        <button class="btn" onclick="markSingleDayClosed()">\ud83d\udeab Mark this day closed</button>
+        <button class="btn" onclick="startSpecialDay()">\u2728 Add special class(es)</button>
+        <button class="btn btn-primary" onclick="startGradingDay()">\ud83e\udd4b Make this a grading day${normalCount ? ' (' + normalCount + ' class' + (normalCount === 1 ? '' : 'es') + ')' : ''}</button>
+      </div>`;
+    return;
+  }
+  // Working draft (clone the saved override on first edit so Cancel discards changes).
+  if (!state._ovrDraft) {
+    state._ovrDraft = JSON.parse(JSON.stringify(draft));
+    if (!Array.isArray(state._ovrDraft.slots)) state._ovrDraft.slots = [];
+  }
+  const d = state._ovrDraft;
+  const isGrading = d.kind === 'grading';
+  const areas = schoolAreas(sid);
+  const ist = "padding:5px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;";
+
+  let html = `<div style="font-size:12px;color:var(--grey-500);margin-bottom:8px;line-height:1.5;">${isGrading ? '\ud83e\udd4b Grading day' : '\u2728 Special classes'} \u2014 define the classes, Save, then staff each one from the roster (tap the class \u2192 Edit roster).</div>`;
+  html += `<label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:10px;cursor:pointer;"><input type="checkbox" id="ovrReplace" ${d.replaceNormal ? 'checked' : ''} onchange="syncOvrDraftFromDOM()"> Replace the normal timetable for this day</label>`;
+  html += (d.slots || []).map(s => {
+    const typeSel = `<select id="os-type-${s.id}" style="${ist}flex:1;min-width:80px;">` + Object.entries(CLASS_TYPES).map(([k, m]) => `<option value="${k}" ${k === s.type ? 'selected' : ''}>${escapeHtml(m.name)}</option>`).join('') + `</select>`;
+    const areaSel = areas.length >= 2 ? `<select id="os-area-${s.id}" style="${ist}">` + `<option value="">\u2014 area \u2014</option>` + areas.map(a => `<option value="${a.id}" ${a.id === s.areaId ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('') + `</select>` : '';
+    return `<div style="display:flex;align-items:center;gap:4px;padding:6px 0;border-bottom:1px solid var(--grey-100);flex-wrap:wrap;">
+      <input type="time" id="os-start-${s.id}" value="${s.start || ''}" style="${ist}">
+      <input type="time" id="os-end-${s.id}" value="${s.end || ''}" style="${ist}">
+      ${typeSel}${areaSel}
+      <button onclick="removeOverrideSlot('${s.id}')" title="Remove" style="background:none;border:none;cursor:pointer;font-size:15px;color:var(--red);">\u00d7</button>
+    </div>`;
+  }).join('');
+  html += `<div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap;">
+    <button class="btn btn-sm" onclick="addOverrideSlot()">+ Add class</button>
+    ${isGrading ? `<button class="btn btn-sm" onclick="seedGradingFromClasses()">\u21bb Re-seed from normal classes</button>` : ''}
+  </div>`;
+  html += `<div style="display:flex;gap:6px;margin-top:14px;padding-top:12px;border-top:2px solid var(--grey-200);">
+    <button class="btn btn-primary" style="flex:1;" onclick="saveDayOverride()">Save</button>
+    <button class="btn" onclick="clearDayOverride()" style="color:var(--red);">Clear day</button>
+  </div>`;
+  body.innerHTML = html;
+}
+
+function syncOvrDraftFromDOM() {
+  const d = state._ovrDraft; if (!d || !Array.isArray(d.slots)) return;
+  for (const s of d.slots) {
+    const st = document.getElementById('os-start-' + s.id); if (st) s.start = st.value;
+    const en = document.getElementById('os-end-' + s.id); if (en) s.end = en.value;
+    const ty = document.getElementById('os-type-' + s.id); if (ty) s.type = ty.value;
+    const ar = document.getElementById('os-area-' + s.id); if (ar) s.areaId = ar.value || null;
+  }
+  const rep = document.getElementById('ovrReplace'); if (rep) d.replaceNormal = rep.checked;
+}
+function startSpecialDay() {
+  state._ovrDraft = { kind: 'special', label: 'Special', replaceNormal: false, slots: [], gradingId: null };
+  addOverrideSlot();
+}
+function startGradingDay() {
+  state._ovrDraft = { kind: 'grading', label: 'Grading', replaceNormal: true, slots: [], gradingId: findGradingSessionForDate(state._ovrDate) };
+  seedGradingFromClasses();
+}
+function seedGradingFromClasses() {
+  const d = state._ovrDraft; if (!d) return;
+  const date = new Date(state._ovrDate + 'T00:00:00');
+  const dow = date.getDay();
+  const normal = currentSchedule().filter(c => c.day === dow);
+  d.slots = normal.map(c => ({ id: newOvrId('GR'), start: c.start, end: c.end, type: c.type, label: c.label || null, areaId: c.areaId || null }));
+  if (!d.slots.length) d.slots = [{ id: newOvrId('GR'), start: '09:00', end: '12:00', type: defaultClassType(), label: null, areaId: null }];
+  renderDayOverride();
+}
+function addOverrideSlot() {
+  syncOvrDraftFromDOM();
+  const d = state._ovrDraft; if (!d) return;
+  d.slots.push({ id: newOvrId('OS'), start: '17:00', end: '18:00', type: defaultClassType(), label: null, areaId: null });
+  renderDayOverride();
+}
+function removeOverrideSlot(id) {
+  syncOvrDraftFromDOM();
+  const d = state._ovrDraft; if (!d) return;
+  d.slots = d.slots.filter(s => s.id !== id);
+  renderDayOverride();
+}
+async function saveDayOverride() {
+  if (blockedByImpersonation()) return;
+  const sid = state.schoolId;
+  if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
+  syncOvrDraftFromDOM();
+  const d = state._ovrDraft;
+  if (!d || !d.slots.length) { alert('Add at least one class, or use Clear day.'); return; }
+  for (const s of d.slots) {
+    if (!s.start || !s.end) { alert('Every class needs a start and end time.'); return; }
+    if (s.end <= s.start) { alert('A class ends at or before it starts \u2014 check the times.'); return; }
+  }
+  const o = ensureOverrideStores(sid);
+  o.overrides[state._ovrDate] = { kind: d.kind, label: d.label, replaceNormal: !!d.replaceNormal, slots: d.slots, gradingId: d.gradingId || null };
+  await saveCustomSchools(sid);
+  state._ovrDraft = null;
+  closeModal('modalDayOverride');
+  if (state.view === 'roster') renderDay();
+}
+async function clearDayOverride() {
+  if (blockedByImpersonation()) return;
+  const sid = state.schoolId;
+  if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
+  if (!confirm('Remove the special / grading setup for this day?')) return;
+  const o = ensureOverrideStores(sid);
+  delete o.overrides[state._ovrDate];
+  await saveCustomSchools(sid);
+  state._ovrDraft = null;
+  closeModal('modalDayOverride');
+  if (state.view === 'roster') renderDay();
+}
+async function markSingleDayClosed() {
+  if (blockedByImpersonation()) return;
+  const sid = state.schoolId;
+  if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
+  const iso = state._ovrDate;
+  const o = ensureOverrideStores(sid);
+  o.closures.push({ id: newOvrId('CLO'), from: iso, to: iso, label: 'Closed' });
+  delete o.overrides[iso]; // closed wins over any special/grading set for that day
+  await saveCustomSchools(sid);
+  state._ovrDraft = null;
+  closeModal('modalDayOverride');
+  if (state.view === 'roster') renderDay();
+}
+async function reopenSingleDay() {
+  if (blockedByImpersonation()) return;
+  const sid = state.schoolId;
+  if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
+  const iso = state._ovrDate;
+  const o = ensureOverrideStores(sid);
+  o.closures = o.closures.filter(c => !(c.from === iso && c.to === iso)); // only single-day closures here
+  await saveCustomSchools(sid);
+  closeModal('modalDayOverride');
+  if (state.view === 'roster') renderDay();
 }
 
 // ---------- Rendering: roster ----------
@@ -672,6 +981,16 @@ function renderDay() {
   const classes = rosterForDay(date);
   const main = document.getElementById('mainContent');
   if (classes.length === 0) {
+    const closure = closureForDate(date);
+    if (closure) {
+      const cName = KRMAS_SCHOOLS.find(s => s.id === state.schoolId)?.name || 'This school';
+      main.innerHTML = `<div class="empty">
+        <h2>\ud83d\udeab Closed${closure.label && closure.label !== 'Closed' ? ' \u2014 ' + escapeHtml(closure.label) : ''}</h2>
+        <p>${escapeHtml(cName)} is closed on this day${closure.from !== closure.to ? ` (${fmtIsoNice(closure.from)} \u2192 ${fmtIsoNice(closure.to)})` : ''}. No classes scheduled.</p>
+        ${can.editRoster() ? `<button class="btn" onclick="openDayOverride()">Manage this day</button>` : ''}
+      </div>`;
+      return;
+    }
     const activeDays = getActiveDays();
     const schoolName = KRMAS_SCHOOLS.find(s => s.id === state.schoolId)?.name || 'This school';
     const dayList = activeDays.map(d => DAY_NAMES[d]).join(', ');
@@ -681,6 +1000,7 @@ function renderDay() {
         ? `${escapeHtml(schoolName)} runs classes on <strong>${dayList}</strong>. Tap one of those days above to manage the roster and lesson plans.`
         : 'Tap another day to view the roster.'}</p>
       ${can.editRoster() && activeDays.length === 0 ? `<button class="btn btn-primary" onclick="openSchoolManager && openSchoolManager()">Set up the timetable</button>` : ''}
+      ${can.editRoster() ? `<button class="btn" onclick="openDayOverride()" style="margin-top:8px;">\u2699\ufe0f Override this day</button>` : ''}
     </div>`;
     return;
   }
@@ -747,7 +1067,9 @@ function renderDay() {
     </div>`;
   }
 
-  let html = briefingHtml + bannerHtml + '<div class="cards">';
+  let html = briefingHtml + bannerHtml;
+  if (can.editRoster()) html += `<div style="margin-bottom:10px;"><button class="btn btn-sm" onclick="openDayOverride()" style="width:100%;">\u2699\ufe0f Override this day (close / special / grading)</button></div>`;
+  html += '<div class="cards">';
   for (const c of classes) {
     const leadInstr = getInstructor(c.lead);
     const assistInstr = getInstructor(c.assist);
@@ -763,6 +1085,7 @@ function renderDay() {
     if (c.gradingPrep) badges += '<span class="badge badge-grading">Grading prep</span>';
     if (c.plan && c.plan.status === 'final') badges += '<span class="badge badge-plan">Planned</span>';
     if (c.plan && c.plan.status === 'draft') badges += '<span class="badge badge-draft">Draft</span>';
+    if (c.isOverride) badges += `<span class="badge" style="background:var(--gold);color:var(--black);">${c.overrideKind === 'grading' ? '\ud83e\udd4b Grading' : '\u2728 Special'}</span>`;
 
     html += `
     <div class="card${c.status === 'cancelled' ? ' cancelled-card' : ''}" id="card-${c.dateKey}">
@@ -9269,6 +9592,8 @@ function renderDocLibrary() {
         </div>
         <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;">
           <button class="btn btn-sm btn-primary" onclick="viewDocument('${doc.id}')">Open</button>
+          ${canEditDocument(doc) ? `<button class="btn btn-sm" onclick="openRenameDoc('${doc.id}')" style="font-size:11px;">Rename</button>` : ''}
+          ${canEditDocument(doc) ? `<button class="btn btn-sm" onclick="triggerReplaceDoc('${doc.id}')" style="font-size:11px;">Replace file</button>` : ''}
           ${isSuperAdmin ? `<button class="btn btn-sm" onclick="deleteDocConfirm('${doc.id}')" style="color:var(--red);font-size:11px;">Delete</button>` : ''}
         </div>
       </div>`;
@@ -9312,6 +9637,75 @@ async function deleteDocConfirm(docId) {
   state.documents = state.documents.filter(d => d.id !== docId);
   await DB.deleteDocument(docId, doc.schoolId);
   renderDocLibrary();
+}
+
+// Mirror of the docs_update RLS policy: network docs (no school) → superadmin only;
+// school/personal docs → documents/edit permission AND the user's own school (superadmin any).
+function canEditDocument(doc) {
+  if (!doc) return false;
+  if (doc.schoolId === null || doc.schoolId === undefined) return can.switchAnySchool(); // network
+  return hasPerm('documents', 'edit') && (can.switchAnySchool() || doc.schoolId === state.schoolId);
+}
+
+// Rename a document's title in place (the only field this touches).
+async function openRenameDoc(docId) {
+  if (typeof blockedByImpersonation === 'function' && blockedByImpersonation()) return;
+  const doc = findDocById(docId);
+  if (!doc) return;
+  if (!canEditDocument(doc)) { alert('You don\u2019t have permission to rename this document.'); return; }
+  const next = prompt('Rename document', doc.title || '');
+  if (next === null) return;                 // cancelled
+  const title = next.trim();
+  if (!title) { alert('Title cannot be empty.'); return; }
+  if (title === doc.title) return;           // no change
+  const ok = await DB.renameDocument(doc, title);
+  if (!ok) { alert('Could not rename the document \u2014 you may not have permission, or you\u2019re offline.'); return; }
+  doc.title = title;                         // findDocById returns the live object; update in place
+  // Re-render whichever surface is currently showing.
+  if (document.getElementById('docLibraryBody')) renderDocLibrary();
+  if (state.view === 'docs') renderDocuments();
+  if (typeof renderPersonalDocs === 'function' && document.getElementById('personalDocsBody')) renderPersonalDocs();
+}
+
+// Replace a document's file in place (overwrite — no version history kept).
+let _replaceDocId = null;
+
+function triggerReplaceDoc(docId) {
+  if (typeof blockedByImpersonation === 'function' && blockedByImpersonation()) return;
+  const doc = findDocById(docId);
+  if (!doc) return;
+  if (!canEditDocument(doc)) { alert('You don\u2019t have permission to replace this document.'); return; }
+  _replaceDocId = docId;
+  const inp = document.getElementById('docReplaceFile');
+  if (!inp) return;
+  inp.value = '';
+  inp.click();   // opens the OS file picker → handleReplaceDocFile fires on selection
+}
+
+async function handleReplaceDocFile(input) {
+  const file = input.files[0];
+  const docId = _replaceDocId; _replaceDocId = null;
+  input.value = '';
+  if (!file || !docId) return;
+  const doc = findDocById(docId);
+  if (!doc) return;
+  if (!canEditDocument(doc)) { alert('You don\u2019t have permission to replace this document.'); return; }
+  if (!isAllowedDocFile(file)) { alert('Only PDF or image files are accepted.'); return; }
+  if (file.size > MAX_DOC_SIZE) { alert('File too large. Maximum is ' + fmtBytes(MAX_DOC_SIZE) + '.'); return; }
+  if (!confirm(`Replace the file for "${doc.title}" with "${file.name}"?\n\nThe current file is overwritten and can't be recovered.`)) return;
+  try {
+    const dataUrl = await fileToDataUrl(file);
+    const fields = { fileData: dataUrl, filename: file.name, mimeType: file.type || 'application/octet-stream', fileSize: file.size };
+    const ok = await DB.replaceDocumentFile(doc, fields);
+    if (!ok) { alert('Could not replace the file \u2014 you may not have permission, or you\u2019re offline.'); return; }
+    Object.assign(doc, fields);   // update the in-memory live object so the next Open shows the new file
+    if (document.getElementById('docLibraryBody')) renderDocLibrary();
+    if (state.view === 'docs') renderDocuments();
+    if (typeof renderPersonalDocs === 'function' && document.getElementById('personalDocsBody')) renderPersonalDocs();
+    alert('File replaced.');
+  } catch (e) {
+    alert('Could not read the file.');
+  }
 }
 
 // ---------- Document upload ----------
@@ -10033,6 +10427,7 @@ function renderAdmin() {
     { icon: '📥', label: 'Import users',        fn: 'openBulkImport()' },
     { icon: '🏷', label: 'Groups',              fn: 'openGroupsAdmin()' },
     { icon: '📋', label: 'Class assignments',   fn: 'openClassAssignments()' },
+    { icon: '🚫', label: 'Closures / holidays',  fn: 'openClosuresAdmin()' },
     { icon: '🎯', label: 'Class type mapping',  fn: 'openClassTypeMapper()' },
     { icon: '🎨', label: 'Event types',         fn: 'openEventTypes()' },
     { icon: '📅', label: 'Import events',       fn: 'openEventImport()' },
@@ -10478,6 +10873,8 @@ function renderDocuments() {
         </div>
         <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;">
           <span style="font-size:12px;color:var(--red);font-weight:700;">Open ›</span>
+          ${canEditDocument(doc) ? `<button class="btn btn-sm" onclick="event.stopPropagation();openRenameDoc('${doc.id}')" style="font-size:10px;">Rename</button>` : ''}
+          ${canEditDocument(doc) ? `<button class="btn btn-sm" onclick="event.stopPropagation();triggerReplaceDoc('${doc.id}')" style="font-size:10px;">Replace file</button>` : ''}
           ${canDeleteThis ? `<button class="btn btn-sm" onclick="event.stopPropagation();deleteDocConfirm('${doc.id}')" style="color:var(--red);font-size:10px;">Delete</button>` : ''}
         </div>
       </div>`;

@@ -1027,6 +1027,64 @@ const DB = (() => {
     } catch (e) { return false; }
   }
 
+  // Rename a document — title-only UPDATE. Deliberately does NOT upsert the whole row,
+  // so file_data and every other column are left untouched (an upsert with a list-view
+  // doc that lacked file_data would null the file). Governed by the docs_update RLS
+  // policy server-side (network → superadmin; school → documents/edit + own school).
+  async function renameDocument(doc, newTitle) {
+    if (!doc || !doc.id) return false;
+    const title = (newTitle || '').trim();
+    if (!title) return false;
+    if (!isSB()) {
+      const key = doc.instructorId ? ('idocs:' + doc.instructorId)
+                                   : ('documents:' + (doc.schoolId || 'network'));
+      const arr = (await lGet(key)) || [];
+      const d = arr.find(x => x.id === doc.id);
+      if (d) { d.title = title; d.updatedAt = new Date().toISOString(); await lSet(key, arr); }
+      return true;
+    }
+    try {
+      const { error } = await sbClient().from('documents')
+        .update({ title, updated_at: new Date().toISOString() })
+        .eq('id', doc.id);
+      if (error) throw error;
+      return true;
+    } catch (e) { console.warn('[DB] renameDocument:', e.message); return false; }
+  }
+
+  // Replace a document's file in place — overwrites file_data/filename/mime/size only
+  // (no versioning). Title, description, category, targeting and id are all untouched,
+  // so every link and reference to the document keeps working. Same docs_update RLS.
+  async function replaceDocumentFile(doc, fields) {
+    if (!doc || !doc.id || !fields || !fields.fileData) return false;
+    if (!isSB()) {
+      const key = doc.instructorId ? ('idocs:' + doc.instructorId)
+                                   : ('documents:' + (doc.schoolId || 'network'));
+      const arr = (await lGet(key)) || [];
+      const d = arr.find(x => x.id === doc.id);
+      if (d) {
+        d.fileData = fields.fileData; d.filename = fields.filename;
+        d.mimeType = fields.mimeType; d.fileSize = fields.fileSize;
+        d.updatedAt = new Date().toISOString();
+        await lSet(key, arr);
+      }
+      return true;
+    }
+    try {
+      const { error } = await sbClient().from('documents')
+        .update({
+          file_data:  fields.fileData,
+          filename:   fields.filename,
+          mime_type:  fields.mimeType,
+          file_size:  fields.fileSize,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', doc.id);
+      if (error) throw error;
+      return true;
+    } catch (e) { console.warn('[DB] replaceDocumentFile:', e.message); return false; }
+  }
+
   // ── Instructor compliance ──────────────────────────────────────────
   async function loadComplianceRequirements(schoolId) {
     if (!isSB()) {
@@ -1472,7 +1530,7 @@ const DB = (() => {
     loadEventTypes, saveEventType, deleteEventType,
 
     // Documents
-    loadDocuments, loadInstructorDocuments, saveDocument, deleteDocument,
+    loadDocuments, loadInstructorDocuments, saveDocument, deleteDocument, renameDocument, replaceDocumentFile,
 
     // Compliance
     loadComplianceRequirements, saveComplianceRequirement, deleteComplianceRequirement,

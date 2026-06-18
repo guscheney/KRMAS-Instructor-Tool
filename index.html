@@ -2101,6 +2101,9 @@
   </div>
 </div>
 
+<!-- Hidden input for in-place document file replacement (no versioning) -->
+<input type="file" id="docReplaceFile" accept=".pdf,application/pdf,image/*" style="display:none;" onchange="handleReplaceDocFile(this)">
+
 <!-- ===== Modal: Document library (all users) ===== -->
 <div class="modal-bg" id="modalDocLibrary">
   <div class="modal">
@@ -2390,6 +2393,27 @@
     <h2>📍 Training areas</h2>
     <div id="areasEditorBody" style="max-height:62vh;overflow-y:auto;"></div>
     <button class="btn btn-ghost" style="width:100%;margin-top:12px;" onclick="closeModal('modalAreasEditor')">Done</button>
+  </div>
+</div>
+
+<!-- ===== Modal: Closures / holidays ===== -->
+<div class="modal-bg" id="modalClosures">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2>🚫 Closures / holidays</h2>
+    <div id="closuresBody" style="max-height:62vh;overflow-y:auto;"></div>
+    <button class="btn btn-ghost" style="width:100%;margin-top:12px;" onclick="closeModal('modalClosures')">Done</button>
+  </div>
+</div>
+
+<!-- ===== Modal: Override this day (close / special / grading) ===== -->
+<div class="modal-bg" id="modalDayOverride">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2 style="margin-bottom:2px;">Override day</h2>
+    <div id="dayOverrideTitle" style="font-size:13px;color:var(--grey-500);margin-bottom:12px;"></div>
+    <div id="dayOverrideBody" style="max-height:60vh;overflow-y:auto;"></div>
+    <button class="btn btn-ghost" style="width:100%;margin-top:12px;" onclick="closeModal('modalDayOverride')">Close</button>
   </div>
 </div>
 
@@ -2736,7 +2760,7 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '64';
+  window.KRMAS_APP_VERSION = '65';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
