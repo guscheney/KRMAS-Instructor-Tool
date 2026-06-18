@@ -51,6 +51,55 @@ const CLASS_TYPES = {
   'plates':        { name: 'Plates',               short: 'Plates',      colour: '--c-plates',   chart: null }
 };
 
+// A frozen snapshot of the 17 shipped types. Serves two jobs: the offline
+// fallback (when the DB can't be reached, CLASS_TYPES stays = these), and the
+// source-of-truth for "reset a built-in to default" + "which keys are built-in".
+const CLASS_TYPE_DEFAULTS = JSON.parse(JSON.stringify(CLASS_TYPES));
+
+// The colour choices a superadmin can assign to a type. Each is an existing CSS
+// custom-property (so `var(--c-x)` in the roster stays valid — no raw hex leaks
+// into render paths). hex is shown only as a swatch in the editor.
+const CLASS_COLOUR_PALETTE = [
+  { var: '--c-mln',      hex: '#4a8fbf', name: 'Sky blue' },
+  { var: '--c-ln',       hex: '#2c6a9b', name: 'Ocean blue' },
+  { var: '--c-karate',   hex: '#000000', name: 'Black' },
+  { var: '--c-kata',     hex: '#c9a14a', name: 'Gold' },
+  { var: '--c-sparring', hex: '#2d5a3c', name: 'Forest green' },
+  { var: '--c-bjj',      hex: '#4a7a4a', name: 'Green' },
+  { var: '--c-jmt',      hex: '#d48a1a', name: 'Amber' },
+  { var: '--c-mt',       hex: '#d62828', name: 'Red' },
+  { var: '--c-lmt',      hex: '#e57373', name: 'Coral' },
+  { var: '--c-mtf',      hex: '#8c1818', name: 'Dark red' },
+  { var: '--c-sanda',    hex: '#5a3a8b', name: 'Purple' },
+  { var: '--c-sc',       hex: '#4a4845', name: 'Charcoal' },
+  { var: '--c-plates',   hex: '#6e6c68', name: 'Stone' },
+];
+
+// Merge the network's class_types rows (from the DB) over the shipped defaults,
+// mutating CLASS_TYPES in place so every reference picks up the change. Resets
+// to defaults first, so a deleted custom type vanishes and a reverted rename
+// returns. Built-in `chart` buckets are preserved (so analytics never break).
+function applyClassTypeOverrides(rows) {
+  for (const k of Object.keys(CLASS_TYPES)) {
+    if (!CLASS_TYPE_DEFAULTS[k]) delete CLASS_TYPES[k];                       // drop a removed custom
+  }
+  for (const k of Object.keys(CLASS_TYPE_DEFAULTS)) {
+    CLASS_TYPES[k] = JSON.parse(JSON.stringify(CLASS_TYPE_DEFAULTS[k]));      // restore the built-in
+  }
+  if (Array.isArray(rows)) {
+    for (const r of rows) {
+      if (!r || !r.key) continue;
+      CLASS_TYPES[r.key] = {
+        name:   r.name || r.key,
+        short:  r.short || '',
+        colour: r.colour || '--grey-300',
+        chart:  (r.chart != null ? r.chart : (CLASS_TYPE_DEFAULTS[r.key] ? CLASS_TYPE_DEFAULTS[r.key].chart : null)),
+      };
+    }
+  }
+  return CLASS_TYPES;
+}
+
 // ---------- Topic charts (HQ-controlled curriculum) ----------
 const TOPIC_CHARTS = {
   mln: {

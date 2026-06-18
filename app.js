@@ -6659,6 +6659,7 @@ async function enterAppWithSession(session) {
   }
   try { recordLastLogin(state.user.id); } catch (e) {}
   try { state.roleConfig = await DB.roles.loadConfig(); } catch (e) { console.warn('loadRoleConfig:', e && e.message); }
+  try { state.classTypes = (await DB.classTypes.load()) || []; applyClassTypeOverrides(state.classTypes); } catch (e) { console.warn('loadClassTypes:', e && e.message); }
   try { await loadCustomSchools(); } catch (e) { console.warn('loadCustomSchools:', e && e.message); }
   try { await loadCurrentSchoolData(); } catch (e) { console.warn('loadCurrentSchoolData:', e && e.message); }
   state.user.instructorId = resolveMyInstructorId(); // bridge auth uid -> roster instructor id
@@ -10040,6 +10041,7 @@ function renderAdmin() {
   if (isSuperAdmin) {
     btns.unshift({ icon: '🔑', label: 'Roles & permissions', fn: 'openRolesMatrix()' });
     btns.unshift({ icon: '🌐', label: 'All schools overview', fn: 'openAllSchoolsOverview()' });
+    btns.push({ icon: '🏷️', label: 'Class types', fn: 'openClassTypesEditor()' });
     btns.push({ icon: '📄', label: 'Upload docs', fn: 'openDocUpload()' });
     if (!DB.isSupabase) btns.push({ icon: '☁', label: 'Migrate to Supabase', fn: 'runMigration()' });
   }
@@ -10264,6 +10266,151 @@ async function clearClassTypeOverride(label) {
   delete state.classTypeOverrides[label];
   await DB.saveClassTypeOverrides(state.schoolId, state.classTypeOverrides);
   renderClassTypeMapper();
+  if (state.view === 'roster') renderDay();
+}
+
+// ====================================================================
+// Class types editor — a superadmin renames the network's class types
+// (name / short code / colour) or adds custom ones. The roster, charts and
+// every type dropdown read CLASS_TYPES, which applyClassTypeOverrides() keeps
+// in sync after each change. Built-in `key` + `chart` bucket are never altered,
+// so existing schedules and analytics keep working.
+// ====================================================================
+function openClassTypesEditor() {
+  if (!can.manageRoles()) { alert('Only superadmins can edit class types.'); return; }
+  renderClassTypesEditor();
+  openModal('modalClassTypesEditor');
+}
+
+function classColourOptions(selectedVar) {
+  return CLASS_COLOUR_PALETTE.map(c =>
+    `<option value="${c.var}"${c.var === selectedVar ? ' selected' : ''}>${escapeHtml(c.name)}</option>`
+  ).join('');
+}
+
+function renderClassTypesEditor() {
+  const body = document.getElementById('classTypesEditorBody');
+  if (!body) return;
+  // Prefer the DB rows (ordered); fall back to the in-memory CLASS_TYPES if none loaded.
+  const rows = (state.classTypes && state.classTypes.length)
+    ? state.classTypes.slice().sort((a, b) => (a.sort_order - b.sort_order) || a.name.localeCompare(b.name))
+    : Object.entries(CLASS_TYPES).map(([key, m], i) => ({ key, name: m.name, short: m.short, colour: m.colour, chart: m.chart, builtin: !!CLASS_TYPE_DEFAULTS[key], sort_order: i }));
+
+  let html = `<div style="font-size:12px;color:var(--grey-500);margin-bottom:12px;line-height:1.5;">
+    Rename a class type, change its short code or colour, or add your own. Changes apply
+    network-wide and update every school's roster immediately. Built-in types can be renamed
+    or reset but not deleted — schools give classes their own names via the timetable's Custom label.
+  </div>`;
+
+  html += rows.map(r => {
+    const k = escapeHtml(r.key);
+    return `<div style="display:flex;align-items:center;gap:6px;padding:8px 0;border-bottom:1px solid var(--grey-100);">
+      <span style="width:12px;height:12px;border-radius:3px;background:var(${r.colour});flex-shrink:0;border:1px solid rgba(0,0,0,.15);"></span>
+      <input id="ctName-${k}" value="${escapeHtml(r.name)}" placeholder="Name" style="flex:2;min-width:0;padding:5px 6px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;">
+      <input id="ctShort-${k}" value="${escapeHtml(r.short || '')}" placeholder="Short" style="flex:1;min-width:0;padding:5px 6px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;">
+      <select id="ctColour-${k}" style="padding:5px 6px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;max-width:120px;">${classColourOptions(r.colour)}</select>
+      <button class="btn btn-sm" onclick="saveClassTypeEdit('${k}')" style="padding:4px 10px;font-size:11px;">Save</button>
+      ${r.builtin
+        ? `<button onclick="resetClassType('${k}')" title="Reset to default" style="background:none;border:none;cursor:pointer;font-size:15px;color:var(--grey-400);padding:0 4px;">↺</button>`
+        : `<button onclick="deleteClassType('${k}')" title="Delete custom type" style="background:none;border:none;cursor:pointer;font-size:16px;color:var(--red);padding:0 4px;">×</button>`}
+    </div>`;
+  }).join('');
+
+  html += `<div style="margin-top:14px;padding-top:12px;border-top:2px solid var(--grey-200);">
+    <div class="section-sub" style="margin-bottom:6px;">Add a new class type</div>
+    <div style="display:flex;align-items:center;gap:6px;">
+      <input id="ctNewName" placeholder="Name (e.g. Tiny Tigers)" style="flex:2;min-width:0;padding:6px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;">
+      <input id="ctNewShort" placeholder="Short" style="flex:1;min-width:0;padding:6px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;">
+      <select id="ctNewColour" style="padding:6px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;max-width:120px;">${classColourOptions('--c-mln')}</select>
+      <button class="btn btn-primary btn-sm" onclick="addClassType()" style="padding:6px 12px;font-size:12px;">Add</button>
+    </div>
+  </div>`;
+
+  body.innerHTML = html;
+}
+
+// Make a stable, unique key from a name (collision-free against existing types).
+function slugifyClassKey(name) {
+  let base = (name || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!base) base = 'type';
+  let key = base, n = 2;
+  while (CLASS_TYPES[key]) { key = base + '-' + n; n++; }
+  return key;
+}
+
+async function saveClassTypeEdit(key) {
+  if (blockedByImpersonation()) return;
+  const name = (document.getElementById('ctName-' + key)?.value || '').trim();
+  const short = (document.getElementById('ctShort-' + key)?.value || '').trim();
+  const colour = document.getElementById('ctColour-' + key)?.value || '--grey-300';
+  if (!name) { alert('Name cannot be empty.'); return; }
+  const existing = (state.classTypes || []).find(r => r.key === key) || {};
+  const row = {
+    key, name, short, colour,
+    chart: existing.chart != null ? existing.chart : (CLASS_TYPE_DEFAULTS[key] ? CLASS_TYPE_DEFAULTS[key].chart : null),
+    builtin: existing.builtin != null ? existing.builtin : !!CLASS_TYPE_DEFAULTS[key],
+    sort_order: existing.sort_order != null ? existing.sort_order : 100,
+  };
+  const res = await DB.classTypes.save(row);
+  if (res.error) { alert('Could not save: ' + res.error); return; }
+  await reloadClassTypes();
+}
+
+async function addClassType() {
+  if (blockedByImpersonation()) return;
+  const name = (document.getElementById('ctNewName')?.value || '').trim();
+  const short = (document.getElementById('ctNewShort')?.value || '').trim();
+  const colour = document.getElementById('ctNewColour')?.value || '--c-mln';
+  if (!name) { alert('Give the new class type a name.'); return; }
+  const key = slugifyClassKey(name);
+  const maxSort = Math.max(0, ...((state.classTypes || []).map(r => r.sort_order || 0)));
+  const row = { key, name, short: short || name.slice(0, 6), colour, chart: null, builtin: false, sort_order: maxSort + 1 };
+  const res = await DB.classTypes.save(row);
+  if (res.error) { alert('Could not add: ' + res.error); return; }
+  await reloadClassTypes();
+}
+
+async function resetClassType(key) {
+  if (blockedByImpersonation()) return;
+  const def = CLASS_TYPE_DEFAULTS[key];
+  if (!def) return;
+  if (!confirm('Reset "' + def.name + '" to its default name, short code and colour?')) return;
+  const existing = (state.classTypes || []).find(r => r.key === key) || {};
+  const row = { key, name: def.name, short: def.short, colour: def.colour, chart: def.chart, builtin: true, sort_order: existing.sort_order != null ? existing.sort_order : 100 };
+  const res = await DB.classTypes.save(row);
+  if (res.error) { alert('Could not reset: ' + res.error); return; }
+  await reloadClassTypes();
+}
+
+async function deleteClassType(key) {
+  if (blockedByImpersonation()) return;
+  if (CLASS_TYPE_DEFAULTS[key]) { alert('Built-in types cannot be deleted — use reset instead.'); return; }
+  const inUse = classTypeInUse(key);
+  const meta = CLASS_TYPES[key];
+  const warn = inUse
+    ? '\n\nWARNING: ' + inUse + ' class(es) across your loaded schools use this type. They will show the type key until reassigned.'
+    : '';
+  if (!confirm('Delete the class type "' + (meta ? meta.name : key) + '"?' + warn)) return;
+  const res = await DB.classTypes.remove(key);
+  if (res.error) { alert('Could not delete: ' + res.error); return; }
+  await reloadClassTypes();
+}
+
+// How many class slots (across loaded schools) reference a type key.
+function classTypeInUse(key) {
+  let n = 0;
+  const schools = state.customSchools || {};
+  for (const sid of Object.keys(schools)) {
+    const sched = (schools[sid] && schools[sid].schedule) || [];
+    for (const c of sched) if (c.type === key) n++;
+  }
+  return n;
+}
+
+async function reloadClassTypes() {
+  try { state.classTypes = (await DB.classTypes.load()) || []; } catch (e) { state.classTypes = state.classTypes || []; }
+  applyClassTypeOverrides(state.classTypes);
+  renderClassTypesEditor();
   if (state.view === 'roster') renderDay();
 }
 
@@ -10545,6 +10692,17 @@ function renderScheduleEditor() {
   body.innerHTML = html;
 }
 
+// Fill a <select> with the live class types, so renamed + custom types show up
+// in the slot editor (the roster, wizard and mapper already read CLASS_TYPES).
+function populateClassTypeSelect(selectId, selectedKey) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  sel.innerHTML = Object.entries(CLASS_TYPES)
+    .map(([key, m]) => `<option value="${escapeHtml(key)}">${escapeHtml(m.name)}</option>`)
+    .join('');
+  if (selectedKey && CLASS_TYPES[selectedKey]) sel.value = selectedKey;
+}
+
 function addScheduleSlot(dow) {
   document.getElementById('slotEdTitle').textContent = 'Add class — ' + DAY_NAMES[dow];
   document.getElementById('slotEdDow').value = dow;
@@ -10552,7 +10710,7 @@ function addScheduleSlot(dow) {
   document.getElementById('slotEdStart').value = '16:00';
   document.getElementById('slotEdEnd').value = '17:00';
   document.getElementById('slotEdLabel').value = '';
-  document.getElementById('slotEdType').value = 'karate';
+  populateClassTypeSelect('slotEdType', 'karate');
   openModal('modalSlotEditor');
 }
 
@@ -10570,7 +10728,7 @@ function editScheduleSlot(dow, idx) {
   document.getElementById('slotEdStart').value = c.start;
   document.getElementById('slotEdEnd').value = c.end;
   document.getElementById('slotEdLabel').value = c.label || '';
-  document.getElementById('slotEdType').value = c.type;
+  populateClassTypeSelect('slotEdType', c.type);
   openModal('modalSlotEditor');
 }
 

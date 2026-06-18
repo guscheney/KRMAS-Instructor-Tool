@@ -1371,6 +1371,32 @@ const DB = (() => {
       },
     },
 
+    // Network-wide class type catalogue (Mini Ninjas, Karate, …). Everyone READS
+    // it (the roster needs names + colours); only the superadmin WRITES it — RLS
+    // enforces that server-side. Same "superadmin defines network-wide" contract
+    // as `roles` above.
+    classTypes: {
+      async load() {
+        const sb = sbClient(); if (!sb) return null;
+        const { data, error } = await sb.from('class_types')
+          .select('key,name,short,colour,chart,builtin,sort_order')
+          .order('sort_order', { ascending: true }).order('name', { ascending: true });
+        if (error) { console.warn('[DB] loadClassTypes:', error.message); return null; }
+        return data || [];
+      },
+      async save(row) {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        try { const { error } = await sb.from('class_types').upsert(row, { onConflict: 'key' }); if (error) throw error; return {}; }
+        catch (e) { return { error: e.message }; }
+      },
+      async remove(key) {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        // builtin types are guarded by the predicate — they can be reset but never deleted.
+        try { const { error } = await sb.from('class_types').delete().eq('key', key).eq('builtin', false); if (error) throw error; return {}; }
+        catch (e) { return { error: e.message }; }
+      },
+    },
+
     // Login-user administration (profiles). Reads are RLS-gated and direct; create /
     // delete go through the service-role manage-users Edge Function.
     users: {

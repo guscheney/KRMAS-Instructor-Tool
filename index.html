@@ -2362,25 +2362,8 @@
     </div>
     <div class="form-row compact">
       <label>Class type</label>
-      <select id="slotEdType">
-        <option value="mini-ninjas">Mini Ninjas</option>
-        <option value="little-ninjas">Little Ninjas</option>
-        <option value="karate">Karate</option>
-        <option value="basics-kata">Basics & Kata</option>
-        <option value="kids-kata">Kids Kata</option>
-        <option value="kata">Kata</option>
-        <option value="kids-sparring">Kids Sparring</option>
-        <option value="sparring">Sparring</option>
-        <option value="jr-muay-thai">Junior Muay Thai</option>
-        <option value="muay-thai">Muay Thai</option>
-        <option value="ladies-mt">Ladies Muay Thai</option>
-        <option value="mt-finisher">MT Finisher</option>
-        <option value="mma-sanda">MMA Sanda</option>
-        <option value="jiu-jitsu">Jiu Jitsu</option>
-        <option value="kobudo">Kobudo (Weapons)</option>
-        <option value="strength-cond">Strength & Conditioning</option>
-        <option value="plates">Plates</option>
-      </select>
+      <!-- Options are populated from the live CLASS_TYPES via populateClassTypeSelect() -->
+      <select id="slotEdType"></select>
     </div>
     <div class="form-row compact">
       <label>Custom label (optional — overrides type name)</label>
@@ -2413,6 +2396,17 @@
     <p class="modal-sub">Map timetable class labels to colour-coded types. Changes update the roster immediately.</p>
     <div id="classTypeMapperBody" style="max-height:60vh;overflow-y:auto;"></div>
     <button class="btn btn-ghost" style="width:100%;margin-top:10px;" onclick="closeModal('modalClassTypeMapper')">Done</button>
+  </div>
+</div>
+
+<!-- ===== Modal: Class types editor (superadmin) ===== -->
+<div class="modal-bg" id="modalClassTypesEditor">
+  <div class="modal" style="max-width:600px;">
+    <div class="modal-handle"></div>
+    <h2>🏷️ Class types</h2>
+    <p class="modal-sub">Network-wide. Rename or recolour class types, or add your own — every school's roster updates immediately.</p>
+    <div id="classTypesEditorBody" style="max-height:62vh;overflow-y:auto;"></div>
+    <button class="btn btn-ghost" style="width:100%;margin-top:12px;" onclick="closeModal('modalClassTypesEditor')">Done</button>
   </div>
 </div>
 
@@ -2725,7 +2719,7 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '62';
+  window.KRMAS_APP_VERSION = '63';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
