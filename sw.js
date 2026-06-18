@@ -1,5 +1,5 @@
 /* KRMAS Instructor App — service worker (offline support) */
-const CACHE = 'krmas-roster-v67';
+const CACHE = 'krmas-roster-v68';
 const ASSETS = [
   './',
   './index.html',
@@ -26,7 +26,13 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
-  // Network-first for HTML so updates land fast; cache-first for everything else.
+  let url;
+  try { url = new URL(e.request.url); } catch (_) { return; }
+  // Never cache Supabase API / auth / data responses. Caching authenticated,
+  // dynamic data serves stale or empty results — e.g. uploaded documents vanishing
+  // on a device that cached an old/empty response. These must always hit the network.
+  if (url.hostname.endsWith('.supabase.co')) return;
+  // Network-first for HTML so updates land fast; cache-first for static assets.
   if (e.request.mode === 'navigate' || e.request.headers.get('accept')?.includes('text/html')) {
     e.respondWith(
       fetch(e.request).then(r => {
