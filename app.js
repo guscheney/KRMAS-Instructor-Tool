@@ -35,6 +35,8 @@ const state = {
   editingKey: null,
   planningKey: null,
   customSchools: {},   // school_id → { instructors, schedule, defaults, contact }
+  roleConfig: { roles: [], perms: {}, _loaded: false },  // custom roles + permission matrix
+  impersonation: null,  // { real, realSchoolId, target } while a user is viewing-as someone
   wizardStep: 0,
   wizardData: null,
   editingProgressionId: null,
@@ -100,18 +102,65 @@ function userRole()          { return state.user?.role || 'guest'; }
 function roleRank(role)      { return ROLE_RANK[role] || 0; }
 function hasRole(minRole)    { return roleRank(userRole()) >= roleRank(minRole); }
 
-// Single source of truth for every permission check
+// Sections locked to admin+ and never customizable — the structural floor, mirrored
+// from is_structural_section() in SQL. role_permissions can never grant these.
+const STRUCTURAL_SECTIONS = ['timetable', 'school', 'roster-edit', 'logins'];
+// Seed-matching defaults, used ONLY before the live role config has loaded. The DB RLS
+// (has_perm) is the real gate; this just keeps UI gating sensible during that window.
+const DEFAULT_PERMS = {
+  instructor: { feed:{view:1,add:1}, notices:{view:1}, calendar:{view:1}, documents:{view:1},
+    compliance:{view:1}, students:{view:1,add:1,edit:1}, incidents:{view:1,add:1},
+    grading:{view:1}, groups:{view:1}, roster:{view:1},
+    'lesson-plans':{view:1,edit:1}, 'roster-edits':{view:1,edit:1} },
+  junior: { feed:{view:1,add:1}, notices:{view:1}, calendar:{view:1}, documents:{view:1},
+    students:{add:1,edit:1}, incidents:{add:1}, groups:{view:1}, roster:{view:1},
+    'lesson-plans':{view:1,edit:1}, 'roster-edits':{view:1,edit:1} },
+};
+// Client mirror of the SQL has_perm(section, action). Drives which buttons show; the
+// database enforces the same logic for real.
+function hasPerm(section, action) {
+  const role = userRole();
+  if (role === 'superadmin') return true;
+  if (STRUCTURAL_SECTIONS.indexOf(section) !== -1) return hasRole('admin');
+  if (role === 'admin') return true;
+  const rc = state.roleConfig;
+  if (rc && rc._loaded) {                         // live config is authoritative once loaded
+    const p = rc.perms && rc.perms[role];
+    return !!(p && p[section] && p[section][action]);
+  }
+  const def = DEFAULT_PERMS[role];                // pre-load fallback
+  return !!(def && def[section] && def[section][action]);
+}
+
+// Single source of truth for every permission check. Operational entries consult the
+// permission matrix via hasPerm; structural + kv-namespace entries stay rank-based
+// (their server-side gate is the structural floor / kv_min_role, not role_permissions).
 const can = {
   editRoster:        () => hasRole('admin'),
   editPlans:         () => hasRole('junior'),
   deletePlans:       () => hasRole('instructor'),
-  viewIncidents:     () => hasRole('instructor'),
-  fileIncidents:     () => hasRole('junior'),
-  editIncidents:     () => hasRole('admin'),
+  viewIncidents:     () => hasPerm('incidents','view'),
+  fileIncidents:     () => hasPerm('incidents','add'),
+  editIncidents:     () => hasPerm('incidents','edit'),
+  deleteIncidents:   () => hasPerm('incidents','delete'),
   volunteerCover:    () => hasRole('junior'),
   markNeedsCover:    () => hasRole('instructor'),
-  viewStudents:      () => hasRole('instructor'),
-  deleteStudents:    () => hasRole('admin'),
+  viewStudents:      () => hasPerm('students','view'),
+  addStudents:       () => hasPerm('students','add'),
+  editStudents:      () => hasPerm('students','edit'),
+  deleteStudents:    () => hasPerm('students','delete'),
+  postFeed:          () => hasPerm('feed','add'),
+  manageNotices:     () => hasPerm('notices','add'),
+  editNotices:       () => hasPerm('notices','edit'),
+  deleteNotices:     () => hasPerm('notices','delete'),
+  manageCalendar:    () => hasPerm('calendar','add'),
+  editCalendar:      () => hasPerm('calendar','edit'),
+  deleteCalendar:    () => hasPerm('calendar','delete'),
+  manageDocuments:   () => hasPerm('documents','add'),
+  manageCompliance:  () => hasPerm('compliance','add'),
+  manageGroups:      () => hasPerm('groups','add'),
+  editGroups:        () => hasPerm('groups','edit'),
+  deleteGroups:      () => hasPerm('groups','delete'),
   managePathway:     () => hasRole('admin'),
   manageGrading:     () => hasRole('admin'),
   viewGrading:       () => hasRole('instructor'),
@@ -120,7 +169,7 @@ const can = {
   changePin:         () => hasRole('junior'),
   manageInstructors: () => hasRole('admin'),
   switchAnySchool:   () => hasRole('superadmin'),
-  manageRoles:       () => hasRole('admin'),
+  manageRoles:       () => hasRole('superadmin'),
   viewAuditLog:      () => hasRole('admin'),
 };
 
@@ -147,8 +196,13 @@ function roleBadge(role) {
     instructor: { bg: '#3b82f6', text: '#fff', label: 'Instructor' },
     junior:     { bg: '#8b5cf6', text: '#fff', label: 'Junior' },
   };
-  const c = map[role] || { bg: '#e5e7eb', text: '#555', label: role || 'Guest' };
-  return `<span style="display:inline-block;background:${c.bg};color:${c.text};font-size:9px;font-weight:700;padding:2px 7px;border-radius:999px;text-transform:uppercase;letter-spacing:.05em;font-family:'Open Sans',sans-serif;">${c.label}</span>`;
+  let c = map[role];
+  if (!c) {
+    // Custom role — show its configured label (falls back to the key) in a distinct colour.
+    const cr = ((state.roleConfig && state.roleConfig.roles) || []).find(r => r.key === role);
+    c = { bg: '#0d9488', text: '#fff', label: (cr && cr.label) || role || 'Guest' };
+  }
+  return `<span style="display:inline-block;background:${c.bg};color:${c.text};font-size:9px;font-weight:700;padding:2px 7px;border-radius:999px;text-transform:uppercase;letter-spacing:.05em;font-family:'Open Sans',sans-serif;">${escapeHtml(c.label)}</span>`;
 }
 
 // ---------- Avatars / profile pictures ----------
@@ -832,6 +886,9 @@ function setView(v) {
   // Show/hide Incidents nav tab based on role (instructor+)
   const incTab = document.querySelector('[data-view="incidents"]');
   if (incTab) incTab.style.display = can.viewIncidents() ? '' : 'none';
+  // Show/hide Students nav tab based on the students 'view' permission (same approach).
+  const stuTab = document.querySelector('[data-view="students"]');
+  if (stuTab) stuTab.style.display = can.viewStudents() ? '' : 'none';
   refreshAuthUI();
   syncNavHeight(); // nav row-count can change with which tabs are visible
 
@@ -1566,6 +1623,186 @@ function refreshAuthUI() {
   }
 }
 
+// ====================================================================
+// Impersonation ("View as") — a client-side, READ-ONLY preview of another
+// user's view. superadmin → any user in any school; admin → users in their own
+// school whose role is below admin. The live Supabase session never changes, so
+// RLS stays the real boundary (a target's view is always a subset of the
+// impersonator's access). Writes are blocked centrally via DB.setReadOnly so
+// nobody can act as someone else; exit to make changes.
+// ====================================================================
+function isImpersonating() { return !!state.impersonation; }
+function realUser()       { return state.impersonation ? state.impersonation.real : state.user; }
+
+function roleLabelFor(role) {
+  const builtin = { superadmin: 'Superadmin', admin: 'Admin', instructor: 'Instructor', junior: 'Junior' }[role];
+  if (builtin) return builtin;
+  const cr = ((state.roleConfig && state.roleConfig.roles) || []).find(r => r.key === role);
+  return (cr && cr.label) || role;
+}
+
+// Who may the CURRENT (real) user view-as? Note: this gates the UI for legitimate use;
+// it is NOT the security boundary (that's RLS on the unchanged JWT).
+function canImpersonate(target) {
+  if (!state.user || !target) return false;
+  if (state.impersonation) return false;                                   // no nested view-as
+  if ((target.uid && target.uid === state.user.id) || target.id === state.user.instructorId) return false; // not yourself
+  if (!target.uid && !target.email) return false;                          // must be a real login
+  if (state.user.role === 'superadmin') return true;                       // anyone, any school
+  if (state.user.role === 'admin') {                                       // own school, strictly below admin
+    const sameSchool = (target.schoolId || state.schoolId) === state.schoolId;
+    return sameSchool && roleRank(target.role) < roleRank('admin');
+  }
+  return false;
+}
+
+async function startImpersonation(targetId) {
+  if (state.impersonation) return;
+  if (!state.user) return;
+  const pool = (state.user.role === 'superadmin') ? allInstructorsAllSchools() : allInstructors();
+  const target = pool.find(i => i.id === targetId);
+  if (!target) { alert('Could not find that user.'); return; }
+  if (!canImpersonate(target)) { alert("You can't view as that user."); return; }
+  if (!target.uid) { alert('That user has no login yet — nothing to view as.'); return; }
+
+  const asSuper = state.user.role === 'superadmin';
+
+  // Prefer TRUE (server-side) impersonation: a real session as the target, so the view
+  // — including role-, group-, and DM-targeted feed posts — is fully faithful. If any
+  // part of the handshake fails, fall back to the client-side read-only preview, which
+  // still reproduces the target's role, permissions and school-scoped data.
+  let mode = 'client', realSession = null, tgt = null;
+  if (DB.isSupabase) {
+    try {
+      realSession = await DB.auth.getSession();
+      // Never swap sessions unless we captured a session we can restore on exit.
+      if (!realSession || !realSession.access_token) throw new Error('no restorable session');
+      const res = await DB.auth.startImpersonation(target.uid);     // permission-checked + audited edge fn
+      if (res && res.token_hash && res.target) {
+        await DB.auth.applyImpersonationToken(res.token_hash);       // verifyOtp → live session as target
+        tgt = res.target; mode = 'server';
+      } else { throw new Error('no impersonation token'); }
+    } catch (e) {
+      console.warn('server impersonation unavailable, using read-only preview:', e && e.message);
+      try { if (realSession && realSession.access_token) await DB.auth.restoreSession(realSession); } catch (_) {}  // make sure we're still us
+      mode = 'client'; realSession = null; tgt = null;
+    }
+  }
+
+  const targetSchool = (tgt && tgt.school_id) || target.schoolId || state.schoolId;
+  const targetSchools = asSuper
+    ? ((tgt && Array.isArray(tgt.schools) && tgt.schools.length) ? tgt.schools.slice()
+       : (Array.isArray(target.schools) && target.schools.length ? target.schools.slice() : [targetSchool]))
+    : [state.schoolId];                                              // admin stays pinned to own school
+
+  state.impersonation = {
+    mode, realSession, targetUid: target.uid,
+    real: { ...state.user }, realSchoolId: state.schoolId, realSchools: (state.user.schools || []).slice(),
+    target: { id: target.id, name: (tgt && tgt.name) || target.name, role: (tgt && tgt.role) || target.role },
+  };
+  state.user = {
+    id: (mode === 'server' && tgt) ? tgt.id : (target.uid || target.id),
+    name: (tgt && tgt.name) || target.name, role: (tgt && tgt.role) || target.role,
+    email: (tgt && tgt.email) || target.email || null,
+    schools: targetSchools, instructorId: target.id, _impersonated: true,
+  };
+  state.userSchools = targetSchools;
+  state.schoolId = asSuper ? targetSchool : state.schoolId;
+  DB.setReadOnly(true);                          // guard against accidental writes (see note in banner)
+  // Persist a recovery marker so a page reload mid-impersonation restores the real user
+  // (the target's session is what the browser persisted) instead of stranding them.
+  if (mode === 'server' && realSession) { try { localStorage.setItem('krmas_imp', JSON.stringify({ realSession })); } catch (_) {} }
+
+  const nm = document.getElementById('schoolName');
+  if (nm) nm.textContent = (KRMAS_SCHOOLS.find(s => s.id === state.schoolId) || {}).name || state.schoolId;
+  try { await loadCurrentSchoolData(); } catch (e) { console.warn('impersonation reload:', e && e.message); }
+  renderImpersonationBanner();
+  if (typeof refreshAuthUI === 'function') refreshAuthUI();
+  closeModal('modalUserEditor'); closeModal('modalInstructorManager'); closeModal('modalUsers');
+  setView('feed');
+}
+
+async function stopImpersonation() {
+  if (!state.impersonation) return;
+  const snap = state.impersonation;
+  DB.setReadOnly(false);
+  if (snap.mode === 'server') {
+    try { await DB.auth.restoreSession(snap.realSession); }
+    catch (e) { console.warn('restore session failed:', e && e.message); alert('Could not fully restore your session — please sign in again.'); }
+    try { localStorage.removeItem('krmas_imp'); } catch (_) {}
+    // Audit the end now that we're back to the real user (best-effort, non-blocking).
+    if (snap.targetUid) { try { await DB.auth.endImpersonation(snap.targetUid); } catch (e) { console.warn('impersonate_stop audit:', e && e.message); } }
+  }
+  state.user = snap.real;
+  state.userSchools = (snap.realSchools || (snap.real.schools || [])).slice();
+  state.schoolId = snap.realSchoolId;
+  state.impersonation = null;
+  const nm = document.getElementById('schoolName');
+  if (nm) nm.textContent = (KRMAS_SCHOOLS.find(s => s.id === state.schoolId) || {}).name || state.schoolId;
+  try { await loadCurrentSchoolData(); } catch (e) { console.warn('restore reload:', e && e.message); }
+  renderImpersonationBanner();
+  if (typeof refreshAuthUI === 'function') refreshAuthUI();
+  setView('feed');
+}
+
+// Lets the impersonator deliberately drop read-only and ACT as the target (server mode
+// only — in client mode there's no real session to write with). Confirmed + obvious.
+async function toggleImpersonationWrite() {
+  if (!state.impersonation || state.impersonation.mode !== 'server') return;
+  if (DB.readOnly) {
+    if (!confirm('Allow changes while viewing as ' + state.impersonation.target.name +
+      '?\n\nAnything you do will be saved AS THEM and attributed to them. This is logged.')) return;
+    DB.setReadOnly(false);
+  } else {
+    DB.setReadOnly(true);
+  }
+  renderImpersonationBanner();
+}
+
+function renderImpersonationBanner() {
+  let bar = document.getElementById('impersonationBar');
+  if (!isImpersonating()) { if (bar) bar.remove(); document.body.style.removeProperty('padding-top'); return; }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'impersonationBar';
+    bar.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:#b45309;color:#fff;font-family:'Open Sans',sans-serif;font-size:13px;padding:8px 12px;display:flex;align-items:center;justify-content:space-between;gap:10px;box-shadow:0 2px 8px rgba(0,0,0,.25);";
+    document.body.appendChild(bar);
+  }
+  const imp = state.impersonation, t = imp.target;
+  const live = imp.mode === 'server';
+  const ro = DB.readOnly;
+  const stateTag = live ? (ro ? 'live · read-only' : 'live · CHANGES ON') : 'read-only preview';
+  // Only server mode can actually write (it holds the target's session); offer a toggle.
+  const writeBtn = live
+    ? `<button onclick="toggleImpersonationWrite()" style="flex:none;background:${ro ? 'transparent' : '#7f1d1d'};color:#fff;border:1px solid #fff;border-radius:6px;padding:4px 10px;font-weight:700;cursor:pointer;font-size:11px;">${ro ? 'Make changes' : 'Read-only'}</button>`
+    : '';
+  bar.style.background = (live && !ro) ? '#7f1d1d' : '#b45309';
+  bar.innerHTML = `<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">👁 Viewing as <strong>${escapeHtml(t.name)}</strong> · ${escapeHtml(roleLabelFor(t.role))} · ${stateTag}</span>
+    <span style="flex:none;display:flex;gap:6px;">${writeBtn}
+    <button onclick="stopImpersonation()" style="flex:none;background:#fff;color:#b45309;border:none;border-radius:6px;padding:4px 12px;font-weight:700;cursor:pointer;font-size:12px;">Exit</button></span>`;
+}
+
+// Lightweight transient toast (used to explain blocked writes during impersonation).
+function showToast(msg) {
+  let t = document.getElementById('krmasToast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'krmasToast';
+    t.style.cssText = "position:fixed;bottom:90px;left:50%;transform:translateX(-50%);z-index:10000;background:#1a1a1a;color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;max-width:80%;text-align:center;font-family:'Open Sans',sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.3);opacity:0;transition:opacity .2s;";
+    document.body.appendChild(t);
+  }
+  t.textContent = msg; t.style.opacity = '1';
+  clearTimeout(t._timer); t._timer = setTimeout(() => { t.style.opacity = '0'; }, 2400);
+}
+
+// Friendly guard for the common write entry points (the DB read-only proxy is the
+// hard backstop; this just gives clear feedback instead of a silent no-op).
+function blockedByImpersonation() {
+  if (!isImpersonating()) return false;
+  showToast('Read-only while viewing as ' + state.impersonation.target.name + ' — tap Exit to make changes.');
+  return true;
+}
+
 // The bottom nav is a 5-column grid that wraps to 2-3 rows depending on how many
 // tabs are visible (role-dependent) and the viewport width, so its height isn't
 // fixed. Measure it and expose it as --bottom-nav-h so content padding always
@@ -1882,9 +2119,7 @@ function renderWizardStep() {
         <div class="form-row compact">
           <label>Role</label>
           <select id="wizNewInstrRole">
-            <option value="instructor">Instructor</option>
-            <option value="admin">Admin</option>
-            <option value="junior">Junior</option>
+            ${roleSelectOptions('instructor')}
           </select>
         </div>
       </div>
@@ -2793,6 +3028,7 @@ async function deletePlan() {
 }
 
 async function saveIncident() {
+  if (blockedByImpersonation()) return;
   if (!can.fileIncidents()) { alert('Sign in to save incidents.'); return; }
   const inc = collectIncident();
   const missing = validateIncident(inc);
@@ -3612,6 +3848,7 @@ function newStudent() {
 }
 
 async function saveStudent() {
+  if (blockedByImpersonation()) return;
   const name = document.getElementById('studentNameInput').value.trim();
   const dob = document.getElementById('studentDobInput').value;
   if (!name) { alert('Enter a name.'); return; }
@@ -5553,6 +5790,7 @@ function printBeltOrder() {
 function openInstructorManager() {
   if (!requireRole('admin')) return;
   renderInstructorManagerModal();
+  injectCustomRoleOptions('inviteRole');
   openModal('modalInstructorManager');
 }
 
@@ -5580,9 +5818,7 @@ function renderInstructorManagerModal() {
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
         <select onchange="instrSetRole('${instr.id}', this.value)" style="padding:5px 8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;">
-          ${['superadmin','admin','instructor','junior'].map(r =>
-            `<option value="${r}"${instr.role === r ? ' selected' : ''}>${r.charAt(0).toUpperCase() + r.slice(1)}</option>`
-          ).join('')}
+          ${roleSelectOptions(instr.role)}
         </select>
         <select onchange="instrSetStatus('${instr.id}', this.value)" style="padding:5px 8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;">
           <option value="active"${instr.active !== false && instr.status !== 'leave' ? ' selected' : ''}>Active</option>
@@ -5590,12 +5826,24 @@ function renderInstructorManagerModal() {
           <option value="inactive"${instr.active === false && instr.status !== 'leave' ? ' selected' : ''}>Inactive</option>
         </select>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;">
+      <div style="display:grid;grid-template-columns:${canImpersonate(instr) ? '1fr 1fr 1fr' : '1fr 1fr'};gap:6px;margin-top:6px;">
         <button class="btn btn-sm" style="font-size:11px;" onclick="openUserEditor('${instr.id}')">✎ Edit</button>
         <button class="btn btn-sm" style="font-size:11px;" onclick="openInstrDocsViewer('${instr.id}')">📄 Docs</button>
+        ${canImpersonate(instr) ? `<button class="btn btn-sm" style="font-size:11px;" onclick="startImpersonation('${instr.id}')">👁 View as</button>` : ''}
       </div>
     </div>
   `).join('');
+}
+
+// Role <option> list for the user-manager dropdowns — builtins + any custom roles,
+// always including the user's current role even if the config hasn't loaded.
+function roleSelectOptions(selectedRole) {
+  const base = (state.roleConfig && state.roleConfig.roles && state.roleConfig.roles.length)
+    ? state.roleConfig.roles.map(r => ({ key: r.key, label: r.label }))
+    : [{ key: 'superadmin', label: 'Superadmin' }, { key: 'admin', label: 'Admin' },
+       { key: 'instructor', label: 'Instructor' }, { key: 'junior', label: 'Junior' }];
+  if (selectedRole && !base.find(r => r.key === selectedRole)) base.push({ key: selectedRole, label: roleLabelFor(selectedRole) });
+  return base.map(r => `<option value="${escapeHtml(r.key)}"${selectedRole === r.key ? ' selected' : ''}>${escapeHtml(r.label)}</option>`).join('');
 }
 
 // ── App logins manager (auth users / profiles) ──
@@ -5632,7 +5880,7 @@ async function renderUserManager() {
       </div>
       <div style="display:grid;grid-template-columns:1fr auto;gap:6px;align-items:center;">
         <select ${isMe ? 'disabled' : ''} onchange="userSetRole('${u.id}', this.value)" style="padding:6px 8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;${isMe ? 'opacity:.5;' : ''}">
-          ${['superadmin', 'admin', 'instructor', 'junior'].map(r => `<option value="${r}"${u.role === r ? ' selected' : ''}>${r.charAt(0).toUpperCase() + r.slice(1)}</option>`).join('')}
+          ${roleSelectOptions(u.role)}
         </select>
         ${isMe ? '' : `<button class="btn btn-ghost btn-sm" style="font-size:11px;color:var(--red);" onclick="userRemove('${u.id}','${escapeHtml(safeName)}')">Remove</button>`}
       </div>
@@ -5677,6 +5925,23 @@ async function userRemove(uid, name) {
 }
 
 // ── User editor (add / edit) — change 4 ──
+// Custom roles (below admin) are assignable too. Inject them into a role <select>
+// next to the builtins. Re-runnable: strips any previously-injected options first so
+// re-opening the editor doesn't stack duplicates.
+function injectCustomRoleOptions(selectId) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  Array.prototype.slice.call(sel.querySelectorAll('option[data-custom-role="1"]')).forEach(o => o.remove());
+  const customs = ((state.roleConfig && state.roleConfig.roles) || [])
+    .filter(r => !r.builtin && (r.rank || 0) < 3)
+    .sort((a, b) => a.label.localeCompare(b.label));
+  for (const r of customs) {
+    const opt = document.createElement('option');
+    opt.value = r.key; opt.textContent = r.label; opt.setAttribute('data-custom-role', '1');
+    sel.appendChild(opt);
+  }
+}
+
 function openUserEditor(instrId) {
   if (!requireRole('admin')) return;
   state.editingUserId = instrId || null;
@@ -5696,6 +5961,7 @@ function openUserEditor(instrId) {
   document.getElementById('userLast').value   = last;
   document.getElementById('userShort').value  = instr?.short || first || '';
   document.getElementById('userEmail').value  = instr?.email || '';
+  injectCustomRoleOptions('userRole');
   document.getElementById('userRole').value   = instr?.role || 'instructor';
   document.getElementById('userStatus').value = instr ? (instr.status === 'leave' ? 'leave' : instr.active === false ? 'inactive' : 'active') : 'active';
   document.getElementById('userAvatarFile').value = '';
@@ -5876,6 +6142,7 @@ async function deleteUser() {
 }
 
 async function instrSetRole(instrId, newRole) {
+  if (blockedByImpersonation()) return;
   if (!requireRole('admin')) return;
   // Write to custom schools overlay (works for both seeded + custom)
   if (!state.customSchools[state.schoolId]) {
@@ -5909,6 +6176,8 @@ async function instrSetRole(instrId, newRole) {
   }
   renderInstructorManagerModal();
   if (instrId === state.user?.id) { state.user.role = newRole; saveUserAsync(); }
+  // A role change can move this instructor in/out of rule-based groups — re-materialise.
+  try { await resyncAllGroups(); } catch (e) { console.warn('group resync after role change:', e && e.message); }
 }
 
 async function instrSetStatus(instrId, status) {
@@ -6123,8 +6392,9 @@ function openNoticesBoard() {
 function renderNoticesBoard() {
   const body = document.getElementById('noticesBoardBody');
   if (!body) return;
-  const canManage = can.manageInstructors(); // admin+
-  const canNetwork = can.switchAnySchool();  // superadmin only
+  const canManage = can.manageNotices();      // notices/add → may post notices
+  const canEditNotices = can.editNotices();   // notices/edit → may edit existing notices
+  const canNetwork = can.switchAnySchool();   // superadmin only (network scope)
 
   const school = KRMAS_SCHOOLS.find(s => s.id === state.schoolId);
   const schoolName = school?.name || state.schoolId;
@@ -6181,7 +6451,7 @@ function renderNoticesBoard() {
   if (state.notices.length === 0) {
     html += `<div style="font-size:13px;color:var(--grey-500);padding:4px 0 10px;">No school notices yet.${canManage ? ' Use the button above to post one.' : ''}</div>`;
   } else {
-    html += state.notices.map(n => renderNoticeBoardItem(n, false, canManage)).join('');
+    html += state.notices.map(n => renderNoticeBoardItem(n, false, canEditNotices)).join('');
   }
 
   if (html === '' || (!canManage && state.notices.length === 0 && state.networkNotices.length === 0)) {
@@ -6236,9 +6506,14 @@ function openNoticeEditor(isNetwork, existingId) {
 }
 
 async function saveNotice() {
+  if (blockedByImpersonation()) return;
   const title = document.getElementById('noticeTitle').value.trim();
   if (!title) { alert('Enter a title.'); return; }
   const isNetwork = document.getElementById('noticeIsNetwork').value === '1';
+  // Network notices → superadmin; school notices → notices 'edit' (existing) or 'add' (new).
+  const allowed = isNetwork ? can.switchAnySchool()
+    : (state.editingNoticeId ? can.editNotices() : can.manageNotices());
+  if (!allowed) { alert("You don't have permission to do that."); return; }
   const id = state.editingNoticeId || ('NTC-' + Date.now().toString(36).toUpperCase());
   const school = KRMAS_SCHOOLS.find(s => s.id === state.schoolId);
 
@@ -6292,6 +6567,7 @@ async function saveNotice() {
 }
 
 async function deleteNotice() {
+  if (blockedByImpersonation()) return;
   const id = state.editingNoticeId;
   if (!id) return;
   const isNetwork = document.getElementById('noticeIsNetwork').value === '1';
@@ -6342,6 +6618,19 @@ DB.auth && DB.auth.onChange(async (session, evt) => {
 });
 
 async function enterAppWithSession(session) {
+  // Reload-safety: if the browser persisted the TARGET's session because the tab was
+  // refreshed/closed mid-impersonation, transparently restore the real user first so
+  // nobody is ever stranded inside someone else's account.
+  try {
+    const marker = JSON.parse(localStorage.getItem('krmas_imp') || 'null');
+    if (marker && marker.realSession && marker.realSession.access_token) {
+      localStorage.removeItem('krmas_imp');
+      DB.setReadOnly(false);
+      const restored = await DB.auth.restoreSession(marker.realSession);
+      if (restored) session = restored;
+    }
+  } catch (e) { console.warn('impersonation recovery:', e && e.message); }
+
   // Temp-password accounts (from an invite or an admin reset) must choose their own
   // password before they can enter. updatePassword() clears the flag.
   if (session && session.user && session.user.user_metadata && session.user.user_metadata.must_change) {
@@ -6369,6 +6658,7 @@ async function enterAppWithSession(session) {
     if (school) { const el = document.getElementById('schoolName'); if (el) el.textContent = school.name; }
   }
   try { recordLastLogin(state.user.id); } catch (e) {}
+  try { state.roleConfig = await DB.roles.loadConfig(); } catch (e) { console.warn('loadRoleConfig:', e && e.message); }
   try { await loadCustomSchools(); } catch (e) { console.warn('loadCustomSchools:', e && e.message); }
   try { await loadCurrentSchoolData(); } catch (e) { console.warn('loadCurrentSchoolData:', e && e.message); }
   state.user.instructorId = resolveMyInstructorId(); // bridge auth uid -> roster instructor id
@@ -6585,9 +6875,14 @@ function resolveGroupMembers(group) {
     ? allInstructorsAllSchools()
     : allInstructors().map(i => ({ ...i, schoolId: state.schoolId }));
   const dynamic = group.rules?.length ? pool.filter(i => instrMatchesRules(i, group.rules)) : [];
-  const memberMatch = i => (group.members || []).some(m =>
-    (m.user_id || m.userId) === i.id &&
-    ((m.school_id || m.schoolId || i.schoolId) === i.schoolId));
+  // Static picks only (source 'static'; legacy rows without a source are treated as static).
+  // Matched by uid OR slug so display works whether or not the row has been migrated.
+  const staticList = (group.members || []).filter(m => (m.source || 'static') === 'static');
+  const memberMatch = i => staticList.some(m => {
+    const mid = m.user_id || m.userId;
+    return (mid === (i.uid || i.id) || mid === i.id) &&
+      ((m.school_id || m.schoolId || i.schoolId) === i.schoolId);
+  });
   const staticMembers = pool.filter(memberMatch);
   // Merge, deduplicate by school+id
   const seen = new Set(dynamic.map(i => i.schoolId + ':' + i.id));
@@ -6622,7 +6917,10 @@ function canSeePost(post) {
   if (!state.user) return post.targetScope === 'network' || post.targetScope === 'school';
   const audience = resolveTargetAudience(post);
   if (audience === null) return true;
-  return audience.has(state.user.id);
+  // Audiences are built from instructor-record ids (slugs) for role/group, and may be
+  // auth uids for people-targeting — so check the viewer under BOTH identities. (Slugs
+  // and uids never collide, so this can't create a false match.)
+  return audience.has(myInstructorId()) || audience.has(state.user.id);
 }
 
 // ---------- Feed view ----------
@@ -6873,6 +7171,7 @@ function refreshFeedPost(postId, post) {
 
 async function toggleFeedLike(postId) {
   if (!state.user) { openLogin(); return; }
+  if (blockedByImpersonation()) return;
   const post = state.feed.find(p => p.id === postId);
   if (!post) return;
   const wasLiked = state.myLikes.has(postId);
@@ -6902,6 +7201,7 @@ async function toggleComments(postId) {
 
 async function submitComment(postId) {
   if (!state.user) { openLogin(); return; }
+  if (blockedByImpersonation()) return;
   const input = document.getElementById('ci-' + postId);
   if (!input) return;
   const body = input.value.trim();
@@ -6932,6 +7232,7 @@ async function submitComment(postId) {
 }
 
 async function deleteComment(commentId, postId) {
+  if (blockedByImpersonation()) return;
   if (!confirm('Delete this comment?')) return;
   const post = state.feed.find(p => p.id === postId);
   if (post?._comments) {
@@ -6984,6 +7285,7 @@ function openPostMenu(postId) {
 }
 
 async function deleteFeedPost(postId) {
+  if (blockedByImpersonation()) return;
   if (!confirm('Delete this post?')) return;
   state.feed = state.feed.filter(p => p.id !== postId);
   const el = document.getElementById('fp-' + postId);
@@ -7072,11 +7374,12 @@ function openPostComposer(editPostId, opts) {
     }, 0);
   }
 
-  // Admin options (notice type / required / expiry / pin)
+  // Notice options (notice type / required / expiry / pin) — gated by the notices
+  // permission, so custom roles granted notices/add can post notices too.
   const noticeBlock = document.getElementById('composerNoticeBlock');
-  const isAdmin = can.manageInstructors();
-  noticeBlock.style.display = isAdmin ? 'block' : 'none';
-  if (isAdmin) {
+  const canNotice = can.manageNotices();
+  noticeBlock.style.display = canNotice ? 'block' : 'none';
+  if (canNotice) {
     document.getElementById('composerNoticeType').value = existing?.noticeType || (opts.notice ? 'info' : '');
     document.getElementById('composerRequired').checked = existing?.requiredReading || false;
     document.getElementById('composerExpires').value = existing?.expiresAt || '';
@@ -7106,10 +7409,16 @@ function composerUpdateTargetUI() {
         </label>`).join('') || '<span style="font-size:12px;color:var(--grey-500);">No groups set up yet</span>'}
       </div>`;
   } else if (scope === 'role') {
+    // List every defined role (builtins + custom) so authors can target custom roles;
+    // the RLS matches the post's target_ids against the viewer's current_app_role().
+    const roleOpts = ((state.roleConfig && state.roleConfig.roles && state.roleConfig.roles.length)
+      ? state.roleConfig.roles.map(r => ({ key: r.key, label: r.label }))
+      : [{ key:'superadmin', label:'Superadmin' }, { key:'admin', label:'Admin' },
+         { key:'instructor', label:'Instructor' }, { key:'junior', label:'Junior' }]);
     targetsRow.innerHTML = `<label>Roles</label>
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;">
-        ${['superadmin','admin','instructor','junior'].map(r => `<label style="display:flex;align-items:center;gap:4px;font-size:12px;">
-          <input type="checkbox" class="composer-target-check" value="${r}"> ${r}
+        ${roleOpts.map(r => `<label style="display:flex;align-items:center;gap:4px;font-size:12px;">
+          <input type="checkbox" class="composer-target-check" value="${escapeHtml(r.key)}"> ${escapeHtml(r.label)}
         </label>`).join('')}
       </div>`;
   } else if (scope === 'users') {
@@ -7117,7 +7426,7 @@ function composerUpdateTargetUI() {
     targetsRow.innerHTML = `<label>People</label>
       <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px;max-height:160px;overflow:auto;">
         ${people.map(i => `<label style="display:flex;align-items:center;gap:6px;font-size:12px;">
-          <input type="checkbox" class="composer-target-check" value="${i.id}"> ${escapeHtml(i.name)} <span style="color:var(--grey-400);">${escapeHtml(i.role || '')}</span>
+          <input type="checkbox" class="composer-target-check" value="${i.uid || i.id}"> ${escapeHtml(i.name)} <span style="color:var(--grey-400);">${escapeHtml(i.role || '')}</span>${i.uid ? '' : ' <span style="color:var(--grey-400);font-size:10px;">(no login yet)</span>'}
         </label>`).join('') || '<span style="font-size:12px;color:var(--grey-500);">No people set up yet</span>'}
       </div>`;
   }
@@ -7125,6 +7434,7 @@ function composerUpdateTargetUI() {
 
 async function submitPost() {
   if (!state.user) return;
+  if (blockedByImpersonation()) return;
   const body = document.getElementById('composerBody').value.trim();
   if (!body && _pendingAttachments.length === 0) { alert('Write something or attach a file first.'); return; }
   const scope = document.getElementById('composerScope').value;
@@ -7137,11 +7447,11 @@ async function submitPost() {
     return;
   }
 
-  const isAdmin = can.manageInstructors();
-  const noticeType = isAdmin ? (document.getElementById('composerNoticeType').value || null) : null;
-  const requiredReading = isAdmin ? document.getElementById('composerRequired').checked : false;
-  const expiresAt = isAdmin ? (document.getElementById('composerExpires').value || null) : null;
-  const pinned = isAdmin ? document.getElementById('composerPinned').checked : false;
+  const canNotice = can.manageNotices();
+  const noticeType = canNotice ? (document.getElementById('composerNoticeType').value || null) : null;
+  const requiredReading = canNotice ? document.getElementById('composerRequired').checked : false;
+  const expiresAt = canNotice ? (document.getElementById('composerExpires').value || null) : null;
+  const pinned = canNotice ? document.getElementById('composerPinned').checked : false;
 
   const existing = state.editingPostId ? state.feed.find(p => p.id === state.editingPostId) : null;
   const post = {
@@ -7302,7 +7612,11 @@ function startRealtimeFeed() {
 
 // ---------- Groups admin ----------
 function openGroupsAdmin() {
-  if (!requireRole('admin')) return;
+  // Any groups management permission opens the manager; per-action buttons inside are
+  // gated individually. Matches the groups RLS (network scope stays superadmin-only).
+  if (!can.manageGroups() && !can.editGroups() && !can.deleteGroups()) {
+    alert('You don\'t have permission to manage groups.'); return;
+  }
   renderGroupsAdminModal();
   openModal('modalGroupsAdmin');
 }
@@ -7326,7 +7640,7 @@ function renderGroupsAdminModal() {
               ${g.school_id === null ? ' · <span style="color:var(--red);font-size:10px;font-weight:700;">NETWORK</span>' : ''}
             </div>
           </div>
-          <button class="btn btn-sm" onclick="openGroupEditor('${g.id}')">Edit</button>
+          ${((g.school_id === null) ? can.switchAnySchool() : can.editGroups()) ? `<button class="btn btn-sm" onclick="openGroupEditor('${g.id}')">Edit</button>` : ''}
         </div>
       </div>`;
     }).join('');
@@ -7334,10 +7648,26 @@ function renderGroupsAdminModal() {
 }
 
 function openGroupEditor(groupId) {
-  state.editingGroupId = groupId || null;
   const existing = groupId ? state.groups.find(g => g.id === groupId) : null;
+  // Network groups (school_id null) → superadmin; school groups → groups add/edit perm.
+  const allowed = groupId
+    ? ((existing && existing.school_id === null) ? can.switchAnySchool() : can.editGroups())
+    : can.manageGroups();
+  if (!allowed) { alert("You don't have permission to do that."); return; }
+  state.editingGroupId = groupId || null;
   _editingRules = existing?.rules ? JSON.parse(JSON.stringify(existing.rules)) : [];
-  _editingStaticMembers = existing?.members ? JSON.parse(JSON.stringify(existing.members)) : [];
+  // Load STATIC picks only (source 'static'), normalising each to the instructor's uid so
+  // that saving writes uids (which the feed RLS matches). Legacy slug rows map through the pool.
+  const isNet = !!(existing && existing.school_id === null);
+  const pool = isNet ? allInstructorsAllSchools()
+    : allInstructors().map(i => ({ ...i, schoolId: existing?.school_id || state.schoolId }));
+  _editingStaticMembers = ((existing && existing.members) || [])
+    .filter(m => (m.source || 'static') === 'static')
+    .map(m => {
+      const mid = m.user_id || m.userId, sch = m.school_id || m.schoolId;
+      const instr = pool.find(i => i.id === mid || i.uid === mid);
+      return { user_id: (instr && instr.uid) || mid, school_id: (instr && instr.schoolId) || sch || state.schoolId };
+    });
   document.getElementById('groupEditorTitle').textContent = existing ? 'Edit group' : 'New group';
   document.getElementById('groupName').value = existing?.name || '';
   document.getElementById('groupDesc').value = existing?.description || '';
@@ -7346,7 +7676,8 @@ function openGroupEditor(groupId) {
   document.getElementById('groupIsNetwork').closest('label').style.display = can.switchAnySchool() ? '' : 'none';
   // Toggling network scope swaps the member pool between this school and all schools.
   document.getElementById('groupIsNetwork').onchange = () => renderGroupStaticMembers(_editingStaticMembers);
-  document.getElementById('groupDeleteBtn').style.display = existing ? 'block' : 'none';
+  const canDel = existing && ((existing.school_id === null) ? can.switchAnySchool() : can.deleteGroups());
+  document.getElementById('groupDeleteBtn').style.display = canDel ? 'block' : 'none';
   renderGroupRules(_editingRules);
   renderGroupStaticMembers(_editingStaticMembers);
   openModal('modalGroupEditor');
@@ -7355,7 +7686,9 @@ function openGroupEditor(groupId) {
 function groupRuleValueOptions(field, selected) {
   let opts = [];
   if (field === 'role') {
-    opts = [['superadmin','Superadmin'],['admin','Admin'],['instructor','Instructor'],['junior','Junior']];
+    opts = ((state.roleConfig && state.roleConfig.roles && state.roleConfig.roles.length)
+      ? state.roleConfig.roles.map(r => [r.key, r.label])
+      : [['superadmin','Superadmin'],['admin','Admin'],['instructor','Instructor'],['junior','Junior']]);
   } else if (field === 'state') {
     opts = [...new Set(KRMAS_SCHOOLS.map(s => s.state).filter(Boolean))].sort().map(s => [s, s]);
   } else if (field === 'school') {
@@ -7425,14 +7758,16 @@ function renderGroupStaticMembers(members) {
   _editingStaticMembers = [...members];
   const container = document.getElementById('groupMembersContainer');
   if (!container) return;
-  const keyOf = m => (m.user_id || m.userId) + '@' + (m.school_id || m.schoolId || state.schoolId);
-  const memberKeys = new Set(_editingStaticMembers.map(keyOf));
+  const isMember = i => _editingStaticMembers.some(m => {
+    const mid = m.user_id || m.userId;
+    return (mid === (i.uid || i.id) || mid === i.id) && ((m.school_id || m.schoolId || state.schoolId) === i.schoolId);
+  });
   const netToggle = document.getElementById('groupIsNetwork');
   const isNetwork = !!(netToggle && netToggle.checked && can.switchAnySchool());
 
   const row = (i, withSchool) => `
     <label style="display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px;cursor:pointer;">
-      <input type="checkbox" ${memberKeys.has(i.id + '@' + i.schoolId) ? 'checked' : ''} onchange="groupMemberToggle('${i.id}',this.checked,'${i.schoolId}')" style="width:16px;height:16px;accent-color:var(--red);">
+      <input type="checkbox" ${isMember(i) ? 'checked' : ''} onchange="groupMemberToggle('${i.uid || i.id}',this.checked,'${i.schoolId}')" style="width:16px;height:16px;accent-color:var(--red);">
       ${escapeHtml(i.name)} ${roleBadge(i.role)}${withSchool ? ` <span style="font-size:10px;color:var(--grey-500);">· ${escapeHtml(i.schoolName)}</span>` : ''}
     </label>`;
 
@@ -7462,10 +7797,56 @@ function groupMemberToggle(userId, checked, schoolId) {
   }
 }
 
+// Compute a group's full membership (static picks + rule-matched instructors) and write it
+// to group_members as UID rows. The feed RLS only sees group_members, and rules reference
+// attributes (state/syllabus) that don't exist server-side — so the client materialises here.
+// staticPicks: [{user_id, school_id}] (uid preferred; legacy slugs are mapped through the pool).
+async function materializeGroupMembership(group, staticPicks) {
+  if (!DB.isSupabase) return false;
+  const pool = (group.school_id === null)
+    ? allInstructorsAllSchools()
+    : allInstructors().map(i => ({ ...i, schoolId: group.school_id || state.schoolId }));
+  const staticRows = (staticPicks || []).map(m => {
+    const mid = m.user_id || m.userId, sch = m.school_id || m.schoolId;
+    const instr = pool.find(i => i.id === mid || i.uid === mid);
+    return { user_id: (instr && instr.uid) || mid, school_id: (instr && instr.schoolId) || sch || state.schoolId, source: 'static', added_by: state.user?.name || 'system' };
+  });
+  const staticUids = new Set(staticRows.map(r => r.user_id));
+  const ruleRows = (group.rules && group.rules.length ? pool.filter(i => instrMatchesRules(i, group.rules)) : [])
+    .filter(i => i.uid && !staticUids.has(i.uid))           // don't duplicate a static pick
+    .map(i => ({ user_id: i.uid, school_id: i.schoolId, source: 'rule', added_by: state.user?.name || 'system' }));
+  return DB.syncGroupMembers(group.id, [...staticRows, ...ruleRows]);
+}
+
+// Re-materialise every loaded group. Used as the one-time migration (converts legacy slug
+// rows → uids and writes rule members) and whenever an instructor's role/school changes.
+async function resyncAllGroups() {
+  if (!DB.isSupabase) return 0;
+  let ok = 0;
+  for (const group of state.groups) {
+    const staticPicks = (group.members || []).filter(m => (m.source || 'static') === 'static');
+    if (await materializeGroupMembership(group, staticPicks)) ok++;
+  }
+  return ok;
+}
+
+// Manual trigger (Admin → Groups): runs the one-time migration + a safety re-sync.
+async function resyncGroupsManual() {
+  if (blockedByImpersonation()) return;
+  if (!can.manageGroups() && !can.editGroups() && !can.deleteGroups()) { alert('Admin access required.'); return; }
+  const n = await resyncAllGroups();
+  alert('Re-synced ' + n + ' group' + (n === 1 ? '' : 's') + '. Group-targeted posts will now reach the right people.');
+}
+
 async function saveGroup() {
+  if (blockedByImpersonation()) return;
   const name = document.getElementById('groupName').value.trim();
   if (!name) { alert('Enter a group name.'); return; }
   const isNetwork = document.getElementById('groupIsNetwork').checked && can.switchAnySchool();
+  // Network groups → superadmin; school groups → groups edit (existing) or add (new).
+  const allowed = isNetwork ? can.switchAnySchool()
+    : (state.editingGroupId ? can.editGroups() : can.manageGroups());
+  if (!allowed) { alert("You don't have permission to do that."); return; }
   const id = state.editingGroupId || ('GRP-' + Date.now().toString(36).toUpperCase());
   const existing = state.editingGroupId ? state.groups.find(g => g.id === id) : null;
 
@@ -7487,19 +7868,21 @@ async function saveGroup() {
   else state.groups.push(group);
 
   await DB.saveGroup(group);
-  // Save static members (preserve each member's own school for cross-location groups)
-  for (const m of _editingStaticMembers) {
-    await DB.saveGroupMember(id, m.user_id || m.userId, m.school_id || m.schoolId || state.schoolId, state.user?.name);
-  }
+  // Materialise the full membership (static picks + rule matches) into group_members as
+  // UIDs, so group-targeted feed posts reach everyone the RLS can see.
+  await materializeGroupMembership(group, _editingStaticMembers);
 
   closeModal('modalGroupEditor');
   renderGroupsAdminModal();
 }
 
 async function deleteGroup() {
+  if (blockedByImpersonation()) return;
   const id = state.editingGroupId;
   if (!id) return;
   const g = state.groups.find(g => g.id === id);
+  const allowed = g && ((g.school_id === null) ? can.switchAnySchool() : can.deleteGroups());
+  if (!allowed) { alert("You don't have permission to delete this group."); return; }
   if (!confirm(`Delete group "${g?.name || id}"?`)) return;
   state.groups = state.groups.filter(g => g.id !== id);
   await DB.deleteGroup(id);
@@ -7609,6 +7992,13 @@ function openBulkImport() {
   document.getElementById('bulkImportStatus').textContent = '';
   document.getElementById('bulkImportPreview').innerHTML = '';
   document.getElementById('bulkImportFile').value = '';
+  const hint = document.getElementById('bulkImportRoleHint');
+  if (hint) {
+    const custom = ((state.roleConfig && state.roleConfig.roles) || []).filter(r => !r.builtin).map(r => r.key);
+    hint.innerHTML = custom.length
+      ? `<strong>Your custom roles:</strong> ${custom.map(escapeHtml).join(', ')}<br>`
+      : '';
+  }
   openModal('modalBulkImport');
 }
 
@@ -7652,17 +8042,45 @@ function handleBulkImportFile(input) {
   }
 }
 
+// Proper RFC-4180-style CSV parser: handles quoted fields, embedded commas and
+// newlines, escaped "" quotes, a leading UTF-8 BOM, and CRLF/CR line endings.
+// Returns an array of row arrays.
+function parseCSV(text) {
+  text = String(text).replace(/^\uFEFF/, '');          // strip BOM (Excel exports)
+  const rows = [];
+  let row = [], field = '', inQuotes = false, i = 0;
+  const endField = () => { row.push(field); field = ''; };
+  const endRow = () => { endField(); rows.push(row); row = []; };
+  while (i < text.length) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i += 2; continue; }  // escaped quote
+        inQuotes = false; i++; continue;
+      }
+      field += c; i++; continue;
+    }
+    if (c === '"') { inQuotes = true; i++; continue; }
+    if (c === ',') { endField(); i++; continue; }
+    if (c === '\r') { i++; continue; }                  // ignore CR (CRLF handled by the \n)
+    if (c === '\n') { endRow(); i++; continue; }
+    field += c; i++;
+  }
+  if (field !== '' || row.length) endRow();             // flush trailing field/row
+  return rows;
+}
+
 function parseBulkCSV(text) {
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  if (lines.length < 2) {
+  // Drop fully-blank rows (e.g. trailing newline), keep everything else intact.
+  const matrix = parseCSV(text).filter(r => r.some(c => String(c).trim() !== ''));
+  if (matrix.length < 2) {
     document.getElementById('bulkImportStatus').textContent = 'File appears empty or has no data rows.';
     return;
   }
-  const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/\s+/g,''));
-  const rows = lines.slice(1).map(line => {
-    const vals = line.split(',').map(v => v.trim().replace(/^["']|["']$/g,''));
+  const headers = matrix[0].map(h => h.trim().toLowerCase().replace(/\s+/g, ''));
+  const rows = matrix.slice(1).map(vals => {
     const obj = {};
-    headers.forEach((h, i) => obj[h] = vals[i] || '');
+    headers.forEach((h, i) => obj[h] = (vals[i] != null ? String(vals[i]).trim() : ''));
     return obj;
   }).filter(r => r.name);
   previewBulkImport(rows);
@@ -7696,12 +8114,15 @@ function previewBulkImport(rows) {
 
   // Validate and normalise each row
   const isSuperAdmin = can.switchAnySchool();
+  // Valid assignable roles = the builtins plus any custom roles the superadmin defined.
+  const validRoles = new Set(['superadmin', 'admin', 'instructor', 'junior']
+    .concat(((state.roleConfig && state.roleConfig.roles) || []).map(r => r.key)));
   const results = rows.map((r, i) => {
     const name = r.name?.trim();
     let role = (r.role?.toLowerCase() || 'instructor');
-    // Admins (non-superadmin) can only import instructor/junior roles
-    if (!isSuperAdmin && ['superadmin','admin'].includes(role)) role = 'instructor';
-    if (!['superadmin','admin','instructor','junior'].includes(role)) role = 'instructor';
+    // Admins (non-superadmin) can only import roles below admin.
+    if (!isSuperAdmin && ['superadmin', 'admin'].includes(role)) role = 'instructor';
+    if (!validRoles.has(role)) role = 'instructor';
     const pin  = /^\d{4}$/.test(r.pin?.trim()) ? r.pin.trim() : '0000';
     const status_val = ['active','inactive','leave'].includes(r.status?.toLowerCase()) ? r.status.toLowerCase() : 'active';
     const errors = [];
@@ -7947,6 +8368,7 @@ function closeLightbox() {
 // ---------- Required reading acknowledgements ----------
 async function acknowledgePost(postId) {
   if (!state.user) { openLogin(); return; }
+  if (blockedByImpersonation()) return;
   if (state.myAcks.has(postId)) return;
   state.myAcks.add(postId);
   const post = state.feed.find(p => p.id === postId);
@@ -8082,7 +8504,7 @@ function renderCalendar() {
   const m = state.calMonth.getMonth();
   const monthName = state.calMonth.toLocaleDateString('en-AU', { month: 'long', year: 'numeric' });
   const today = isoDate(new Date());
-  const isAdmin = can.manageInstructors();
+  const isAdmin = can.manageCalendar();
 
   let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
     <h1 class="section-head" style="margin:0;">Calendar</h1>
@@ -8173,7 +8595,9 @@ function renderCalendar() {
 function renderEventCard(ev) {
   const t = eventTypeOf(ev);
   const colour = t?.colour || 'var(--grey-300)';
-  const canEdit = can.manageInstructors() && (ev.schoolId !== null || can.switchAnySchool());
+  // School events: gated by the calendar 'edit' permission. Network events (school_id
+  // null) require superadmin, matching the RLS update policy.
+  const canEdit = (ev.schoolId === null) ? can.switchAnySchool() : can.editCalendar();
   const time = ev.startTime ? (ev.startTime + (ev.endTime ? '–' + ev.endTime : '')) : 'All day';
   const mapsUrl = ev.location ? 'https://maps.google.com/?q=' + encodeURIComponent(ev.location) : null;
 
@@ -8228,9 +8652,14 @@ function calSelectDate(iso) {
 
 // ---------- Event editor ----------
 function openEventEditor(eventId) {
-  if (!requireRole('admin')) return;
-  state.editingEventId = eventId || null;
   const existing = eventId ? state.calendarEvents.find(e => e.id === eventId) : null;
+  // Network events (school_id null) are superadmin-only; school events follow the
+  // calendar add/edit permissions. Matches the calendar_events RLS policies.
+  const allowed = eventId
+    ? ((existing && existing.schoolId === null) ? can.switchAnySchool() : can.editCalendar())
+    : can.manageCalendar();
+  if (!allowed) { alert("You don't have permission to manage events."); return; }
+  state.editingEventId = eventId || null;
 
   document.getElementById('evEditorTitle').textContent = existing ? 'Edit event' : 'New event';
   document.getElementById('evTitle').value = existing?.title || '';
@@ -8261,7 +8690,10 @@ function openEventEditor(eventId) {
   document.getElementById('evRepeat').value = '';
   document.getElementById('evRepeatUntil').value = '';
 
-  document.getElementById('evDeleteBtn').style.display = existing ? 'block' : 'none';
+  // Delete is only offered when editing AND the user may delete this event
+  // (network events → superadmin; school events → calendar 'delete' permission).
+  const canDelete = existing && ((existing.schoolId === null) ? can.switchAnySchool() : can.deleteCalendar());
+  document.getElementById('evDeleteBtn').style.display = canDelete ? 'block' : 'none';
   openModal('modalEventEditor');
 }
 
@@ -8271,6 +8703,7 @@ function evAllDayToggled() {
 }
 
 async function saveEvent() {
+  if (blockedByImpersonation()) return;
   const title = document.getElementById('evTitle').value.trim();
   if (!title) { alert('Enter an event title.'); return; }
   let startDate = document.getElementById('evStart').value;
@@ -8284,6 +8717,12 @@ async function saveEvent() {
 
   const isNetwork = can.switchAnySchool() && document.getElementById('evScope').value === 'network';
   const existing = state.editingEventId ? state.calendarEvents.find(e => e.id === state.editingEventId) : null;
+
+  // Final permission gate (defence-in-depth alongside RLS): network scope needs
+  // superadmin; otherwise editing an event needs calendar 'edit', creating needs 'add'.
+  const allowedToSave = isNetwork ? can.switchAnySchool()
+    : existing ? can.editCalendar() : can.manageCalendar();
+  if (!allowedToSave) { alert("You don't have permission to save this event."); return; }
 
   const ev = {
     id:          existing?.id || ('EVT-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 5).toUpperCase()),
@@ -8336,9 +8775,13 @@ async function saveEvent() {
 }
 
 async function deleteEvent() {
+  if (blockedByImpersonation()) return;
   const id = state.editingEventId;
   if (!id) return;
   const ev = state.calendarEvents.find(e => e.id === id);
+  // Network events → superadmin; school events → calendar 'delete' permission.
+  const allowedToDelete = ev && ((ev.schoolId === null) ? can.switchAnySchool() : can.deleteCalendar());
+  if (!allowedToDelete) { alert("You don't have permission to delete this event."); return; }
   if (!confirm(`Delete "${ev?.title || 'this event'}"?`)) return;
   state.calendarEvents = state.calendarEvents.filter(e => e.id !== id);
   closeModal('modalEventEditor');
@@ -8872,7 +9315,7 @@ async function deleteDocConfirm(docId) {
 let _docUploadTarget = null; // null = org; { instructorId } = personal
 
 function openDocUpload() {
-  if (!requireRole('superadmin')) return;
+  if (!can.manageDocuments()) { alert("You don't have permission to upload documents."); return; }
   _docUploadTarget = null;
   document.getElementById('docUpHeading').textContent = '📄 Upload document';
   document.getElementById('docUpSub').textContent = 'Upload a PDF or image for instructors to view. Maximum 5 MB.';
@@ -8882,8 +9325,41 @@ function openDocUpload() {
   document.getElementById('docUpCategory').value = 'Syllabus';
   document.getElementById('docUpFile').value = '';
   document.getElementById('docUpStatus').textContent = '';
-  document.getElementById('docUpScope').value = 'network';
+  populateDocScopeOptions();
   openModal('modalDocUpload');
+}
+
+// Scope dropdown for the current role: superadmin → network + this school + any group;
+// admin → this school + their school's groups (no network). A group can be a few people
+// or a whole school (school-rule group), so it covers "any number of users or all of a school".
+function populateDocScopeOptions() {
+  const sel = document.getElementById('docUpScope');
+  if (!sel) return;
+  const isSuper = can.switchAnySchool();
+  const groups = (state.groups || []).filter(g => isSuper || (g.school_id || null) === state.schoolId);
+  let opts = '';
+  if (isSuper) opts += '<option value="network">All schools (network)</option>';
+  opts += '<option value="school">This school only</option>';
+  if (groups.length) opts += '<option value="group">A group…</option>';
+  sel.innerHTML = opts;
+  sel.value = isSuper ? 'network' : 'school';
+  docUpScopeChanged();
+}
+
+// Show/populate the group picker only when "A group…" is selected.
+function docUpScopeChanged() {
+  const scope = (document.getElementById('docUpScope') || {}).value;
+  const row = document.getElementById('docUpGroupRow');
+  if (!row) return;
+  if (scope === 'group') {
+    const isSuper = can.switchAnySchool();
+    const groups = (state.groups || []).filter(g => isSuper || (g.school_id || null) === state.schoolId);
+    document.getElementById('docUpGroup').innerHTML = groups.map(g =>
+      `<option value="${g.id}">${(g.school_id === null ? '🌐 ' : '') + escapeHtml(g.name || 'Group')}</option>`).join('');
+    row.style.display = '';
+  } else {
+    row.style.display = 'none';
+  }
 }
 
 // Open the uploader targeting a person's personal documents (defaults to self).
@@ -8930,11 +9406,12 @@ function handleDocFile(input) {
 
 async function submitDocUpload() {
   const personal = !!_docUploadTarget;
+  if (blockedByImpersonation()) return;
   if (personal) {
     const tgt = _docUploadTarget.instructorId;
     if (tgt !== state.user?.id && !can.manageInstructors()) { alert('Admin access required.'); return; }
-  } else if (!can.switchAnySchool()) {
-    alert('Superadmin access required.'); return;
+  } else if (!can.manageDocuments()) {
+    alert("You don't have permission to upload documents."); return;
   }
 
   const title = document.getElementById('docUpTitle').value.trim();
@@ -8945,16 +9422,32 @@ async function submitDocUpload() {
   if (!isAllowedDocFile(file)) { alert('Only PDF or image files are accepted.'); return; }
   if (file.size > MAX_DOC_SIZE) { alert('File too large. Maximum is ' + fmtBytes(MAX_DOC_SIZE) + '.'); return; }
 
+  // Resolve the chosen scope → (schoolId, targetScope, targetIds).
+  let docSchoolId = state.schoolId, targetScope = 'school', targetIds = [];
+  if (!personal) {
+    const scopeVal = (document.getElementById('docUpScope') || {}).value || 'school';
+    if (scopeVal === 'network') {
+      if (!can.switchAnySchool()) { alert('Only a superadmin can post to the whole network.'); return; }
+      docSchoolId = null; targetScope = 'network';
+    } else if (scopeVal === 'group') {
+      const gid = (document.getElementById('docUpGroup') || {}).value;
+      const g = (state.groups || []).find(x => x.id === gid);
+      if (!g) { alert('Pick a group to send this document to.'); return; }
+      docSchoolId = g.school_id || null; targetScope = 'group'; targetIds = [g.id];
+    } else {
+      docSchoolId = state.schoolId; targetScope = 'school';
+    }
+  }
+
   const status = document.getElementById('docUpStatus');
   status.textContent = 'Uploading…';
   status.style.color = 'var(--grey-500)';
 
   try {
     const dataUrl = await fileToDataUrl(file);
-    const scope = personal ? null : document.getElementById('docUpScope').value;
     const doc = {
       id: 'DOC-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 5).toUpperCase(),
-      schoolId: personal ? state.schoolId : (scope === 'network' ? null : state.schoolId),
+      schoolId: personal ? state.schoolId : docSchoolId,
       instructorId: personal ? _docUploadTarget.instructorId : null,
       title,
       description: document.getElementById('docUpDesc').value.trim(),
@@ -8964,6 +9457,8 @@ async function submitDocUpload() {
       fileSize: file.size,
       fileData: dataUrl,
       uploadedBy: state.user?.name || null,
+      targetScope: personal ? 'school' : targetScope,
+      targetIds: personal ? [] : targetIds,
       createdAt: new Date().toISOString(),
     };
 
@@ -9543,6 +10038,7 @@ function renderAdmin() {
     { icon: '📢', label: 'Notices board',       fn: 'openNoticesBoard()' },
   ];
   if (isSuperAdmin) {
+    btns.unshift({ icon: '🔑', label: 'Roles & permissions', fn: 'openRolesMatrix()' });
     btns.unshift({ icon: '🌐', label: 'All schools overview', fn: 'openAllSchoolsOverview()' });
     btns.push({ icon: '📄', label: 'Upload docs', fn: 'openDocUpload()' });
     if (!DB.isSupabase) btns.push({ icon: '☁', label: 'Migrate to Supabase', fn: 'runMigration()' });
@@ -9563,9 +10059,125 @@ function renderAdmin() {
 
   main.innerHTML = html;
 }
+
 // ====================================================================
-// Feed — documents strip
+// Roles & permissions matrix — superadmin defines what each below-admin role can do.
+// The database (has_perm) is the real gate; this UI just edits role_permissions.
+// Only sections genuinely enforced via has_perm are shown, so every toggle is real.
 // ====================================================================
+const MATRIX_SECTIONS = [
+  { key:'students',   label:'Students',          actions:['view','add','edit','delete'] },
+  { key:'incidents',  label:'Incidents',         actions:['view','add','edit','delete'] },
+  { key:'feed',       label:'Feed — post',       actions:['add'] },
+  { key:'notices',    label:'Notices',           actions:['view','add','edit','delete'] },
+  { key:'calendar',   label:'Calendar & events', actions:['view','add','edit','delete'] },
+  { key:'documents',  label:'Documents',         actions:['view','add','edit','delete'] },
+  { key:'compliance', label:'Compliance',        actions:['view','add','edit','delete'] },
+  { key:'groups',     label:'Groups',            actions:['view','add','edit','delete'] },
+];
+const STRUCTURAL_DISPLAY = [
+  'Timetable / classes',
+  'School details & location',
+  'Roster people (add / edit / remove)',
+  'Logins (invite / reset / assign role)',
+];
+
+async function openRolesMatrix() {
+  if (!can.manageRoles()) { alert('Only superadmins can edit roles.'); return; }
+  try { state.roleConfig = await DB.roles.loadConfig(); } catch (e) { console.warn('roles load:', e && e.message); }
+  const below = (state.roleConfig.roles || []).filter(r => r.rank < 3)
+                  .sort((a,b) => (b.rank - a.rank) || a.label.localeCompare(b.label));
+  state._rolesEditingRole = (below[0] && below[0].key) || 'instructor';
+  renderRolesMatrix();
+  openModal('modalRolesMatrix');
+}
+
+function renderRolesMatrix() {
+  const body = document.getElementById('rolesMatrixBody');
+  if (!body) return;
+  const roles = (state.roleConfig.roles || []).filter(r => r.rank < 3)
+                  .sort((a,b) => (b.rank - a.rank) || a.label.localeCompare(b.label));
+  const sel = state._rolesEditingRole;
+  const perms = (state.roleConfig.perms && state.roleConfig.perms[sel]) || {};
+
+  let html = `<div style="font-size:12px;color:var(--grey-500);margin-bottom:10px;line-height:1.4;">
+    Superadmins set what each role can do; admins assign roles to people in User management.
+    Structural rows are locked to admins and can't be granted here.</div>`;
+
+  html += `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">`;
+  for (const r of roles) {
+    const active = r.key === sel;
+    html += `<button class="btn btn-sm" onclick="selectMatrixRole('${escapeHtml(r.key)}')"
+      style="${active ? 'background:var(--red);color:#fff;border-color:var(--red);' : ''}">${escapeHtml(r.label)}</button>`;
+  }
+  html += `<button class="btn btn-sm" onclick="createCustomRole()">+ New role</button></div>`;
+
+  const selRole = roles.find(r => r.key === sel);
+  if (selRole && !selRole.builtin) {
+    html += `<div style="margin-bottom:8px;"><button class="btn btn-sm" onclick="deleteCustomRole('${escapeHtml(sel)}')"
+      style="color:var(--red);">Delete &ldquo;${escapeHtml(selRole.label)}&rdquo;</button></div>`;
+  }
+
+  html += `<table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <thead><tr style="border-bottom:1px solid var(--grey-200);">
+      <th style="text-align:left;padding:5px 4px;">Section</th>
+      <th style="padding:5px 4px;width:46px;">View</th><th style="padding:5px 4px;width:46px;">Add</th>
+      <th style="padding:5px 4px;width:46px;">Edit</th><th style="padding:5px 4px;width:52px;">Delete</th>
+    </tr></thead><tbody>`;
+  for (const s of MATRIX_SECTIONS) {
+    html += `<tr style="border-bottom:1px solid var(--grey-100);"><td style="padding:5px 4px;font-weight:600;">${escapeHtml(s.label)}</td>`;
+    for (const act of ['view','add','edit','delete']) {
+      if (s.actions.indexOf(act) === -1) { html += `<td style="text-align:center;color:var(--grey-300);">—</td>`; continue; }
+      const on = !!(perms[s.key] && perms[s.key][act]);
+      html += `<td style="text-align:center;padding:5px 4px;">
+        <input type="checkbox" ${on ? 'checked' : ''}
+          onchange="toggleRolePerm('${escapeHtml(sel)}','${s.key}','${act}',this.checked)"
+          style="width:16px;height:16px;cursor:pointer;"></td>`;
+    }
+    html += `</tr>`;
+  }
+  for (const label of STRUCTURAL_DISPLAY) {
+    html += `<tr style="opacity:.55;"><td style="padding:5px 4px;">${escapeHtml(label)} <span style="font-size:10px;">🔒</span></td>
+      <td colspan="4" style="text-align:center;font-size:11px;color:var(--grey-400);">Admins only</td></tr>`;
+  }
+  html += `</tbody></table>`;
+  html += `<div style="font-size:11px;color:var(--grey-400);margin-top:8px;line-height:1.4;">
+    Grading, lesson plans and roster view are still governed by rank and will join the matrix later.</div>`;
+  body.innerHTML = html;
+}
+
+function selectMatrixRole(key) { state._rolesEditingRole = key; renderRolesMatrix(); }
+
+async function toggleRolePerm(roleKey, section, action, allowed) {
+  const r = await DB.roles.setPermission(roleKey, section, action, allowed);
+  if (r.error) { alert('Could not save: ' + r.error); renderRolesMatrix(); return; }
+  if (!state.roleConfig.perms[roleKey]) state.roleConfig.perms[roleKey] = {};
+  if (!state.roleConfig.perms[roleKey][section]) state.roleConfig.perms[roleKey][section] = {};
+  if (allowed) state.roleConfig.perms[roleKey][section][action] = true;
+  else delete state.roleConfig.perms[roleKey][section][action];
+}
+
+async function createCustomRole() {
+  const label = prompt('Name for the new role (e.g. "Senior Instructor"):');
+  if (!label || !label.trim()) return;
+  const key = label.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  if (!key) { alert('Please use a name with letters or numbers.'); return; }
+  const r = await DB.roles.createRole(key, label.trim(), 2);
+  if (r.error) { alert('Could not create role: ' + r.error); return; }
+  state.roleConfig = await DB.roles.loadConfig();
+  state._rolesEditingRole = key;
+  renderRolesMatrix();
+}
+
+async function deleteCustomRole(key) {
+  if (!confirm('Delete this role? Anyone assigned to it keeps their login but will need a new role.')) return;
+  const r = await DB.roles.deleteRole(key);
+  if (r.error) { alert('Could not delete role: ' + r.error); return; }
+  state.roleConfig = await DB.roles.loadConfig();
+  const below = (state.roleConfig.roles || []).filter(x => x.rank < 3);
+  state._rolesEditingRole = (below[0] && below[0].key) || 'instructor';
+  renderRolesMatrix();
+}
 function renderDocStrip() {
   const docs = state.documents || [];
   if (docs.length === 0) return '';
@@ -9665,17 +10277,18 @@ function renderDocuments() {
   const main = document.getElementById('mainContent');
   const docs = state.documents || [];
   const isSuperAdmin = can.switchAnySchool();
+  const canUpload = can.manageDocuments();
 
   let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
     <h1 class="section-head" style="margin:0;">Documents</h1>
-    ${isSuperAdmin ? `<button class="btn btn-primary" onclick="openDocUpload()" style="padding:8px 14px;">+ Upload</button>` : ''}
+    ${canUpload ? `<button class="btn btn-primary" onclick="openDocUpload()" style="padding:8px 14px;">+ Upload</button>` : ''}
   </div>`;
 
   if (docs.length === 0) {
     html += `<div style="text-align:center;padding:28px 0;color:var(--grey-500);">
       <div style="font-size:32px;margin-bottom:10px;">📚</div>
       <div style="font-weight:700;font-size:15px;margin-bottom:6px;">No documents yet</div>
-      <div style="font-size:13px;">${isSuperAdmin ? 'Tap + Upload to add syllabuses, policies, and reference material.' : 'Documents uploaded by head office will appear here.'}</div>
+      <div style="font-size:13px;">${canUpload ? 'Tap + Upload to add syllabuses, policies, and reference material.' : 'Documents uploaded by head office will appear here.'}</div>
     </div>`;
     main.innerHTML = html;
     return;
@@ -9692,6 +10305,16 @@ function renderDocuments() {
   for (const [cat, catDocs] of Object.entries(byCategory).sort((a, b) => a[0].localeCompare(b[0]))) {
     html += `<div class="section-sub">${escapeHtml(cat)} <span style="font-size:10px;color:var(--grey-400);font-weight:400;">(${catDocs.length})</span></div>`;
     for (const doc of catDocs.sort((a, b) => a.title.localeCompare(b.title))) {
+      let scopeBadge = '';
+      if (doc.targetScope === 'group') {
+        const g = (state.groups || []).find(x => x.id === (doc.targetIds || [])[0]);
+        scopeBadge = ` · <span style="color:var(--red);font-weight:700;">👥 ${escapeHtml(g ? g.name : 'Group')}</span>`;
+      } else if (doc.schoolId === null || doc.targetScope === 'network') {
+        scopeBadge = ` · <span style="color:var(--red);font-weight:700;">All schools</span>`;
+      }
+      const canDeleteThis = (doc.schoolId === null)
+        ? isSuperAdmin
+        : (isSuperAdmin || (hasPerm('documents', 'delete') && doc.schoolId === state.schoolId));
       html += `<div onclick="viewDocument('${doc.id}')" class="ev-card" style="border-left:4px solid var(--red);cursor:pointer;display:flex;align-items:center;gap:10px;">
         <span style="font-size:24px;flex-shrink:0;">📄</span>
         <div style="flex:1;min-width:0;">
@@ -9700,12 +10323,12 @@ function renderDocuments() {
           <div style="font-size:11px;color:var(--grey-400);margin-top:3px;">
             ${escapeHtml(doc.filename)} · ${fmtBytes(doc.fileSize)}
             ${doc.uploadedBy ? ' · ' + escapeHtml(doc.uploadedBy) : ''}
-            ${doc.schoolId === null ? ' · <span style="color:var(--red);font-weight:700;">All schools</span>' : ''}
+            ${scopeBadge}
           </div>
         </div>
         <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;">
           <span style="font-size:12px;color:var(--red);font-weight:700;">Open ›</span>
-          ${isSuperAdmin ? `<button class="btn btn-sm" onclick="event.stopPropagation();deleteDocConfirm('${doc.id}')" style="color:var(--red);font-size:10px;">Delete</button>` : ''}
+          ${canDeleteThis ? `<button class="btn btn-sm" onclick="event.stopPropagation();deleteDocConfirm('${doc.id}')" style="color:var(--red);font-size:10px;">Delete</button>` : ''}
         </div>
       </div>`;
     }
@@ -9952,6 +10575,7 @@ function editScheduleSlot(dow, idx) {
 }
 
 async function saveScheduleSlot() {
+  if (blockedByImpersonation()) return;
   const schoolId = state._editingScheduleSchool;
   if (!canEditSchool(schoolId)) { alert('You can only edit your own school.'); return; }
   const dow = parseInt(document.getElementById('slotEdDow').value);
@@ -10587,6 +11211,7 @@ function openOnboardingDetail(instructorId) {
 }
 
 async function toggleOnboardingItem(instructorId, itemIdx, checked) {
+  if (blockedByImpersonation()) return;
   const cl = getOnboardingForInstructor(instructorId);
   if (!cl || !cl.items[itemIdx]) return;
   cl.items[itemIdx].completed = checked;

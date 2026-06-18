@@ -14,7 +14,9 @@ const DB = (() => {
   // ── Supabase client (lazy-initialised) ──────────────────────────
   let _sb = null;
   let _uid = null;
-  function sbClient() {
+  let _readOnly = false;   // set true while a user is impersonating someone (view-as)
+
+  function _rawClient() {
     if (_sb) return _sb;
     if (!window.SUPABASE_URL || !window.SUPABASE_ANON) return null;
     if (typeof supabase === 'undefined' || !supabase.createClient) return null;
@@ -25,6 +27,39 @@ const DB = (() => {
     _sb.auth.onAuthStateChange((_e, session) => { _uid = session && session.user ? session.user.id : null; });
     console.log('[DB] Supabase connected to', window.SUPABASE_URL);
     return _sb;
+  }
+
+  // Read-only proxy used during impersonation. Reads + auth pass straight through;
+  // every mutation (insert/update/upsert/delete, the upsert_kv RPC, and privileged
+  // Edge-Function invokes) resolves to an error instead of running, so "view as"
+  // can never write as either the impersonator OR the impersonated user. This is a
+  // belt-and-braces UX guard; the real security boundary is still RLS on the live JWT.
+  const _RO_ERR = { data: null, error: { message: 'read-only (impersonating)' } };
+  function _roResult() { const r = Promise.resolve(_RO_ERR); ['eq','neq','select','single','maybeSingle','in','is','order','limit','match'].forEach((m) => { r[m] = () => r; }); return r; }
+  function _builderProxy(b) {
+    return new Proxy(b, {
+      get(t, prop, recv) {
+        if (prop === 'insert' || prop === 'update' || prop === 'upsert' || prop === 'delete') return () => _roResult();
+        const v = Reflect.get(t, prop, recv);
+        return typeof v === 'function' ? v.bind(t) : v;
+      },
+    });
+  }
+  function _roProxy(client) {
+    return new Proxy(client, {
+      get(t, prop, recv) {
+        if (prop === 'from')    return (table) => _builderProxy(t.from(table));
+        if (prop === 'rpc')     return (fn, args) => (fn === 'upsert_kv' ? Promise.resolve(_RO_ERR) : t.rpc(fn, args));
+        if (prop === 'functions') return { invoke: () => Promise.resolve(_RO_ERR) };
+        const v = Reflect.get(t, prop, recv);
+        return typeof v === 'function' ? v.bind(t) : v;
+      },
+    });
+  }
+
+  function sbClient() {
+    const c = _rawClient();
+    return (_readOnly && c) ? _roProxy(c) : c;
   }
   function isSB() { return !!sbClient(); }
 
@@ -620,7 +655,7 @@ const DB = (() => {
     try {
       const { data, error } = await sbClient()
         .from('groups')
-        .select('*, members:group_members(user_id, school_id)')
+        .select('*, members:group_members(user_id, school_id, source)')
         .or(`school_id.eq.${schoolId},school_id.is.null`)
         .order('name');
       if (error) throw error;
@@ -655,15 +690,40 @@ const DB = (() => {
     } catch (e) { return false; }
   }
 
-  async function saveGroupMember(groupId, userId, schoolId, addedBy) {
+  async function saveGroupMember(groupId, userId, schoolId, addedBy, source) {
     if (!isSB()) return false;
     try {
       const { error } = await sbClient().from('group_members').upsert(
-        { group_id: groupId, user_id: userId, school_id: schoolId, added_by: addedBy },
+        { group_id: groupId, user_id: userId, school_id: schoolId, added_by: addedBy, source: source || 'static' },
         { onConflict: 'group_id,user_id' }
       );
       return !error;
     } catch (e) { return false; }
+  }
+
+  // Replace a group's ENTIRE membership with `rows` ([{user_id, school_id, source, added_by}]).
+  // Additive-first (upsert desired) then prune stragglers by exact id — uses only .eq filters,
+  // so it never relies on PostgREST in-list quoting, and there's no empty-membership window.
+  async function syncGroupMembers(groupId, rows) {
+    if (!isSB()) return false;
+    try {
+      const sb = sbClient();
+      const desired = (rows || []).map(r => ({ group_id: groupId, user_id: r.user_id, school_id: r.school_id, added_by: r.added_by, source: r.source || 'static' }));
+      if (desired.length) {
+        const { error } = await sb.from('group_members').upsert(desired, { onConflict: 'group_id,user_id' });
+        if (error) { console.warn('[DB] syncGroupMembers upsert:', error.message); return false; }
+      }
+      const want = new Set(desired.map(r => r.user_id));
+      const { data: current, error: selErr } = await sb.from('group_members').select('user_id').eq('group_id', groupId);
+      if (selErr) { console.warn('[DB] syncGroupMembers select:', selErr.message); return false; }
+      for (const r of (current || [])) {
+        if (!want.has(r.user_id)) {
+          const { error: dErr } = await sb.from('group_members').delete().eq('group_id', groupId).eq('user_id', r.user_id);
+          if (dErr) { console.warn('[DB] syncGroupMembers prune:', dErr.message); return false; }
+        }
+      }
+      return true;
+    } catch (e) { console.warn('[DB] syncGroupMembers:', e.message); return false; }
   }
 
   async function removeGroupMember(groupId, userId) {
@@ -870,6 +930,8 @@ const DB = (() => {
       fileSize:     r.file_size || 0,
       fileData:     r.file_data || null,
       uploadedBy:   r.uploaded_by || null,
+      targetScope:  r.target_scope || 'school',
+      targetIds:    r.target_ids || [],
       createdAt:    r.created_at,
     };
   }
@@ -936,6 +998,8 @@ const DB = (() => {
         file_size:     doc.fileSize || 0,
         file_data:     doc.fileData || null,
         uploaded_by:   doc.uploadedBy || null,
+        target_scope:  doc.targetScope || 'school',
+        target_ids:    doc.targetIds || [],
         created_at:    doc.createdAt || new Date().toISOString(),
         updated_at:    new Date().toISOString(),
       };
@@ -1185,6 +1249,10 @@ const DB = (() => {
   return {
     get isSupabase() { return isSB(); },
 
+    // Toggle the read-only impersonation guard (blocks all writes while viewing-as).
+    setReadOnly(v) { _readOnly = !!v; },
+    get readOnly() { return _readOnly; },
+
     // ── Auth (Supabase session is the real boundary) ──
     auth: {
       async getSession() { const sb = sbClient(); if (!sb) return null; const { data } = await sb.auth.getSession(); return data.session; },
@@ -1222,10 +1290,86 @@ const DB = (() => {
       async setPin(pin) { const sb = sbClient(); if (!sb || !_uid) return false; const h = await sha256Hex(_uid + ':' + pin); const { error } = await sb.from('profiles').update({ pin_hash: h }).eq('id', _uid); return !error; },
       async checkPin(pin) { const sb = sbClient(); if (!sb || !_uid) return false; const h = await sha256Hex(_uid + ':' + pin); const { data } = await sb.from('profiles').select('pin_hash').eq('id', _uid).single(); return !!(data && data.pin_hash === h); },
       async hasPin() { const sb = sbClient(); if (!sb || !_uid) return false; const { data } = await sb.from('profiles').select('pin_hash').eq('id', _uid).single(); return !!(data && data.pin_hash); },
+
+      // ── True (server-side) impersonation ──
+      // Mint a one-time login token for the target via the service-role edge fn
+      // (permission-checked + audited there). Returns { token_hash, target }.
+      startImpersonation: (targetUid) => invokeFn('impersonate', { targetUid }),
+      // Record that an impersonation session ended (audited server-side). Best-effort.
+      endImpersonation: (targetUid) => invokeFn('impersonate', { action: 'stop', targetUid }),
+      // Exchange that token for a live session AS the target (RLS now sees the target).
+      async applyImpersonationToken(tokenHash) {
+        const sb = sbClient(); if (!sb) throw new Error('Supabase unavailable');
+        const { data, error } = await sb.auth.verifyOtp({ token_hash: tokenHash, type: 'magiclink' });
+        if (error) throw error;
+        return data.session;
+      },
+      // Restore a previously-captured session (the impersonator's) to exit cleanly.
+      async restoreSession(session) {
+        const sb = sbClient(); if (!sb || !session || !session.access_token) throw new Error('no session to restore');
+        const { data, error } = await sb.auth.setSession({ access_token: session.access_token, refresh_token: session.refresh_token });
+        if (error) throw error;
+        return data.session;
+      },
     },
 
     // Privileged CSV import → Edge Function (service role stays server-side)
     bulkImportStudents: (schoolId, students) => invokeFn('bulk-import', { schoolId, students }),
+
+    // Custom roles + permission matrix. Everyone may READ the config (the client needs
+    // it to gate UI); only the superadmin may write it (RLS enforces that server-side).
+    roles: {
+      async loadConfig() {
+        const sb = sbClient(); if (!sb) return { roles: [], perms: {}, _loaded: false };
+        try {
+          const [r1, r2] = await Promise.all([
+            sb.from('app_roles').select('key,label,rank,builtin').order('rank', { ascending: false }),
+            sb.from('role_permissions').select('role_key,section,action,allowed'),
+          ]);
+          if (r1.error) throw r1.error; if (r2.error) throw r2.error;
+          const perms = {};
+          for (const p of (r2.data || [])) {
+            if (!p.allowed) continue;
+            if (!perms[p.role_key]) perms[p.role_key] = {};
+            if (!perms[p.role_key][p.section]) perms[p.role_key][p.section] = {};
+            perms[p.role_key][p.section][p.action] = true;
+          }
+          return { roles: r1.data || [], perms, _loaded: true };
+        } catch (e) { console.warn('[DB] loadRoleConfig:', e.message); return { roles: [], perms: {}, _loaded: false }; }
+      },
+      async setPermission(roleKey, section, action, allowed) {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        try {
+          if (allowed) {
+            const { error } = await sb.from('role_permissions')
+              .upsert({ role_key: roleKey, section, action, allowed: true }, { onConflict: 'role_key,section,action' });
+            if (error) throw error;
+          } else {
+            const { error } = await sb.from('role_permissions')
+              .delete().eq('role_key', roleKey).eq('section', section).eq('action', action);
+            if (error) throw error;
+          }
+          return {};
+        } catch (e) { return { error: e.message }; }
+      },
+      async createRole(key, label, rank) {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        try { const { error } = await sb.from('app_roles').insert({ key, label, rank: rank || 2, builtin: false }); if (error) throw error; return {}; }
+        catch (e) { return { error: e.message }; }
+      },
+      async renameRole(key, label) {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        try { const { error } = await sb.from('app_roles').update({ label }).eq('key', key); if (error) throw error; return {}; }
+        catch (e) { return { error: e.message }; }
+      },
+      async deleteRole(key) {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        // builtin roles (instructor/junior) are guarded by the predicate; the cascade
+        // drops their role_permissions rows automatically.
+        try { const { error } = await sb.from('app_roles').delete().eq('key', key).eq('builtin', false); if (error) throw error; return {}; }
+        catch (e) { return { error: e.message }; }
+      },
+    },
 
     // Login-user administration (profiles). Reads are RLS-gated and direct; create /
     // delete go through the service-role manage-users Edge Function.
@@ -1292,7 +1436,7 @@ const DB = (() => {
 
     // Groups
     loadGroups, saveGroup, deleteGroup,
-    saveGroupMember, removeGroupMember,
+    saveGroupMember, removeGroupMember, syncGroupMembers,
 
     // Class assignments
     loadClassAssignments, saveClassAssignment, deleteClassAssignment,

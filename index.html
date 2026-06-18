@@ -2139,11 +2139,15 @@
       </div>
       <div class="form-row compact" id="docUpScopeRow">
         <label>Scope</label>
-        <select id="docUpScope">
+        <select id="docUpScope" onchange="docUpScopeChanged()">
           <option value="network">All schools</option>
           <option value="school">This school only</option>
         </select>
       </div>
+    </div>
+    <div class="form-row compact" id="docUpGroupRow" style="display:none;">
+      <label>Group</label>
+      <select id="docUpGroup"></select>
     </div>
     <div class="form-row compact">
       <label>PDF or image file</label>
@@ -2389,6 +2393,18 @@
   </div>
 </div>
 
+<!-- ===== Modal: Roles & permissions (superadmin) ===== -->
+<div class="modal-bg" id="modalRolesMatrix">
+  <div class="modal" style="max-width:580px;">
+    <div class="modal-handle"></div>
+    <h2>Roles &amp; permissions</h2>
+    <div id="rolesMatrixBody"></div>
+    <div class="detail-actions">
+      <button class="btn" onclick="closeModal('modalRolesMatrix')" style="flex:1;">Done</button>
+    </div>
+  </div>
+</div>
+
 <!-- ===== Modal: Class type mapper ===== -->
 <div class="modal-bg" id="modalClassTypeMapper">
   <div class="modal">
@@ -2501,8 +2517,9 @@
     </div>
 
     <div style="margin-top:12px;padding:10px 12px;background:var(--off-white);border-radius:var(--r-sm);font-size:11px;color:var(--grey-500);">
-      <strong>CSV columns:</strong> name, role (superadmin/admin/instructor/junior), pin (4 digits), status (active/inactive/leave), email<br>
-      <strong>Roles:</strong> admins can add instructor/junior users for their school. Superadmins can set any role.<br>
+      <strong>CSV columns:</strong> name, role, pin (4 digits), status (active/inactive/leave), email<br>
+      <strong>Roles:</strong> admins can add any non-admin role (instructor, junior, or a custom role). Superadmins can set any role.<br>
+      <span id="bulkImportRoleHint"></span>
       <strong>Existing users</strong> with the same name will be updated, not duplicated.
     </div>
   </div>
@@ -2582,7 +2599,8 @@
     <div class="modal-handle"></div>
     <h2>Groups</h2>
     <p class="modal-sub">Groups are used to target posts and notices to specific people.</p>
-    <button class="btn btn-primary" style="width:100%;margin-bottom:12px;" onclick="openGroupEditor(null)">+ New group</button>
+    <button class="btn btn-primary" style="width:100%;margin-bottom:8px;" onclick="openGroupEditor(null)">+ New group</button>
+    <button class="btn" style="width:100%;margin-bottom:12px;font-size:12px;" onclick="resyncGroupsManual()">↻ Re-sync group memberships</button>
     <div id="groupsAdminBody" style="max-height:60vh;overflow-y:auto;"></div>
     <button class="btn btn-ghost" style="width:100%;margin-top:10px;" onclick="closeModal('modalGroupsAdmin')">Close</button>
   </div>
@@ -2707,7 +2725,7 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '61';
+  window.KRMAS_APP_VERSION = '62';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
