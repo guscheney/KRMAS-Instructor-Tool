@@ -772,6 +772,75 @@ function renderClosuresAdmin() {
   </div>`;
   body.innerHTML = html;
 }
+// ── Internal-calendar sync: closures + grading days ⇄ Events calendar ────────
+// Setting a shutdown/grading day mirrors it onto the in-app Events calendar, and a
+// matching event written on the calendar updates the system. Linkage lives on the
+// closure/override object (its `eventId`) plus a dedicated event type, so there's no
+// schema change. Forward writes go straight to DB.saveCalendarEvent and reverse writes
+// straight to the closures store, so the two directions never call each other's hooks;
+// `_calSync` is a belt-and-suspenders re-entry guard.
+const SYNC_TYPE = { closure: { name: 'Closure', colour: '#D22C12' }, grading: { name: 'Grading', colour: '#16a34a' } };
+let _calSync = false;
+function _evtId() { return 'EVT-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase(); }
+function findSyncTypeId(sid, key) {
+  const nm = SYNC_TYPE[key].name.toLowerCase();
+  const t = (state.eventTypes || []).find(x => (x.schoolId === sid || x.schoolId === null) && (x.name || '').toLowerCase() === nm);
+  return t ? t.id : null;
+}
+async function ensureSyncEventType(sid, key) {
+  const existing = findSyncTypeId(sid, key);
+  if (existing) return existing;
+  const cfg = SYNC_TYPE[key];
+  const nt = { id: 'ETY-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 5).toUpperCase(), schoolId: sid, name: cfg.name, colour: cfg.colour, createdBy: state.user?.name || null };
+  (state.eventTypes = state.eventTypes || []).push(nt);
+  try { await DB.saveEventType(nt); } catch (e) {}
+  return nt.id;
+}
+// Mirror a closure (or grading day) onto the calendar. Returns the event id.
+async function syncEventFromSource(sid, key, { eventId, title, from, to }) {
+  const typeId = await ensureSyncEventType(sid, key);
+  const id = eventId || _evtId();
+  const ev = { id, schoolId: sid, title: title || SYNC_TYPE[key].name, description: '', location: '', startDate: from, endDate: to || from, startTime: null, endTime: null, typeId, createdBy: state.user?.name || null, createdAt: new Date().toISOString() };
+  const arr = (state.calendarEvents = state.calendarEvents || []);
+  const i = arr.findIndex(e => e.id === id);
+  if (i !== -1) arr[i] = ev; else arr.push(ev);
+  try { await DB.saveCalendarEvent(ev); } catch (e) {}
+  return id;
+}
+async function syncRemoveEvent(sid, eventId) {
+  if (!eventId) return;
+  state.calendarEvents = (state.calendarEvents || []).filter(e => e.id !== eventId);
+  try { await DB.deleteCalendarEvent(eventId, sid); } catch (e) {}
+}
+// Reverse: a Closure-typed event saved on the calendar → create/update its closure.
+async function syncClosureFromEvent(ev) {
+  if (_calSync || !ev || ev.schoolId === null) return;
+  if (typeof canEditSchool === 'function' && !canEditSchool(ev.schoolId)) return;
+  const closureTypeId = findSyncTypeId(ev.schoolId, 'closure');
+  if (!closureTypeId || ev.typeId !== closureTypeId) return;
+  _calSync = true;
+  try {
+    const o = ensureOverrideStores(ev.schoolId);
+    const c = o.closures.find(x => x.eventId === ev.id);
+    if (c) { c.from = ev.startDate; c.to = ev.endDate || ev.startDate; c.label = ev.title || 'Closed'; }
+    else o.closures.push({ id: newOvrId('CLO'), from: ev.startDate, to: ev.endDate || ev.startDate, label: ev.title || 'Closed', eventId: ev.id });
+    await saveCustomSchools(ev.schoolId);
+    if (state.view === 'roster') renderDay();
+  } finally { _calSync = false; }
+}
+// Reverse: a Closure-typed event deleted on the calendar → remove its closure.
+async function syncClosureRemoveFromEvent(ev) {
+  if (_calSync || !ev || ev.schoolId === null) return;
+  if (typeof canEditSchool === 'function' && !canEditSchool(ev.schoolId)) return;
+  const o = ensureOverrideStores(ev.schoolId);
+  const before = o.closures.length;
+  o.closures = o.closures.filter(c => c.eventId !== ev.id);
+  if (o.closures.length !== before) {
+    _calSync = true;
+    try { await saveCustomSchools(ev.schoolId); if (state.view === 'roster') renderDay(); } finally { _calSync = false; }
+  }
+}
+
 async function addClosure() {
   if (blockedByImpersonation()) return;
   const sid = state._closuresSchool || state.schoolId;
@@ -783,7 +852,9 @@ async function addClosure() {
   if (!to) to = from;
   if (to < from) { alert('The end date is before the start date.'); return; }
   const o = ensureOverrideStores(sid);
-  o.closures.push({ id: newOvrId('CLO'), from, to, label });
+  const closure = { id: newOvrId('CLO'), from, to, label };
+  o.closures.push(closure);
+  closure.eventId = await syncEventFromSource(sid, 'closure', { title: label, from, to });
   await saveCustomSchools(sid);
   renderClosuresAdmin();
   if (state.view === 'roster') renderDay();
@@ -793,7 +864,9 @@ async function deleteClosure(id) {
   const sid = state._closuresSchool || state.schoolId;
   if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
   const o = ensureOverrideStores(sid);
+  const gone = o.closures.find(c => c.id === id);
   o.closures = o.closures.filter(c => c.id !== id);
+  if (gone && gone.eventId) await syncRemoveEvent(sid, gone.eventId);
   await saveCustomSchools(sid);
   renderClosuresAdmin();
   if (state.view === 'roster') renderDay();
@@ -926,7 +999,15 @@ async function saveDayOverride() {
     if (s.end <= s.start) { alert('A class ends at or before it starts \u2014 check the times.'); return; }
   }
   const o = ensureOverrideStores(sid);
-  o.overrides[state._ovrDate] = { kind: d.kind, label: d.label, replaceNormal: !!d.replaceNormal, slots: d.slots, gradingId: d.gradingId || null };
+  const prev = o.overrides[state._ovrDate];
+  const ovr = { kind: d.kind, label: d.label, replaceNormal: !!d.replaceNormal, slots: d.slots, gradingId: d.gradingId || null, eventId: (prev && prev.eventId) || null };
+  o.overrides[state._ovrDate] = ovr;
+  if (d.kind === 'grading') {
+    ovr.eventId = await syncEventFromSource(sid, 'grading', { eventId: ovr.eventId, title: d.label || 'Grading', from: state._ovrDate, to: state._ovrDate });
+  } else if (prev && prev.eventId) { // was a grading day, now special → drop the mirrored event
+    await syncRemoveEvent(sid, prev.eventId);
+    ovr.eventId = null;
+  }
   await saveCustomSchools(sid);
   state._ovrDraft = null;
   closeModal('modalDayOverride');
@@ -938,7 +1019,9 @@ async function clearDayOverride() {
   if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
   if (!confirm('Remove the special / grading setup for this day?')) return;
   const o = ensureOverrideStores(sid);
+  const prev = o.overrides[state._ovrDate];
   delete o.overrides[state._ovrDate];
+  if (prev && prev.eventId) await syncRemoveEvent(sid, prev.eventId);
   await saveCustomSchools(sid);
   state._ovrDraft = null;
   closeModal('modalDayOverride');
@@ -950,8 +1033,10 @@ async function markSingleDayClosed() {
   if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
   const iso = state._ovrDate;
   const o = ensureOverrideStores(sid);
-  o.closures.push({ id: newOvrId('CLO'), from: iso, to: iso, label: 'Closed' });
+  const closure = { id: newOvrId('CLO'), from: iso, to: iso, label: 'Closed' };
+  o.closures.push(closure);
   delete o.overrides[iso]; // closed wins over any special/grading set for that day
+  closure.eventId = await syncEventFromSource(sid, 'closure', { title: 'Closed', from: iso, to: iso });
   await saveCustomSchools(sid);
   state._ovrDraft = null;
   closeModal('modalDayOverride');
@@ -963,7 +1048,9 @@ async function reopenSingleDay() {
   if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
   const iso = state._ovrDate;
   const o = ensureOverrideStores(sid);
+  const gone = o.closures.filter(c => c.from === iso && c.to === iso);
   o.closures = o.closures.filter(c => !(c.from === iso && c.to === iso)); // only single-day closures here
+  for (const g of gone) if (g.eventId) await syncRemoveEvent(sid, g.eventId);
   await saveCustomSchools(sid);
   closeModal('modalDayOverride');
   if (state.view === 'roster') renderDay();
@@ -9249,6 +9336,7 @@ async function saveEvent() {
   if (state.view === 'calendar') renderCalendar();
   else if (state.view === 'feed') renderFeed();
   for (const o of occurrences) await DB.saveCalendarEvent(o);
+  for (const o of occurrences) await syncClosureFromEvent(o); // Closure-typed events → closures
   if (occurrences.length > 1) {
     setTimeout(() => alert(occurrences.length + ' events created (' + repeat + ' until ' + repeatUntil + ').'), 100);
   }
@@ -9267,6 +9355,7 @@ async function deleteEvent() {
   closeModal('modalEventEditor');
   if (state.view === 'calendar') renderCalendar();
   await DB.deleteCalendarEvent(id, ev?.schoolId);
+  if (ev) await syncClosureRemoveFromEvent(ev); // deleting a Closure-typed event removes its closure
 }
 
 // ---------- Event types manager ----------
