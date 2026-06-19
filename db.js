@@ -1306,15 +1306,15 @@ const DB = (() => {
   // ── Inventory / shop (Phase 1): shared catalogue + per-school stock ──
   // Catalogue rows are first-class columns (not jsonb), so we map snake_case
   // DB columns <-> camelCase objects the same way students do.
-  function _itemFromRow(r){ return { id:r.id, name:r.name, categoryId:r.category_id, supplierId:r.supplier_id, unitCost:r.unit_cost, unit:r.unit, sku:r.sku, sized:!!r.sized, sizeSetId:r.size_set_id, gradeRef:r.grade_ref, archived:!!r.archived }; }
-  function _itemToRow(it){ const r={ name:it.name||'', category_id:it.categoryId||null, supplier_id:it.supplierId||null, unit_cost:(it.unitCost===''||it.unitCost==null)?null:Number(it.unitCost), unit:it.unit||null, sku:it.sku||null, sized:!!it.sized, size_set_id:it.sized?(it.sizeSetId||null):null, grade_ref:it.gradeRef||null, archived:!!it.archived, updated_at:new Date().toISOString() }; if(it.id) r.id=it.id; return r; }
+  function _itemFromRow(r){ return { id:r.id, name:r.name, categoryId:r.category_id, supplierId:r.supplier_id, unitCost:r.unit_cost, unit:r.unit, sku:r.sku, sized:!!r.sized, sizeSetId:r.size_set_id, gradeRef:r.grade_ref, imageUrl:r.image_url||null, archived:!!r.archived }; }
+  function _itemToRow(it){ const r={ name:it.name||'', category_id:it.categoryId||null, supplier_id:it.supplierId||null, unit_cost:(it.unitCost===''||it.unitCost==null)?null:Number(it.unitCost), unit:it.unit||null, sku:it.sku||null, sized:!!it.sized, size_set_id:it.sized?(it.sizeSetId||null):null, grade_ref:it.gradeRef||null, image_url:it.imageUrl||null, archived:!!it.archived, updated_at:new Date().toISOString() }; if(it.id) r.id=it.id; return r; }
   function _supFromRow(r){ return { id:r.id, name:r.name, contactEmail:r.contact_email, contactPhone:r.contact_phone, website:r.website, notes:r.notes }; }
   function _supToRow(s){ const r={ name:s.name||'', contact_email:s.contactEmail||null, contact_phone:s.contactPhone||null, website:s.website||null, notes:s.notes||null }; if(s.id) r.id=s.id; return r; }
   function _setFromRow(r){ return { id:r.id, name:r.name, sizes:Array.isArray(r.sizes)?r.sizes:(r.sizes||[]), sort:r.sort||0 }; }
   function _setToRow(s){ const r={ name:s.name||'', sizes:Array.isArray(s.sizes)?s.sizes:[], sort:s.sort||0 }; if(s.id) r.id=s.id; return r; }
   function _catFromRow(r){ return { id:r.id, name:r.name, sort:r.sort||0 }; }
   function _catToRow(c){ const r={ name:c.name||'', sort:c.sort||0 }; if(c.id) r.id=c.id; return r; }
-  function _stockFromRow(r){ return { schoolId:r.school_id, itemId:r.item_id, size:r.size||'', qty:r.qty||0, reorderLevel:r.reorder_level||0 }; }
+  function _stockFromRow(r){ return { schoolId:r.school_id, itemId:r.item_id, size:r.size||'', qty:r.qty||0, reorderLevel:r.reorder_level||0, targetLevel:r.target_level||0 }; }
 
   async function loadShop(){
     const sb=sbClient();
@@ -1347,6 +1347,94 @@ const DB = (() => {
     const { error } = await sb.from('inventory_stock').upsert(row,{ onConflict:'school_id,item_id,size' });
     if(error){ console.warn('[DB] saveStockRow:', error.message); throw new Error(error.message); }
     return true;
+  }
+  // Thresholds only (reorder + par/target). Omits qty from the payload so an upsert
+  // never disturbs the on-hand count — quantity only ever moves via applyMovement().
+  async function saveStockThreshold(schoolId,itemId,size,reorderLevel,targetLevel){
+    const sb=sbClient(); if(!sb) return false;
+    const row={ school_id:schoolId, item_id:itemId, size:size||'', reorder_level:Math.max(0,reorderLevel|0), target_level:Math.max(0,targetLevel|0), updated_at:new Date().toISOString() };
+    if(_uid) row.updated_by=_uid;
+    const { error } = await sb.from('inventory_stock').upsert(row,{ onConflict:'school_id,item_id,size' });
+    if(error){ console.warn('[DB] saveStockThreshold:', error.message); throw new Error(error.message); }
+    return true;
+  }
+  // Post a signed stock movement (received/sold/issued/adjusted/transfer_*/stocktake)
+  // through the apply_movement RPC: records the ledger row AND moves stock atomically.
+  async function applyMovement(schoolId,itemId,size,delta,kind,note,refType,refId){
+    const sb=sbClient(); if(!sb) throw new Error('Supabase unavailable');
+    const { data,error } = await sb.rpc('apply_movement',{ p_school:schoolId, p_item:itemId, p_size:size||'', p_delta:delta|0, p_kind:kind||'adjusted', p_note:note||null, p_ref_type:refType||null, p_ref_id:refId||null });
+    if(error){ console.warn('[DB] applyMovement:', error.message); throw new Error(error.message); }
+    return data;  // the new on-hand qty
+  }
+  // Movement history for a school (optionally one item), newest first.
+  async function loadMovements(schoolId,itemId,limit){
+    const sb=sbClient(); if(!sb) return [];
+    let q=sb.from('inventory_movements').select('*').eq('school_id',schoolId).order('created_at',{ ascending:false }).limit(limit||200);
+    if(itemId) q=q.eq('item_id',itemId);
+    const { data,error } = await q;
+    if(error){ console.warn('[DB] loadMovements:', error.message); return []; }
+    return (data||[]).map(r=>({ id:r.id, schoolId:r.school_id, itemId:r.item_id, size:r.size||'', delta:r.delta, kind:r.kind, note:r.note, refType:r.ref_type, refId:r.ref_id, createdBy:r.created_by, createdAt:r.created_at }));
+  }
+  // Move stock between two schools atomically (paired transfer_out/transfer_in).
+  async function transferStock(fromId,toId,itemId,size,qty,note){
+    const sb=sbClient(); if(!sb) throw new Error('Supabase unavailable');
+    const { data,error } = await sb.rpc('transfer_stock',{ p_from:fromId, p_to:toId, p_item:itemId, p_size:size||'', p_qty:qty|0, p_note:note||null });
+    if(error){ console.warn('[DB] transferStock:', error.message); throw new Error(error.message); }
+    return data;  // qty transferred
+  }
+  // Recent transfer movements across every school the caller can read (RLS-scoped).
+  async function loadTransfers(limit){
+    const sb=sbClient(); if(!sb) return [];
+    const { data,error } = await sb.from('inventory_movements').select('*').in('kind',['transfer_in','transfer_out']).order('created_at',{ ascending:false }).limit(limit||100);
+    if(error){ console.warn('[DB] loadTransfers:', error.message); return []; }
+    return (data||[]).map(r=>({ id:r.id, schoolId:r.school_id, itemId:r.item_id, size:r.size||'', delta:r.delta, kind:r.kind, note:r.note, refType:r.ref_type, refId:r.ref_id, createdBy:r.created_by, createdAt:r.created_at }));
+  }
+  // ── stocktake sessions (open → count → close) ──
+  function _sessionFromRow(r){ return { id:r.id, schoolId:r.school_id, status:r.status, note:r.note, createdBy:r.created_by, createdAt:r.created_at, closedBy:r.closed_by, closedAt:r.closed_at }; }
+  async function createStocktakeSession(schoolId,note){
+    const sb=sbClient(); if(!sb) throw new Error('Supabase unavailable');
+    const row={ school_id:schoolId, note:note||null }; if(_uid) row.created_by=_uid;
+    const { data,error } = await sb.from('stocktake_sessions').insert(row).select().single();
+    if(error){ console.warn('[DB] createStocktakeSession:', error.message); throw new Error(error.message); }
+    return _sessionFromRow(data);
+  }
+  async function loadStocktakeSessions(schoolId){
+    const sb=sbClient(); if(!sb) return [];
+    const { data,error } = await sb.from('stocktake_sessions').select('*').eq('school_id',schoolId).order('created_at',{ ascending:false }).limit(50);
+    if(error){ console.warn('[DB] loadStocktakeSessions:', error.message); return []; }
+    return (data||[]).map(_sessionFromRow);
+  }
+  async function loadStocktakeCounts(sessionId){
+    const sb=sbClient(); if(!sb) return [];
+    const { data,error } = await sb.from('stocktake_counts').select('*').eq('session_id',sessionId);
+    if(error){ console.warn('[DB] loadStocktakeCounts:', error.message); return []; }
+    return (data||[]).map(r=>({ itemId:r.item_id, size:r.size||'', countedQty:r.counted_qty }));
+  }
+  async function saveStocktakeCount(sessionId,schoolId,itemId,size,countedQty){
+    const sb=sbClient(); if(!sb) return false;
+    const row={ session_id:sessionId, school_id:schoolId, item_id:itemId, size:size||'', counted_qty:Math.max(0,countedQty|0) };
+    const { error } = await sb.from('stocktake_counts').upsert(row,{ onConflict:'session_id,item_id,size' });
+    if(error){ console.warn('[DB] saveStocktakeCount:', error.message); throw new Error(error.message); }
+    return true;
+  }
+  async function closeStocktake(sessionId){
+    const sb=sbClient(); if(!sb) throw new Error('Supabase unavailable');
+    const { data,error } = await sb.rpc('close_stocktake',{ p_session:sessionId });
+    if(error){ console.warn('[DB] closeStocktake:', error.message); throw new Error(error.message); }
+    return data;  // number of lines adjusted
+  }
+  async function deleteStocktakeSession(sessionId){
+    const sb=sbClient(); if(!sb) return false;
+    const { error } = await sb.from('stocktake_sessions').delete().eq('id',sessionId);
+    if(error){ console.warn('[DB] deleteStocktakeSession:', error.message); throw new Error(error.message); }
+    return true;
+  }
+  // Stock value per school + category (RLS-scoped by the security_invoker view).
+  async function loadStockValue(){
+    const sb=sbClient(); if(!sb) return [];
+    const { data,error } = await sb.from('stock_value_v').select('*');
+    if(error){ console.warn('[DB] loadStockValue:', error.message); return []; }
+    return (data||[]).map(r=>({ schoolId:r.school_id, category:r.category, totalQty:r.total_qty, totalValue:Number(r.total_value)||0 }));
   }
   async function _saveCatalogue(table,fromRow,toRow,obj){
     const sb=sbClient(); if(!sb) throw new Error('Supabase unavailable');
@@ -1558,6 +1646,18 @@ const DB = (() => {
     loadShop:         ()                   => loadShop(),
     loadSchoolStock:  (schoolId)           => loadSchoolStock(schoolId),
     saveStockRow:     (sid,itemId,sz,q,rl) => saveStockRow(sid,itemId,sz,q,rl),
+    saveStockThreshold:(sid,itemId,sz,rl,tl)=> saveStockThreshold(sid,itemId,sz,rl,tl),
+    applyMovement:    (sid,itemId,sz,d,k,n,rt,ri) => applyMovement(sid,itemId,sz,d,k,n,rt,ri),
+    loadMovements:    (sid,itemId,lim)     => loadMovements(sid,itemId,lim),
+    transferStock:    (f,t,itemId,sz,q,n)  => transferStock(f,t,itemId,sz,q,n),
+    loadTransfers:    (lim)                => loadTransfers(lim),
+    createStocktakeSession: (sid,note)     => createStocktakeSession(sid,note),
+    loadStocktakeSessions:  (sid)          => loadStocktakeSessions(sid),
+    loadStocktakeCounts:    (sessId)       => loadStocktakeCounts(sessId),
+    saveStocktakeCount:     (sessId,sid,itemId,sz,q) => saveStocktakeCount(sessId,sid,itemId,sz,q),
+    closeStocktake:         (sessId)       => closeStocktake(sessId),
+    deleteStocktakeSession: (sessId)       => deleteStocktakeSession(sessId),
+    loadStockValue:         ()             => loadStockValue(),
     saveCategory:     (c)                  => _saveCatalogue('inventory_categories',_catFromRow,_catToRow,c),
     deleteCategory:   (id)                 => _delCatalogue('inventory_categories',id),
     saveSizeSet:      (s)                  => _saveCatalogue('inventory_size_sets',_setFromRow,_setToRow,s),

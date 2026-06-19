@@ -61,6 +61,14 @@ const state = {
   shopView: 'stock',                 // stock | reorder | catalogue | suppliers
   shop: { categories: [], sizeSets: [], suppliers: [], items: [] },
   shopStock: [],                     // stock rows for shopStockSchool
+  shopMovements: [],                 // recent ledger movements for shopStockSchool
+  shopTransfers: [],                 // recent inter-school transfer movements (network)
+  stocktakeSession: null,            // the stocktake session currently being counted
+  stocktakeCounts: {},               // counted qty keyed by 'itemId|size' for the active session
+  stocktakeSessions: [],             // sessions list for the viewed school
+  _stocktakeReview: false,           // showing the close/reconcile review panel
+  stockValue: [],                    // per-school/category value rows (value tab)
+  shopImport: null,                  // { kind:'catalogue'|'stock', text, rows, done } CSV import panel
   shopStockSchool: null,             // which school the stock grid is showing
   shopEdit: null,                    // { kind:'item'|'supplier'|'sizeset', data:{...} } inline draft
   notices: [],           // school-level notices
@@ -1243,6 +1251,7 @@ function setView(v) {
   if (stuTab) stuTab.style.display = can.viewStudents() ? '' : 'none';
   const shopTab = document.querySelector('[data-view="shop"]');
   if (shopTab) shopTab.style.display = can.seeShop() ? '' : 'none';
+  if (typeof updateShopNavBadge === 'function') updateShopNavBadge();
   refreshAuthUI();
   syncNavHeight(); // nav row-count can change with which tabs are visible
 
@@ -5311,6 +5320,42 @@ function candidateFinalised(c) {
   return !!(c && (c.result || c.gradeInTo));
 }
 
+// Auto-decrement belt stock when a candidate achieves a sized belt grade: posts an
+// 'issued' movement of -1 for the matching catalogue belt item + size at the session's
+// school. Idempotent via the per-candidate `beltIssued` flag (persisted with the grading
+// in the same saveGrading), so re-saving the same result never double-issues. Skips
+// silently if the actor can't edit that school's stock, the shop data isn't loaded, or no
+// catalogue belt item matches the grade — belt stock is a convenience here, never a blocker
+// on recording the grading. Does NOT auto-reverse a later un-pass (adjust stock manually).
+async function maybeIssueBeltForCandidate(session, sessionId, candidate) {
+  try {
+    if (!session || !candidate) return;
+    const syl = GRADING_SYLLABI[session.syllabus];
+    if (!syl || !syl.hasBeltSize) return;
+    const newGrade = effectiveNewGrade(session.syllabus, candidate);
+    if (!newGrade) return;
+    const achieved = (
+      candidate.result === 'pass' || candidate.result === 'distinction' ||
+      (!!candidate.gradeInTo && candidate.result !== 'incomplete' && candidate.result !== 'pass-probationary')
+    );
+    if (!achieved) return;
+    const size = (candidate.beltSize == null ? '' : String(candidate.beltSize)).trim();
+    if (!size) return;                                          // belts are sized; no size → no row to pick
+    const school = session.schoolId || state.schoolId;
+    if (!school || !can.editStock(school)) return;              // actor can't write this school's stock
+    if (!state.shop || !Array.isArray(state.shop.items)) return; // shop data not loaded for this user
+    const item = state.shop.items.find(it => it && !it.archived && it.gradeRef === newGrade);
+    if (!item) return;                                          // belt grade not in the catalogue
+    const target = newGrade + '|' + size;
+    if (candidate.beltIssued === target) return;                // already issued for this exact grade+size
+    await DB.applyMovement(school, item.id, size, -1, 'issued', 'Grading: ' + (candidate.name || ''), 'grading', sessionId + ':' + candidate.idx);
+    candidate.beltIssued = target;
+    if (state.shopStockSchool === school) {
+      try { state.shopStock = await DB.loadSchoolStock(school); state.shopMovements = await DB.loadMovements(school, null, 50); } catch (e) {}
+    }
+  } catch (e) { console.warn('[grading] belt auto-issue skipped:', e && e.message); }
+}
+
 function gcRefreshNewGradePreview() {
   const sessionId = state.gradingSessionId;
   const session = state.grading[sessionId];
@@ -5411,6 +5456,7 @@ async function saveGradingCandidate() {
     session.candidates.push(candidate);
   }
 
+  await maybeIssueBeltForCandidate(session, sessionId, candidate);
   await saveGrading();
   await saveStudents();
   closeModal('modalGradingCandidate');
@@ -5630,9 +5676,10 @@ async function commitGradingImport() {
   if (rows.length === 0) { alert('No valid students to import.'); return; }
   if (!Array.isArray(session.candidates)) session.candidates = [];
   let base = Date.now();
+  const added = [];
   for (const r of rows) {
     const studentId = linkStudentForCandidate(r.name, r.member, null);
-    session.candidates.push({
+    const cand = {
       idx: base++,
       memberNum: r.member,
       name: r.name,
@@ -5641,8 +5688,11 @@ async function commitGradingImport() {
       doubleGrade: 'no',
       result: r.result || '',
       studentId,
-    });
+    };
+    session.candidates.push(cand);
+    added.push(cand);
   }
+  for (const c of added) await maybeIssueBeltForCandidate(session, state.gradingSessionId, c);
   await saveGrading();
   await saveStudents();
   closeModal('modalGradingImport');
@@ -5943,46 +5993,17 @@ function buildGradingSheetHtml(session) {
    STOCKTAKE VIEW
    ================================================================ */
 function renderGradingStocktake() {
-  // Collect all belt-based grades (syllabi with hasBeltSize)
-  const beltGrades = [];
-  const seen = new Set();
-  for (const syl of Object.values(GRADING_SYLLABI)) {
-    if (!syl.hasBeltSize) continue;
-    for (const g of syl.grades) {
-      if (!seen.has(g.label) && g.label !== 'White Belt') {
-        seen.add(g.label);
-        beltGrades.push(g.label);
-      }
-    }
+  // Belt stock now lives in the shop's inventory (one source of truth). The editable
+  // grid moved to 📦 Stock; this tab points there so counts aren't kept in two places,
+  // and the Belt order tab reads the same stock directly.
+  if (can.seeShop()) {
+    return `<div style="padding:8px 0;">
+      <div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:16px;background:var(--off-white);">
+        <p style="font-size:13px;margin:0 0 10px;line-height:1.5;">Belt stock is now counted in <strong>📦 Stock</strong> (under the <em>Belts</em> category) — same numbers, one place — and the <strong>Belt order</strong> tab reads from it directly.</p>
+        <button class="btn btn-black" onclick="state.shopView='stock'; setView('shop');" style="padding:8px 14px;">Open 📦 Stock</button>
+      </div></div>`;
   }
-
-  let html = `<p style="font-size:12px;color:var(--grey-500);margin-bottom:10px;">Record how many of each belt size you currently have. Used to calculate net order on the Belt order tab.</p>
-    <button class="btn btn-black" style="width:100%;margin-bottom:12px;" onclick="saveStocktake()">Save stocktake</button>
-    <div style="overflow-x:auto;">
-    <table style="width:100%;border-collapse:collapse;font-size:12px;">
-      <thead><tr style="background:var(--off-white);">
-        <th style="padding:6px 8px;border:1px solid var(--grey-200);text-align:left;font-family:'Oswald',sans-serif;font-size:10px;text-transform:uppercase;letter-spacing:.06em;min-width:140px;">Belt</th>
-        ${BELT_SIZES.map(s => `<th style="padding:6px 4px;border:1px solid var(--grey-200);text-align:center;font-family:'Oswald',sans-serif;font-size:10px;text-transform:uppercase;letter-spacing:.06em;min-width:40px;">Sz ${s}</th>`).join('')}
-      </tr></thead>
-      <tbody>`;
-
-  for (const grade of beltGrades) {
-    const stock = state.stocktake[grade] || {};
-    html += `<tr>
-      <td style="padding:5px 8px;border:1px solid var(--grey-200);">
-        <span style="display:flex;align-items:center;gap:4px;font-size:11px;font-weight:600;">${beltSwatch(grade, 20)}${escapeHtml(grade)}</span>
-      </td>
-      ${BELT_SIZES.map(s => `<td style="padding:3px;border:1px solid var(--grey-200);text-align:center;">
-        <input type="number" min="0" value="${stock[s] || 0}"
-          data-grade="${escapeHtml(grade)}" data-size="${s}"
-          onchange="updateStocktake(this)"
-          style="width:38px;text-align:center;padding:4px 2px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;font-family:'JetBrains Mono',monospace;">
-      </td>`).join('')}
-    </tr>`;
-  }
-
-  html += `</tbody></table></div>`;
-  return html;
+  return `<div style="padding:8px 0;"><p style="font-size:13px;color:var(--grey-500);">Belt stock is managed in the Stock area by a shop admin or school admin.</p></div>`;
 }
 
 function updateStocktake(input) {
@@ -12123,13 +12144,31 @@ async function loadShopStock(sid) {
   state.shopStockSchool = sid;
   try { state.shopStock = await DB.loadSchoolStock(sid); }
   catch (e) { console.warn('loadShopStock:', e && e.message); state.shopStock = []; }
+  try { state.shopMovements = await DB.loadMovements(sid, null, 50); }
+  catch (e) { console.warn('loadShopMovements:', e && e.message); state.shopMovements = []; }
+  updateShopNavBadge();
 }
 async function shopSwitchSchool(sid) {
   if (!sid) return;
   await loadShopStock(sid);
+  // dropping a stocktake that belonged to the previous school, and refresh lists for the new one
+  if (state.stocktakeSession && state.stocktakeSession.schoolId !== sid) { state.stocktakeSession = null; state.stocktakeCounts = {}; state._stocktakeReview = false; }
+  if (state.shopView === 'stocktake') { try { state.stocktakeSessions = await DB.loadStocktakeSessions(sid); } catch (e) {} }
+  if (state.shopView === 'transfers' && can.manageShop()) { try { state.shopTransfers = await DB.loadTransfers(60); } catch (e) {} }
   renderShop();
 }
-function setShopView(v) { state.shopView = v; state.shopEdit = null; renderShop(); }
+function setShopView(v) {
+  state.shopView = v; state.shopEdit = null; renderShop();
+  if (v === 'transfers' && can.manageShop()) {
+    DB.loadTransfers(60).then(t => { state.shopTransfers = t; if (state.shopView === 'transfers') renderShop(); }).catch(() => {});
+  }
+  if (v === 'stocktake') {
+    DB.loadStocktakeSessions(state.shopStockSchool).then(s => { state.stocktakeSessions = s; if (state.shopView === 'stocktake') renderShop(); }).catch(() => {});
+  }
+  if (v === 'value') {
+    DB.loadStockValue().then(r => { state.stockValue = r; if (state.shopView === 'value') renderShop(); }).catch(() => {});
+  }
+}
 function shopCancelEdit() { state.shopEdit = null; renderShop(); }
 
 // ── small lookups ──
@@ -12152,6 +12191,16 @@ function shopItemIsLow(item) {
     return r && r.reorderLevel > 0 && r.qty <= r.reorderLevel;
   });
 }
+// Nav badge: how many catalogue items are at/below reorder level for the loaded school.
+function updateShopNavBadge() {
+  const badge = document.getElementById('navShopBadge');
+  if (!badge) return;
+  if (!can.seeShop() || !state.shop || !Array.isArray(state.shop.items)) { badge.style.display = 'none'; return; }
+  let n = 0;
+  for (const it of state.shop.items) { if (!it.archived && shopItemIsLow(it)) n++; }
+  if (n > 0) { badge.textContent = n > 99 ? '99+' : String(n); badge.style.display = ''; }
+  else { badge.style.display = 'none'; }
+}
 function shopBeltGrades() {
   const out = []; const seen = new Set();
   if (typeof GRADING_SYLLABI === 'undefined') return out;
@@ -12171,8 +12220,8 @@ function renderShop() {
   if (!can.seeShop()) { main.innerHTML = '<div class="empty"><h2>No access</h2><p>The shop is for shop admins and school admins.</p></div>'; return; }
   if (!state.shopStockSchool) state.shopStockSchool = state.schoolId || (state.userSchools || [])[0] || null;
 
-  const tabs = [{ id: 'stock', label: 'Stock' }, { id: 'reorder', label: 'Reorder list' }];
-  if (can.manageShop()) { tabs.push({ id: 'catalogue', label: 'Catalogue' }); tabs.push({ id: 'suppliers', label: 'Suppliers' }); }
+  const tabs = [{ id: 'stock', label: 'Stock' }, { id: 'reorder', label: 'Reorder list' }, { id: 'stocktake', label: 'Stocktake' }, { id: 'value', label: 'Value' }];
+  if (can.manageShop()) { tabs.push({ id: 'transfers', label: 'Transfers' }); tabs.push({ id: 'catalogue', label: 'Catalogue' }); tabs.push({ id: 'suppliers', label: 'Suppliers' }); }
   if (!tabs.find(t => t.id === state.shopView)) state.shopView = 'stock';
 
   let html = `<div style="padding:16px;max-width:920px;margin:0 auto;">
@@ -12181,16 +12230,21 @@ function renderShop() {
 
   if      (state.shopView === 'stock')     html += renderShopStock();
   else if (state.shopView === 'reorder')   html += renderShopReorder();
+  else if (state.shopView === 'stocktake') html += renderShopStocktake();
+  else if (state.shopView === 'value')     html += renderShopValue();
+  else if (state.shopView === 'transfers') html += renderShopTransfers();
   else if (state.shopView === 'catalogue') html += renderShopCatalogue();
   else if (state.shopView === 'suppliers') html += renderShopSuppliers();
   html += `</div>`;
   main.innerHTML = html;
+  updateShopNavBadge();
 }
 
 // ── tab: STOCK (per-school counts) ──
 function renderShopStock() {
   const sid = state.shopStockSchool;
   const editable = can.editStock(sid);
+  if (state.shopImport && state.shopImport.kind === 'stock') return renderShopImportPanel();
   let html = '';
 
   // school switcher (shop/superadmin see all schools; multi-school members see theirs)
@@ -12213,6 +12267,7 @@ function renderShopStock() {
     return html;
   }
   if (!editable) html += `<p style="font-size:12px;color:var(--grey-500);">You can view this school's stock but not change it.</p>`;
+  else html += `<div style="margin:0 0 10px;"><button class="btn" onclick="shopOpenImport('stock')" style="padding:6px 12px;font-size:12px;">Import counts (CSV)</button></div>`;
 
   // group by category (uncategorised last)
   const cats = state.shop.categories.slice().sort((a, b) => (a.sort - b.sort) || a.name.localeCompare(b.name));
@@ -12224,6 +12279,29 @@ function renderShopStock() {
     html += `<h3 style="font-family:'Oswald',sans-serif;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin:18px 0 8px;">${escapeHtml(g.name)}</h3>`;
     for (const it of g.items) html += renderShopStockItem(it, editable);
   }
+  html += renderShopActivity();
+  return html;
+}
+
+// Recent ledger movements for the viewed school (read-only feed of who/what/when).
+function renderShopActivity() {
+  const moves = state.shopMovements || [];
+  if (!moves.length) return '';
+  const itemName = id => { const it = state.shop.items.find(x => x.id === id); return it ? it.name : '(deleted item)'; };
+  const fmt = ts => { try { const d = new Date(ts); return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch (e) { return ''; } };
+  const kindLabel = { received: 'Received', sold: 'Sold', issued: 'Issued', adjusted: 'Adjusted', correction: 'Correction', transfer_in: 'Transfer in', transfer_out: 'Transfer out', stocktake: 'Stocktake' };
+  let html = `<h3 style="font-family:'Oswald',sans-serif;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin:24px 0 8px;">Recent activity</h3>
+    <div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);overflow:hidden;">`;
+  moves.slice(0, 30).forEach((m, i) => {
+    const up = m.delta >= 0;
+    html += `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 12px;${i ? 'border-top:1px solid var(--grey-200);' : ''}font-size:12px;">
+      <span style="min-width:0;"><strong>${escapeHtml(itemName(m.itemId))}</strong>${m.size ? ' <span style="color:var(--grey-500);">sz ' + escapeHtml(String(m.size)) + '</span>' : ''}
+        <span style="color:var(--grey-500);"> · ${escapeHtml(kindLabel[m.kind] || m.kind)}${m.note ? ' · ' + escapeHtml(m.note) : ''}</span></span>
+      <span style="display:flex;align-items:center;gap:10px;flex-shrink:0;">
+        <span style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${up ? 'var(--ok,#16a34a)' : 'var(--red)'};">${up ? '+' : ''}${m.delta}</span>
+        <span style="color:var(--grey-500);font-size:11px;">${fmt(m.createdAt)}</span></span></div>`;
+  });
+  html += `</div>`;
   return html;
 }
 
@@ -12241,9 +12319,10 @@ function renderShopStockItem(it, editable) {
         ${it.sized ? '<th style="text-align:left;padding:3px 6px;">Size</th>' : ''}
         <th style="text-align:left;padding:3px 6px;">In stock</th>
         <th style="text-align:left;padding:3px 6px;">Reorder at</th>
+        <th style="text-align:left;padding:3px 6px;">Target</th>
       </tr></thead><tbody>`;
     for (const sz of sizes) {
-      const r = shopStockRow(it.id, sz) || { qty: 0, reorderLevel: 0 };
+      const r = shopStockRow(it.id, sz) || { qty: 0, reorderLevel: 0, targetLevel: 0 };
       const cellLow = r.reorderLevel > 0 && r.qty <= r.reorderLevel;
       body += `<tr>
         ${it.sized ? `<td style="padding:3px 6px;font-weight:600;">${escapeHtml(String(sz))}</td>` : ''}
@@ -12252,6 +12331,9 @@ function renderShopStockItem(it, editable) {
           style="width:64px;padding:5px;border:1px solid ${cellLow ? 'var(--red)' : 'var(--grey-200)'};border-radius:var(--r-sm);font-family:'JetBrains Mono',monospace;text-align:center;"></td>
         <td style="padding:3px 6px;"><input type="number" min="0" value="${r.reorderLevel || 0}"${dis}
           onchange="shopSetStock('${it.id}','${escapeHtml(String(sz))}','reorder',this.value)"
+          style="width:64px;padding:5px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-family:'JetBrains Mono',monospace;text-align:center;"></td>
+        <td style="padding:3px 6px;"><input type="number" min="0" value="${r.targetLevel || 0}"${dis}
+          onchange="shopSetStock('${it.id}','${escapeHtml(String(sz))}','target',this.value)"
           style="width:64px;padding:5px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-family:'JetBrains Mono',monospace;text-align:center;"></td>
       </tr>`;
     }
@@ -12270,12 +12352,29 @@ async function shopSetStock(itemId, size, field, value) {
   if (!can.editStock(sid)) return;
   size = size || '';
   let r = shopStockRow(itemId, size);
-  if (!r) { r = { schoolId: sid, itemId, size, qty: 0, reorderLevel: 0 }; state.shopStock.push(r); }
+  if (!r) { r = { schoolId: sid, itemId, size, qty: 0, reorderLevel: 0, targetLevel: 0 }; state.shopStock.push(r); }
   const n = Math.max(0, parseInt(value, 10) || 0);
-  if (field === 'qty') r.qty = n; else r.reorderLevel = n;
-  try { await DB.saveStockRow(sid, itemId, size, r.qty, r.reorderLevel); }
-  catch (e) { alert('Could not save: ' + (e.message || e)); return; }
-  // live-update the item's low badge without a full re-render (keeps focus/scroll)
+  try {
+    if (field === 'qty') {
+      // a manual count is an 'adjusted' movement of the difference — keeps the ledger complete
+      const delta = n - (r.qty || 0);
+      if (delta !== 0) {
+        const newQty = await DB.applyMovement(sid, itemId, size, delta, 'adjusted', 'Manual count', 'manual');
+        r.qty = (typeof newQty === 'number') ? newQty : n;
+        (state.shopMovements = state.shopMovements || []).unshift({ id: 'tmp' + Date.now(), schoolId: sid, itemId, size, delta, kind: 'adjusted', note: 'Manual count', createdAt: new Date().toISOString() });
+        const main = document.getElementById('mainContent'); const top = main ? main.scrollTop : 0;
+        renderShop(); if (main) main.scrollTop = top;   // refresh activity + badges, keep place
+        return;
+      }
+    } else {
+      if (field === 'reorder') r.reorderLevel = n; else r.targetLevel = n;
+      await DB.saveStockThreshold(sid, itemId, size, r.reorderLevel || 0, r.targetLevel || 0);
+    }
+  } catch (e) {
+    if (typeof navigator !== 'undefined' && navigator && navigator.onLine === false) alert("You're offline — stock changes aren't saved while offline. Reconnect and re-enter this count.");
+    else alert('Could not save: ' + (e.message || e));
+    return;
+  }
   const it = state.shop.items.find(i => i.id === itemId);
   const badge = document.getElementById('lowbadge-' + itemId);
   if (it && badge) badge.style.display = shopItemIsLow(it) ? 'inline' : 'none';
@@ -12292,7 +12391,7 @@ function renderShopReorder() {
     for (const sz of shopItemSizes(it)) {
       const r = shopStockRow(it.id, sz);
       if (r && r.reorderLevel > 0 && r.qty <= r.reorderLevel)
-        lines.push({ supplierId: it.supplierId, itemName: it.name, size: sz, qty: r.qty, reorderLevel: r.reorderLevel, unit: it.unit });
+        lines.push({ supplierId: it.supplierId, itemName: it.name, size: sz, qty: r.qty, reorderLevel: r.reorderLevel, targetLevel: r.targetLevel || 0, unit: it.unit });
     }
   }
   if (!lines.length) { html += `<div class="empty"><h2>Nothing to reorder</h2><p>Everything is above its reorder level.</p></div>`; return html; }
@@ -12321,7 +12420,7 @@ function renderShopReorder() {
         </span>
       </div>
       ${sup && sup.contactEmail ? `<p style="font-size:11px;color:var(--grey-500);margin:0 0 6px;">${escapeHtml(sup.contactEmail)}</p>` : ''}
-      <div id="${blockId}" style="font-family:'JetBrains Mono',monospace;font-size:12px;white-space:pre-wrap;line-height:1.7;">${rows.map(r => `${escapeHtml(r.itemName)}${r.size ? ' — size ' + escapeHtml(String(r.size)) : ''}: have ${r.qty} (reorder at ${r.reorderLevel})`).join('\n')}</div>
+      <div id="${blockId}" style="font-family:'JetBrains Mono',monospace;font-size:12px;white-space:pre-wrap;line-height:1.7;">${rows.map(r => { const ord = r.targetLevel > 0 ? Math.max(0, r.targetLevel - r.qty) : 0; return `${escapeHtml(r.itemName)}${r.size ? ' — size ' + escapeHtml(String(r.size)) : ''}: have ${r.qty} (reorder at ${r.reorderLevel})${ord > 0 ? ' → order ' + ord + ' to reach ' + r.targetLevel : ''}`; }).join('\n')}</div>
     </div>`;
   }
   return html;
@@ -12334,13 +12433,15 @@ function shopCopyReorder(blockId) {
 }
 function shopExportReorderCsv(supKey) {
   const sup = supKey === '_none' ? null : shopSupplier(supKey);
-  const rows = [['Item', 'Size', 'In stock', 'Reorder at', 'Unit', 'Supplier']];
+  const rows = [['Item', 'Size', 'In stock', 'Reorder at', 'Target', 'Order qty', 'Unit', 'Supplier']];
   for (const it of shopActiveItems()) {
     if ((it.supplierId || '_none') !== supKey) continue;
     for (const sz of shopItemSizes(it)) {
       const r = shopStockRow(it.id, sz);
-      if (r && r.reorderLevel > 0 && r.qty <= r.reorderLevel)
-        rows.push([it.name, sz, r.qty, r.reorderLevel, it.unit || '', sup ? sup.name : '']);
+      if (r && r.reorderLevel > 0 && r.qty <= r.reorderLevel) {
+        const ord = (r.targetLevel || 0) > 0 ? Math.max(0, r.targetLevel - r.qty) : '';
+        rows.push([it.name, sz, r.qty, r.reorderLevel, r.targetLevel || 0, ord, it.unit || '', sup ? sup.name : '']);
+      }
     }
   }
   const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
@@ -12352,12 +12453,283 @@ function shopExportReorderCsv(supKey) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+// ── tab: TRANSFERS (move stock between schools; shop admin / superadmin) ──
+function renderShopTransfers() {
+  if (!can.manageShop()) return `<div class="empty"><h2>No access</h2><p>Transfers are for shop admins and superadmins.</p></div>`;
+  const schools = (typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS : []);
+  const opt = (sel) => schools.map(s => `<option value="${escapeHtml(s.id)}"${s.id === sel ? ' selected' : ''}>${escapeHtml(s.name)}</option>`).join('');
+  const itemOpts = [];
+  for (const it of shopActiveItems()) {
+    const sizes = shopItemSizes(it);
+    if (it.sized && sizes.length) for (const sz of sizes) itemOpts.push(`<option value="${escapeHtml(it.id)}|${escapeHtml(String(sz))}">${escapeHtml(it.name)} — size ${escapeHtml(String(sz))}</option>`);
+    else itemOpts.push(`<option value="${escapeHtml(it.id)}|">${escapeHtml(it.name)}</option>`);
+  }
+  if (!itemOpts.length) return `<div class="empty"><h2>No items</h2><p>Add catalogue items first.</p></div>`;
+  const from0 = state.shopStockSchool || (schools[0] && schools[0].id) || '';
+  const inp = 'padding:8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;width:100%;';
+  let html = `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:14px;margin:14px 0;">
+    <h3 style="font-family:'Oswald',sans-serif;font-size:13px;text-transform:uppercase;letter-spacing:.05em;margin:0 0 10px;">Move stock between schools</h3>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      <label style="font-size:12px;color:var(--grey-500);">From<br><select id="transferFrom" style="${inp}">${opt(from0)}</select></label>
+      <label style="font-size:12px;color:var(--grey-500);">To<br><select id="transferTo" style="${inp}">${opt('')}</select></label>
+      <label style="font-size:12px;color:var(--grey-500);grid-column:1 / -1;">Item<br><select id="transferItem" style="${inp}">${itemOpts.join('')}</select></label>
+      <label style="font-size:12px;color:var(--grey-500);">Quantity<br><input id="transferQty" type="number" min="1" value="1" style="${inp}font-family:'JetBrains Mono',monospace;"></label>
+      <label style="font-size:12px;color:var(--grey-500);">Note (optional)<br><input id="transferNote" type="text" placeholder="e.g. rebalance" style="${inp}"></label>
+    </div>
+    <button class="btn btn-black" onclick="shopDoTransfer()" style="margin-top:12px;padding:9px 16px;">Transfer</button>
+    <p style="font-size:11px;color:var(--grey-500);margin:8px 0 0;">Stock is checked at the source first — you can't transfer more than is on hand.</p>
+  </div>`;
+  html += renderShopTransferLog();
+  return html;
+}
+// Recent transfers — list the transfer_out leg of each (its ref_id is the destination).
+function renderShopTransferLog() {
+  const outs = (state.shopTransfers || []).filter(m => m.kind === 'transfer_out');
+  if (!outs.length) return `<p style="font-size:12px;color:var(--grey-500);">No transfers yet.</p>`;
+  const itemName = id => { const it = state.shop.items.find(x => x.id === id); return it ? it.name : '(item)'; };
+  const fmt = ts => { try { const d = new Date(ts); return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch (e) { return ''; } };
+  let html = `<h3 style="font-family:'Oswald',sans-serif;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin:18px 0 8px;">Recent transfers</h3>
+    <div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);overflow:hidden;">`;
+  outs.slice(0, 25).forEach((m, i) => {
+    html += `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 12px;${i ? 'border-top:1px solid var(--grey-200);' : ''}font-size:12px;">
+      <span><strong>${escapeHtml(itemName(m.itemId))}</strong>${m.size ? ' <span style="color:var(--grey-500);">sz ' + escapeHtml(String(m.size)) + '</span>' : ''}
+        <span style="color:var(--grey-500);"> · ${escapeHtml(shopSchoolName(m.schoolId))} → ${escapeHtml(shopSchoolName(m.refId))}${m.note ? ' · ' + escapeHtml(m.note) : ''}</span></span>
+      <span style="display:flex;align-items:center;gap:10px;flex-shrink:0;">
+        <span style="font-family:'JetBrains Mono',monospace;font-weight:700;">${Math.abs(m.delta)}</span>
+        <span style="color:var(--grey-500);font-size:11px;">${fmt(m.createdAt)}</span></span></div>`;
+  });
+  html += `</div>`;
+  return html;
+}
+async function shopDoTransfer() {
+  if (!can.manageShop()) return;
+  const g = id => { const el = document.getElementById(id); return el ? el.value : ''; };
+  const from = g('transferFrom'), to = g('transferTo');
+  const itemSize = g('transferItem'), qty = parseInt(g('transferQty'), 10) || 0;
+  const note = (g('transferNote') || '').trim();
+  if (!from || !to) { alert('Pick both schools.'); return; }
+  if (from === to) { alert('Source and destination must be different schools.'); return; }
+  if (!itemSize) { alert('Pick an item.'); return; }
+  if (qty <= 0) { alert('Enter a quantity of 1 or more.'); return; }
+  const sep = itemSize.indexOf('|');
+  const itemId = sep >= 0 ? itemSize.slice(0, sep) : itemSize;
+  const size = sep >= 0 ? itemSize.slice(sep + 1) : '';
+  try { await DB.transferStock(from, to, itemId, size, qty, note || null); }
+  catch (e) { alert('Transfer failed: ' + (e.message || e)); return; }
+  if (typeof toast === 'function') toast('Transferred ' + qty);
+  try { state.shopTransfers = await DB.loadTransfers(60); } catch (e) {}
+  if (state.shopStockSchool === from || state.shopStockSchool === to) {
+    try { state.shopStock = await DB.loadSchoolStock(state.shopStockSchool); state.shopMovements = await DB.loadMovements(state.shopStockSchool, null, 50); } catch (e) {}
+  }
+  renderShop();
+}
+
+// ── tab: STOCKTAKE (open → count → reconcile → close) ──
+function renderShopStocktake() {
+  const sid = state.shopStockSchool;
+  const editable = can.editStock(sid);
+  const sess = state.stocktakeSession;
+  if (sess && sess.schoolId === sid && sess.status === 'open') {
+    return state._stocktakeReview ? renderStocktakeReview(sess) : renderStocktakeCounting(sess);
+  }
+  let html = `<p style="font-size:13px;color:var(--grey-500);margin:12px 0;">Count <strong>${escapeHtml(shopSchoolName(sid))}</strong>'s stock, then close to reconcile — each difference is posted to the ledger as a stocktake adjustment.</p>`;
+  if (editable) html += `<button class="btn btn-black" onclick="shopStartStocktake()" style="padding:8px 14px;margin-bottom:12px;">+ Start new stocktake</button>`;
+  const list = state.stocktakeSessions || [];
+  if (!list.length) { html += `<div class="empty"><h2>No stocktakes yet</h2><p>${editable ? 'Start one to count this school\'s stock.' : 'No stocktakes have been run for this school.'}</p></div>`; return html; }
+  const when = (ts) => { try { const d = new Date(ts); return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch (e) { return ''; } };
+  html += `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);overflow:hidden;">`;
+  list.forEach((s, i) => {
+    const open = s.status === 'open';
+    html += `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;${i ? 'border-top:1px solid var(--grey-200);' : ''}">
+      <div style="min-width:0;">
+        <div style="font-size:13px;font-weight:600;">${open ? '<span style="color:var(--c-mln,#b8860b);">● Open</span>' : '<span style="color:var(--grey-500);">Closed</span>'}${s.note ? ' · ' + escapeHtml(s.note) : ''}</div>
+        <div style="font-size:11px;color:var(--grey-500);">Started ${when(s.createdAt)}${s.closedAt ? ' · closed ' + when(s.closedAt) : ''}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0;">
+        ${open && editable ? `<button class="btn" onclick="shopResumeStocktake('${s.id}')" style="padding:5px 10px;font-size:12px;">Resume</button>
+          <button class="btn" onclick="shopAbandonStocktake('${s.id}')" style="padding:5px 10px;font-size:12px;color:var(--red);">Abandon</button>` : ''}
+      </div></div>`;
+  });
+  html += `</div>`;
+  return html;
+}
+
+function renderStocktakeCounting(sess) {
+  const sid = sess.schoolId;
+  const started = (() => { try { return new Date(sess.createdAt).toLocaleDateString(); } catch (e) { return ''; } })();
+  let html = `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:12px 0;">
+    <div><strong style="font-size:15px;">Counting — ${escapeHtml(shopSchoolName(sid))}</strong> <span style="font-size:12px;color:var(--grey-500);">started ${started}</span></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      <button class="btn btn-black" onclick="shopReviewStocktake()" style="padding:7px 12px;font-size:13px;">Review & close</button>
+      <button class="btn" onclick="shopExitStocktake()" style="padding:7px 12px;font-size:13px;">Exit (keep open)</button>
+      <button class="btn" onclick="shopAbandonStocktake('${sess.id}')" style="padding:7px 12px;font-size:13px;color:var(--red);">Abandon</button>
+    </div></div>
+    <p style="font-size:12px;color:var(--grey-500);margin:0 0 10px;">Enter what you physically count. Blank lines aren't changed; on-hand is shown for reference.</p>`;
+  const counts = state.stocktakeCounts || {};
+  for (const it of shopActiveItems()) {
+    const sizes = shopItemSizes(it);
+    const swatch = it.gradeRef && typeof beltSwatch === 'function' ? beltSwatch(it.gradeRef, 14) : '';
+    html += `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:8px 12px;margin-bottom:6px;">
+      <div style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;margin-bottom:4px;">${swatch}${escapeHtml(it.name)}</div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px;"><tbody>`;
+    if (it.sized && !sizes.length) {
+      html += `<tr><td style="color:var(--c-mt,#b8860b);font-size:12px;">No size set — fix on the Catalogue tab.</td></tr>`;
+    } else {
+      for (const sz of sizes) {
+        const key = it.id + '|' + sz;
+        const onHand = (shopStockRow(it.id, sz) || { qty: 0 }).qty || 0;
+        const val = Object.prototype.hasOwnProperty.call(counts, key) ? counts[key] : '';
+        html += `<tr>
+          ${it.sized ? `<td style="padding:3px 6px;width:54px;font-weight:600;">${escapeHtml(String(sz))}</td>` : ''}
+          <td style="padding:3px 6px;color:var(--grey-500);font-size:12px;">on hand ${onHand}</td>
+          <td style="padding:3px 6px;text-align:right;"><input type="number" min="0" value="${val}" placeholder="—"
+            onchange="shopSetStocktakeCount('${it.id}','${escapeHtml(String(sz))}',this.value)"
+            style="width:72px;padding:5px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-family:'JetBrains Mono',monospace;text-align:center;"></td>
+        </tr>`;
+      }
+    }
+    html += `</tbody></table></div>`;
+  }
+  return html;
+}
+
+function renderStocktakeReview(sess) {
+  const counts = state.stocktakeCounts || {};
+  const diffs = [];
+  for (const key of Object.keys(counts)) {
+    const sep = key.indexOf('|'); const itemId = key.slice(0, sep); const size = key.slice(sep + 1);
+    const counted = counts[key]; if (counted === '' || counted == null) continue;
+    const onHand = (shopStockRow(itemId, size) || { qty: 0 }).qty || 0;
+    const delta = (counted | 0) - onHand;
+    if (delta !== 0) { const it = state.shop.items.find(x => x.id === itemId); diffs.push({ name: it ? it.name : '(item)', size, counted: counted | 0, onHand, delta }); }
+  }
+  let html = `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:12px 0;">
+    <strong style="font-size:15px;">Review — ${escapeHtml(shopSchoolName(sess.schoolId))}</strong>
+    <button class="btn" onclick="shopBackToCounting()" style="padding:7px 12px;font-size:13px;">Back to counting</button></div>`;
+  if (!diffs.length) {
+    html += `<div class="empty"><h2>Everything matches</h2><p>No differences between counted and on-hand. You can still close to finish the session.</p></div>
+      <button class="btn btn-black" onclick="shopCloseStocktake()" style="padding:9px 16px;">Close stocktake</button>`;
+    return html;
+  }
+  html += `<p style="font-size:13px;color:var(--grey-500);margin:0 0 8px;">${diffs.length} line${diffs.length === 1 ? '' : 's'} will be adjusted:</p>
+    <div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);overflow:hidden;margin-bottom:12px;">`;
+  diffs.forEach((d, i) => {
+    const up = d.delta >= 0;
+    html += `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 12px;${i ? 'border-top:1px solid var(--grey-200);' : ''}font-size:13px;">
+      <span><strong>${escapeHtml(d.name)}</strong>${d.size ? ' <span style="color:var(--grey-500);">sz ' + escapeHtml(String(d.size)) + '</span>' : ''}</span>
+      <span style="display:flex;align-items:center;gap:10px;"><span style="color:var(--grey-500);font-size:12px;">${d.onHand} → ${d.counted}</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${up ? 'var(--ok,#16a34a)' : 'var(--red)'};">${up ? '+' : ''}${d.delta}</span></span></div>`;
+  });
+  html += `</div><button class="btn btn-black" onclick="shopCloseStocktake()" style="padding:9px 16px;">Close & apply ${diffs.length} adjustment${diffs.length === 1 ? '' : 's'}</button>`;
+  return html;
+}
+
+async function shopStartStocktake() {
+  const sid = state.shopStockSchool;
+  if (!can.editStock(sid)) return;
+  let sess; try { sess = await DB.createStocktakeSession(sid, null); }
+  catch (e) { alert('Could not start: ' + (e.message || e)); return; }
+  state.stocktakeSession = sess; state.stocktakeCounts = {}; state._stocktakeReview = false;
+  renderShop();
+}
+async function shopResumeStocktake(id) {
+  const sess = (state.stocktakeSessions || []).find(s => s.id === id);
+  if (!sess) return;
+  let counts = []; try { counts = await DB.loadStocktakeCounts(id); } catch (e) {}
+  const map = {}; counts.forEach(c => { map[c.itemId + '|' + (c.size || '')] = c.countedQty; });
+  state.stocktakeSession = sess; state.stocktakeCounts = map; state._stocktakeReview = false;
+  renderShop();
+}
+async function shopSetStocktakeCount(itemId, size, value) {
+  const sess = state.stocktakeSession; if (!sess) return;
+  size = size || ''; const key = itemId + '|' + size;
+  const raw = (value == null ? '' : String(value)).trim();
+  if (raw === '') return;   // blank = leave the existing count as-is
+  const n = Math.max(0, parseInt(raw, 10) || 0);
+  state.stocktakeCounts[key] = n;
+  try { await DB.saveStocktakeCount(sess.id, sess.schoolId, itemId, size, n); }
+  catch (e) { alert('Could not save count: ' + (e.message || e)); }
+}
+function shopReviewStocktake() { state._stocktakeReview = true; renderShop(); }
+function shopBackToCounting() { state._stocktakeReview = false; renderShop(); }
+async function shopCloseStocktake() {
+  const sess = state.stocktakeSession; if (!sess) return;
+  let n; try { n = await DB.closeStocktake(sess.id); }
+  catch (e) { alert('Could not close: ' + (e.message || e)); return; }
+  try {
+    if (state.shopStockSchool === sess.schoolId) {
+      state.shopStock = await DB.loadSchoolStock(sess.schoolId);
+      state.shopMovements = await DB.loadMovements(sess.schoolId, null, 50);
+    }
+    state.stocktakeSessions = await DB.loadStocktakeSessions(state.shopStockSchool);
+  } catch (e) {}
+  state.stocktakeSession = null; state.stocktakeCounts = {}; state._stocktakeReview = false;
+  if (typeof toast === 'function') toast(n ? ('Stocktake closed — ' + n + ' adjusted') : 'Stocktake closed');
+  renderShop();
+}
+async function shopAbandonStocktake(id) {
+  if (!confirm('Abandon this stocktake? Any counts entered will be discarded.')) return;
+  try { await DB.deleteStocktakeSession(id); } catch (e) { alert('Could not abandon: ' + (e.message || e)); return; }
+  if (state.stocktakeSession && state.stocktakeSession.id === id) { state.stocktakeSession = null; state.stocktakeCounts = {}; state._stocktakeReview = false; }
+  try { state.stocktakeSessions = await DB.loadStocktakeSessions(state.shopStockSchool); } catch (e) {}
+  renderShop();
+}
+function shopExitStocktake() { state.stocktakeSession = null; state.stocktakeCounts = {}; state._stocktakeReview = false; renderShop(); }
+
+// ── tab: VALUE (stock value per school + category; network rollup for shop/superadmin) ──
+function renderShopValue() {
+  const sid = state.shopStockSchool;
+  const rows = state.stockValue || [];
+  const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const here = rows.filter(r => r.schoolId === sid);
+  const hereTotal = here.reduce((a, r) => a + (r.totalValue || 0), 0);
+  const hereQty = here.reduce((a, r) => a + (r.totalQty || 0), 0);
+  let html = `<div style="margin:14px 0;">
+    <div style="font-size:12px;color:var(--grey-500);text-transform:uppercase;letter-spacing:.05em;">${escapeHtml(shopSchoolName(sid))} — stock value</div>
+    <div style="font-family:'Oswald',sans-serif;font-size:30px;font-weight:600;">${money(hereTotal)}</div>
+    <div style="font-size:12px;color:var(--grey-500);">${hereQty} item${hereQty === 1 ? '' : 's'} on hand · valued at each item's catalogue unit cost</div>
+  </div>`;
+  if (here.length) {
+    html += `<table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:8px;">
+      <thead><tr style="color:var(--grey-500);font-size:10px;text-transform:uppercase;letter-spacing:.05em;text-align:left;">
+        <th style="padding:4px 6px;">Category</th><th style="padding:4px 6px;text-align:right;">On hand</th><th style="padding:4px 6px;text-align:right;">Value</th></tr></thead><tbody>`;
+    here.slice().sort((a, b) => b.totalValue - a.totalValue).forEach(r => {
+      html += `<tr style="border-top:1px solid var(--grey-200);"><td style="padding:5px 6px;">${escapeHtml(r.category)}</td>
+        <td style="padding:5px 6px;text-align:right;font-family:'JetBrains Mono',monospace;">${r.totalQty}</td>
+        <td style="padding:5px 6px;text-align:right;font-family:'JetBrains Mono',monospace;">${money(r.totalValue)}</td></tr>`;
+    });
+    html += `</tbody></table>`;
+  } else {
+    html += `<p style="font-size:13px;color:var(--grey-500);">No stock value yet for this school. Set unit costs on the Catalogue and count stock in.</p>`;
+  }
+  if (can.manageShop()) {
+    const bySchool = {};
+    rows.forEach(r => { bySchool[r.schoolId] = (bySchool[r.schoolId] || 0) + (r.totalValue || 0); });
+    const schools = Object.keys(bySchool).sort((a, b) => bySchool[b] - bySchool[a]);
+    const grand = schools.reduce((a, s) => a + bySchool[s], 0);
+    if (schools.length) {
+      html += `<h3 style="font-family:'Oswald',sans-serif;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin:22px 0 8px;">Across the network</h3>
+        <table style="width:100%;border-collapse:collapse;font-size:13px;"><tbody>`;
+      schools.forEach(s => {
+        html += `<tr style="border-top:1px solid var(--grey-200);cursor:pointer;" onclick="shopSwitchSchool('${s}')"><td style="padding:6px;">${escapeHtml(shopSchoolName(s))}</td>
+          <td style="padding:6px;text-align:right;font-family:'JetBrains Mono',monospace;">${money(bySchool[s])}</td></tr>`;
+      });
+      html += `<tr style="border-top:2px solid var(--grey-300);font-weight:700;"><td style="padding:6px;">Total</td>
+        <td style="padding:6px;text-align:right;font-family:'JetBrains Mono',monospace;">${money(grand)}</td></tr></tbody></table>`;
+    }
+  }
+  return html;
+}
+
 // ── tab: CATALOGUE (items) ──
 function renderShopCatalogue() {
   if (!can.manageShop()) return `<div class="empty"><h2>No access</h2></div>`;
   if (state.shopEdit && state.shopEdit.kind === 'item') return renderShopItemEditor();
+  if (state.shopImport && state.shopImport.kind === 'catalogue') return renderShopImportPanel();
 
-  let html = `<div style="margin:12px 0;"><button class="btn btn-black" onclick="shopNewItem()" style="padding:8px 14px;">+ Add item</button></div>`;
+  let html = `<div style="margin:12px 0;display:flex;gap:8px;flex-wrap:wrap;">
+    <button class="btn btn-black" onclick="shopNewItem()" style="padding:8px 14px;">+ Add item</button>
+    <button class="btn" onclick="shopOpenImport('catalogue')" style="padding:8px 14px;">Import CSV</button></div>`;
   const items = state.shop.items.slice().sort((a, b) => a.name.localeCompare(b.name));
   if (!items.length) { html += `<div class="empty"><h2>No items</h2><p>Add your first catalogue item.</p></div>`; return html; }
 
@@ -12366,6 +12738,7 @@ function renderShopCatalogue() {
     const swatch = it.gradeRef && typeof beltSwatch === 'function' ? beltSwatch(it.gradeRef, 16) : '';
     html += `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:8px;${it.archived ? 'opacity:.5;' : ''}">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        ${it.imageUrl ? `<img src="${it.imageUrl}" alt="" style="width:32px;height:32px;border-radius:var(--r-sm);object-fit:cover;border:1px solid var(--grey-200);flex-shrink:0;">` : ''}
         ${swatch}<strong style="font-size:14px;">${escapeHtml(it.name)}</strong>
         ${it.sized ? `<span style="font-size:11px;color:var(--grey-500);">sized${shopSizeSet(it.sizeSetId) ? ' · ' + escapeHtml(shopSizeSet(it.sizeSetId).name) : ''}</span>` : `<span style="font-size:11px;color:var(--grey-500);">single qty</span>`}
         ${cat ? `<span style="font-size:11px;color:var(--grey-500);">· ${escapeHtml(cat.name)}</span>` : ''}
@@ -12402,6 +12775,15 @@ function renderShopItemEditor() {
     </div>
     <label style="${lbl}">SKU (optional)</label>
     <input id="shopItemSku" value="${escapeHtml(d.sku || '')}" style="${inp}">
+    <label style="${lbl}">Photo (optional)</label>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:4px;">
+      ${d.imageUrl
+        ? `<img src="${d.imageUrl}" alt="" style="width:48px;height:48px;border-radius:var(--r-sm);object-fit:cover;border:1px solid var(--grey-200);">`
+        : `<span style="width:48px;height:48px;border-radius:var(--r-sm);border:1px dashed var(--grey-300);display:inline-flex;align-items:center;justify-content:center;color:var(--grey-400);font-size:18px;">📷</span>`}
+      <input type="file" id="shopItemPhotoFile" accept="image/*" style="display:none;" onchange="shopItemPickPhoto(this)">
+      <button type="button" class="btn btn-sm" onclick="document.getElementById('shopItemPhotoFile').click()">${d.imageUrl ? 'Change' : 'Add photo'}</button>
+      ${d.imageUrl ? `<button type="button" class="btn btn-sm" style="color:var(--red);" onclick="shopItemRemovePhoto()">Remove</button>` : ''}
+    </div>
     <label style="display:flex;align-items:center;gap:8px;margin-top:14px;font-size:14px;cursor:pointer;">
       <input type="checkbox" id="shopItemSized" ${d.sized ? 'checked' : ''} onchange="shopItemToggleSized(this.checked)"> This item has sizes
     </label>
@@ -12423,6 +12805,39 @@ function renderShopItemEditor() {
 function shopItemToggleSized(on) {
   const row = document.getElementById('shopItemSizedRow');
   if (row) row.style.display = on ? 'block' : 'none';
+}
+// Capture the editor's current field values into the draft so a re-render (e.g. after
+// picking a photo) doesn't discard what's been typed.
+function shopCaptureItemForm() {
+  const g = id => document.getElementById(id);
+  if (!state.shopEdit || !state.shopEdit.data || !g('shopItemName')) return;
+  const sized = g('shopItemSized').checked;
+  Object.assign(state.shopEdit.data, {
+    name: g('shopItemName').value,
+    categoryId: g('shopItemCat').value || null,
+    supplierId: g('shopItemSup').value || null,
+    unitCost: g('shopItemCost').value === '' ? null : Number(g('shopItemCost').value),
+    unit: g('shopItemUnit').value || null,
+    sku: g('shopItemSku').value || null,
+    sized: sized,
+    sizeSetId: sized ? (g('shopItemSizeSet') ? g('shopItemSizeSet').value || null : null) : null,
+    gradeRef: sized ? (g('shopItemGrade') ? g('shopItemGrade').value || null : null) : null,
+  });
+}
+async function shopItemPickPhoto(input) {
+  const file = input.files && input.files[0];
+  if (!file || !state.shopEdit || !state.shopEdit.data) return;
+  if (file.size > 8 * 1024 * 1024) { alert('Image too large (max 8 MB).'); input.value = ''; return; }
+  shopCaptureItemForm();
+  try { state.shopEdit.data.imageUrl = await resizeImageSquare(file, 256); }
+  catch (e) { alert('Could not process image: ' + (e.message || e)); return; }
+  renderShop();
+}
+function shopItemRemovePhoto() {
+  if (!state.shopEdit || !state.shopEdit.data) return;
+  shopCaptureItemForm();
+  state.shopEdit.data.imageUrl = null;
+  renderShop();
 }
 function shopNewItem() { state.shopEdit = { kind: 'item', data: { sized: false } }; renderShop(); }
 function shopEditItem(id) {
@@ -12461,6 +12876,142 @@ async function shopToggleArchive(id) {
     if (i >= 0) state.shop.items[i] = saved;
     renderShop();
   } catch (e) { alert('Could not update item: ' + (e.message || e)); }
+}
+
+// ── CSV import (catalogue items + opening stock counts) ──
+function shopOpenImport(kind) {
+  if (kind === 'catalogue' && !can.manageShop()) return;
+  if (kind === 'stock' && !can.editStock(state.shopStockSchool)) return;
+  state.shopImport = { kind, text: '', rows: null, done: null };
+  renderShop();
+}
+function shopCancelImport() { state.shopImport = null; renderShop(); }
+function _csvHeaderIndex(headerCells, synonyms) {
+  const idx = {};
+  headerCells.forEach((h, i) => { for (const field of Object.keys(synonyms)) { if (synonyms[field].includes(h) && idx[field] == null) idx[field] = i; } });
+  return idx;
+}
+const _SHOP_IMPORT_COLS = {
+  catalogue: { syn: { name:['name','item','item name','product'], category:['category','cat'], supplier:['supplier','vendor'], unitCost:['unit cost','cost','price','unit cost ($)'], unit:['unit','uom'], sku:['sku','code'], sized:['sized','has sizes'], sizeSet:['size set','sizeset','sizes'], gradeRef:['belt grade','grade','belt'] }, req:['name'],
+    header:'name, category, supplier, unit cost, unit, sku, sized, size set, belt grade', note:'Category, supplier and size set are matched by name to ones you\'ve already created (blank if not found). Items whose name already exists are skipped.' },
+  stock: { syn: { item:['item','name','item name','product','sku'], size:['size','sz'], qty:['quantity','qty','count','on hand','on-hand'] }, req:['item','qty'],
+    header:'item (name or SKU), size, quantity', note:'Each row sets the on-hand count for that item + size at the selected school (the difference is recorded as an adjustment). Items are matched by name or SKU.' },
+}
+function shopImportParse() {
+  const el = document.getElementById('shopImportText');
+  const text = el ? el.value : '';
+  state.shopImport.text = text;
+  const matrix = parseCSV(text).filter(r => r.some(c => String(c).trim() !== ''));
+  if (matrix.length < 2) { state.shopImport.rows = []; state.shopImport.error = 'Need a header row and at least one data row.'; renderShop(); return; }
+  const header = matrix[0].map(h => String(h).toLowerCase().replace(/\uFEFF/g, '').trim());
+  const spec = _SHOP_IMPORT_COLS[state.shopImport.kind];
+  const idx = _csvHeaderIndex(header, spec.syn);
+  const missing = spec.req.filter(f => idx[f] == null);
+  if (missing.length) { state.shopImport.rows = []; state.shopImport.error = 'Missing required column(s): ' + missing.join(', ') + '. Expected: ' + spec.header; renderShop(); return; }
+  state.shopImport.error = null;
+  state.shopImport.idx = idx;
+  state.shopImport.rows = matrix.slice(1).map(r => r.map(c => String(c).trim()));
+  state.shopImport.done = null;
+  renderShop();
+}
+function renderShopImportPanel() {
+  const imp = state.shopImport; const spec = _SHOP_IMPORT_COLS[imp.kind];
+  const title = imp.kind === 'catalogue' ? 'Import catalogue items' : 'Import opening counts — ' + escapeHtml(shopSchoolName(state.shopStockSchool));
+  let html = `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:16px;margin-top:12px;max-width:620px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;">
+      <h3 style="margin:0;font-size:16px;">${title}</h3>
+      <button class="btn btn-sm" onclick="shopCancelImport()">Close</button></div>
+    <p style="font-size:12px;color:var(--grey-500);margin:0 0 8px;">Paste CSV with a header row. Columns: <strong>${escapeHtml(spec.header)}</strong>. ${escapeHtml(spec.note)}</p>
+    <textarea id="shopImportText" placeholder="${escapeHtml(spec.header)}" style="width:100%;min-height:140px;padding:8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-family:'JetBrains Mono',monospace;font-size:12px;">${escapeHtml(imp.text || '')}</textarea>
+    <div style="display:flex;gap:8px;margin-top:10px;">
+      <button class="btn" onclick="shopImportParse()" style="padding:8px 14px;">Preview</button>
+      ${imp.rows && imp.rows.length && !imp.done ? `<button class="btn btn-black" onclick="shopImportRun()" style="padding:8px 14px;">Import ${imp.rows.length} row${imp.rows.length === 1 ? '' : 's'}</button>` : ''}
+    </div>`;
+  if (imp.error) html += `<p style="font-size:13px;color:var(--red);margin:10px 0 0;">${escapeHtml(imp.error)}</p>`;
+  if (imp.rows && imp.rows.length && !imp.done) html += `<p style="font-size:12px;color:var(--grey-500);margin:10px 0 0;">${imp.rows.length} row${imp.rows.length === 1 ? '' : 's'} ready to import.</p>`;
+  if (imp.done) {
+    const d = imp.done;
+    html += `<div style="margin-top:12px;padding:10px 12px;border:1px solid var(--grey-200);border-radius:var(--r-sm);background:var(--off-white);font-size:13px;">
+      <strong>Done.</strong> ${d.created != null ? d.created + ' created' : ''}${d.updated ? ' · ' + d.updated + ' updated' : ''}${d.skipped ? ' · ' + d.skipped + ' skipped' : ''}${d.errors && d.errors.length ? ' · ' + d.errors.length + ' error(s)' : ''}
+      ${d.errors && d.errors.length ? `<ul style="margin:8px 0 0;padding-left:18px;color:var(--red);">${d.errors.slice(0, 12).map(e => `<li>${escapeHtml(e)}</li>`).join('')}</ul>` : ''}
+    </div>
+    <div style="margin-top:10px;"><button class="btn" onclick="shopCancelImport()" style="padding:8px 14px;">Done</button></div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+async function shopImportRun() {
+  const imp = state.shopImport; if (!imp || !imp.rows) return;
+  if (imp.kind === 'catalogue') return shopRunCatalogueImport();
+  return shopRunStockImport();
+}
+async function shopRunCatalogueImport() {
+  const imp = state.shopImport; const idx = imp.idx;
+  const get = (row, f) => (idx[f] != null ? (row[idx[f]] || '') : '');
+  const truthy = v => /^(y|yes|true|1|sized)$/i.test(String(v).trim());
+  const byName = (arr, name) => arr.find(x => x.name && x.name.toLowerCase() === String(name).toLowerCase());
+  let created = 0, skipped = 0; const errors = [];
+  for (const row of imp.rows) {
+    const name = get(row, 'name').trim();
+    if (!name) { skipped++; continue; }
+    if (byName(state.shop.items, name)) { skipped++; continue; }   // already exists
+    const sizeSetName = get(row, 'sizeSet').trim();
+    const sizeSet = sizeSetName ? byName(state.shop.sizeSets, sizeSetName) : null;
+    const sized = sizeSet ? true : truthy(get(row, 'sized'));
+    const cat = (get(row, 'category').trim() && byName(state.shop.categories, get(row, 'category').trim())) || null;
+    const sup = (get(row, 'supplier').trim() && byName(state.shop.suppliers, get(row, 'supplier').trim())) || null;
+    const costRaw = get(row, 'unitCost').replace(/[^0-9.\-]/g, '');
+    const draft = {
+      name,
+      categoryId: cat ? cat.id : null,
+      supplierId: sup ? sup.id : null,
+      unitCost: costRaw === '' ? null : Number(costRaw),
+      unit: get(row, 'unit').trim() || null,
+      sku: get(row, 'sku').trim() || null,
+      sized,
+      sizeSetId: sized && sizeSet ? sizeSet.id : null,
+      gradeRef: sized ? (get(row, 'gradeRef').trim() || null) : null,
+    };
+    if (draft.sized && !draft.sizeSetId) { errors.push(name + ': marked sized but no matching size set'); skipped++; continue; }
+    try { const saved = await DB.saveItem(draft); state.shop.items.push(saved); created++; }
+    catch (e) { errors.push(name + ': ' + (e.message || e)); }
+  }
+  state.shopImport.done = { created, skipped, errors };
+  renderShop();
+}
+async function shopRunStockImport() {
+  const imp = state.shopImport; const idx = imp.idx; const sid = state.shopStockSchool;
+  const get = (row, f) => (idx[f] != null ? (row[idx[f]] || '') : '');
+  const findItem = key => { const k = String(key).toLowerCase(); return state.shop.items.find(it => (it.name && it.name.toLowerCase() === k) || (it.sku && it.sku.toLowerCase() === k)); };
+  let updated = 0, skipped = 0; const errors = [];
+  for (const row of imp.rows) {
+    const key = get(row, 'item').trim();
+    if (!key) { skipped++; continue; }
+    const it = findItem(key);
+    if (!it) { errors.push(key + ': no matching item'); skipped++; continue; }
+    let size = get(row, 'size').trim();
+    if (it.sized) {
+      const sizes = shopItemSizes(it);
+      if (size === '' || !sizes.map(String).includes(size)) { errors.push(it.name + ': size "' + size + '" not valid for this item'); skipped++; continue; }
+    } else size = '';
+    const qtyRaw = get(row, 'qty').replace(/[^0-9\-]/g, '');
+    if (qtyRaw === '') { skipped++; continue; }
+    const qty = Math.max(0, parseInt(qtyRaw, 10) || 0);
+    const cur = (shopStockRow(it.id, size) || { qty: 0 }).qty || 0;
+    const delta = qty - cur;
+    if (delta === 0) { skipped++; continue; }
+    try {
+      const newQty = await DB.applyMovement(sid, it.id, size, delta, 'adjusted', 'Opening count (CSV)', 'import', null);
+      let r = shopStockRow(it.id, size);
+      if (!r) { r = { schoolId: sid, itemId: it.id, size, qty: 0, reorderLevel: 0, targetLevel: 0 }; state.shopStock.push(r); }
+      r.qty = (typeof newQty === 'number') ? newQty : qty;
+      updated++;
+    } catch (e) { errors.push(it.name + ': ' + (e.message || e)); }
+  }
+  try { state.shopMovements = await DB.loadMovements(sid, null, 50); } catch (e) {}
+  state.shopImport.done = { created: null, updated, skipped, errors };
+  updateShopNavBadge();
+  renderShop();
 }
 
 // ── tab: SUPPLIERS (+ categories + size sets) ──
