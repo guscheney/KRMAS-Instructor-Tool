@@ -12135,27 +12135,47 @@ function renderMyOnboarding() {
    ================================================================ */
 
 async function loadShopData() {
+  state.shopLoadError = false;
   try { state.shop = await DB.loadShop(); }
-  catch (e) { console.warn('loadShop:', e && e.message); state.shop = { categories: [], sizeSets: [], suppliers: [], items: [] }; }
+  catch (e) { console.warn('loadShop:', e && e.message); state.shop = { categories: [], sizeSets: [], suppliers: [], items: [] }; state.shopLoadError = true; }
   const sid = state.shopStockSchool || state.schoolId || (state.userSchools || [])[0] || null;
   if (sid) await loadShopStock(sid);
 }
 async function loadShopStock(sid) {
   state.shopStockSchool = sid;
+  state.shopStockError = false;
   try { state.shopStock = await DB.loadSchoolStock(sid); }
-  catch (e) { console.warn('loadShopStock:', e && e.message); state.shopStock = []; }
+  catch (e) { console.warn('loadShopStock:', e && e.message); state.shopStock = []; state.shopStockError = true; }
   try { state.shopMovements = await DB.loadMovements(sid, null, 50); }
   catch (e) { console.warn('loadShopMovements:', e && e.message); state.shopMovements = []; }
   updateShopNavBadge();
 }
 async function shopSwitchSchool(sid) {
   if (!sid) return;
+  state.shopStockLoading = true;
+  const sl = document.getElementById('shopStockList'); if (sl && state.shopView === 'stock') sl.innerHTML = shopStockSkeletonHtml();
   await loadShopStock(sid);
+  state.shopStockLoading = false;
   // dropping a stocktake that belonged to the previous school, and refresh lists for the new one
   if (state.stocktakeSession && state.stocktakeSession.schoolId !== sid) { state.stocktakeSession = null; state.stocktakeCounts = {}; state._stocktakeReview = false; }
   if (state.shopView === 'stocktake') { try { state.stocktakeSessions = await DB.loadStocktakeSessions(sid); } catch (e) {} }
   if (state.shopView === 'transfers' && can.manageShop()) { try { state.shopTransfers = await DB.loadTransfers(60); } catch (e) {} }
   renderShop();
+}
+// Retry after a failed catalogue/stock load.
+async function shopRetryLoad() {
+  state.shopStockLoading = true; renderShop();
+  await loadShopData();
+  state.shopStockLoading = false; renderShop();
+}
+// Shimmer placeholders shown while stock is (re)loading.
+function shopStockSkeletonHtml() {
+  let h = '';
+  for (let i = 0; i < 4; i++) h += `<div class="stock-card" aria-hidden="true"><div class="stock-sum" style="cursor:default;">
+    <span class="skel" style="width:12px;height:12px;border-radius:50%;"></span>
+    <span class="s-main"><span class="skel" style="display:block;width:42%;height:13px;"></span><span class="skel" style="display:block;width:26%;height:9px;margin-top:6px;"></span></span>
+    <span class="skel" style="width:34px;height:18px;"></span></div></div>`;
+  return h;
 }
 function setShopView(v) {
   state.shopView = v; state.shopEdit = null; renderShop();
@@ -12240,6 +12260,118 @@ function renderShop() {
   updateShopNavBadge();
 }
 
+// ── Stock filter / sort (stage 1) ──────────────────────────────────────────
+// Composable filters (search · status · category · supplier) + sort, persisted in
+// sessionStorage so they survive tab switches and the back button. Search refreshes
+// only the list container (keeps caret/focus); other controls do a full shop re-render
+// so pill highlights stay in sync.
+const SHOP_FILTER_DEFAULTS = { q: '', cats: [], status: 'all', supplier: '', sortBy: 'name', sortDir: 'asc' };
+let _shopSearchTimer = null;
+function shopFilterLoad() {
+  try { const s = JSON.parse(sessionStorage.getItem('krmas_shop_filter') || '{}'); return Object.assign({}, SHOP_FILTER_DEFAULTS, s, { cats: Array.isArray(s.cats) ? s.cats : [] }); }
+  catch (e) { return Object.assign({}, SHOP_FILTER_DEFAULTS, { cats: [] }); }
+}
+function shopFilterSave() { try { sessionStorage.setItem('krmas_shop_filter', JSON.stringify(state.shopFilter)); } catch (e) {} }
+function shopItemTotalQty(it) { return shopItemSizes(it).reduce((a, sz) => a + ((shopStockRow(it.id, sz) || {}).qty || 0), 0); }
+function shopItemStatus(it) { if (shopItemTotalQty(it) <= 0) return 'out'; return shopItemIsLow(it) ? 'low' : 'healthy'; }
+function shopMatchedItems() {
+  const f = state.shopFilter || SHOP_FILTER_DEFAULTS;
+  const q = (f.q || '').trim().toLowerCase();
+  const list = shopActiveItems().filter(it => {
+    if (q && ((it.name + ' ' + (it.sku || '')).toLowerCase().indexOf(q) < 0)) return false;
+    if (f.cats && f.cats.length && !f.cats.includes(it.categoryId || '')) return false;
+    if (f.supplier && (it.supplierId || '') !== f.supplier) return false;
+    if (f.status && f.status !== 'all') {
+      const st = shopItemStatus(it);
+      if (f.status === 'instock' && st === 'out') return false;
+      if (f.status === 'low' && st !== 'low') return false;
+      if (f.status === 'out' && st !== 'out') return false;
+    }
+    return true;
+  });
+  const dir = f.sortDir === 'desc' ? -1 : 1;
+  const catName = it => { const c = shopCat(it.categoryId); return c ? c.name : 'zzz'; };
+  list.sort((a, b) => {
+    let r;
+    if (f.sortBy === 'qty') r = shopItemTotalQty(a) - shopItemTotalQty(b);
+    else if (f.sortBy === 'category') r = catName(a).localeCompare(catName(b)) || a.name.localeCompare(b.name);
+    else r = a.name.localeCompare(b.name);
+    return r * dir;
+  });
+  return list;
+}
+function shopFilterActive() { const f = state.shopFilter || SHOP_FILTER_DEFAULTS; return !!(f.q && f.q.trim()) || !!(f.cats && f.cats.length) || (f.status && f.status !== 'all') || !!f.supplier; }
+function shopActiveFilterChips() {
+  const f = state.shopFilter || SHOP_FILTER_DEFAULTS; const chips = [];
+  if (f.q && f.q.trim()) chips.push('“' + f.q.trim() + '”');
+  if (f.status && f.status !== 'all') chips.push({ instock: 'In stock', low: 'Low', out: 'Out of stock' }[f.status] || f.status);
+  (f.cats || []).forEach(id => { const c = shopCat(id); if (c) chips.push(c.name); });
+  if (f.supplier) { const s = shopSupplier(f.supplier); if (s) chips.push(s.name); }
+  return chips;
+}
+function shopFilterSearch(v) { clearTimeout(_shopSearchTimer); _shopSearchTimer = setTimeout(() => { state.shopFilter.q = v; shopFilterSave(); shopRefreshStockList(); }, 300); }
+function shopFilterStatus(s) { state.shopFilter.status = s; shopFilterSave(); renderShop(); }
+function shopFilterToggleCat(id) { const c = state.shopFilter.cats || (state.shopFilter.cats = []); const i = c.indexOf(id); if (i >= 0) c.splice(i, 1); else c.push(id); shopFilterSave(); renderShop(); }
+function shopFilterSupplier(v) { state.shopFilter.supplier = v || ''; shopFilterSave(); renderShop(); }
+function shopFilterSort(field) { state.shopFilter.sortBy = field; shopFilterSave(); renderShop(); }
+function shopFilterToggleDir() { state.shopFilter.sortDir = state.shopFilter.sortDir === 'desc' ? 'asc' : 'desc'; shopFilterSave(); renderShop(); }
+function shopFilterClear() { state.shopFilter = Object.assign({}, SHOP_FILTER_DEFAULTS, { cats: [] }); shopFilterSave(); renderShop(); }
+function shopRefreshStockList() { const el = document.getElementById('shopStockList'); if (el) el.innerHTML = shopStockListHtml(can.editStock(state.shopStockSchool)); else renderShop(); }
+function shopFilterBarHtml() {
+  const f = state.shopFilter;
+  const pill = (active, label, onclick) => `<button onclick="${onclick}" aria-pressed="${active}" style="padding:5px 11px;border:1px solid ${active ? 'var(--red)' : 'var(--grey-200)'};background:${active ? 'var(--red)' : 'transparent'};color:${active ? '#fff' : 'var(--grey-600,#444)'};border-radius:999px;font-size:12px;font-weight:600;cursor:pointer;">${escapeHtml(label)}</button>`;
+  const cats = state.shop.categories.slice().sort((a, b) => (a.sort - b.sort) || a.name.localeCompare(b.name));
+  const sups = state.shop.suppliers.slice().sort((a, b) => a.name.localeCompare(b.name));
+  const sel = 'padding:6px 8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;';
+  let h = `<div style="display:flex;flex-direction:column;gap:8px;margin:12px 0;">
+    <input type="search" placeholder="Search name or SKU…" value="${escapeHtml(f.q || '')}" oninput="shopFilterSearch(this.value)" aria-label="Search stock"
+      style="width:100%;padding:8px 10px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;">
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+      ${pill(f.status === 'all', 'All', "shopFilterStatus('all')")}
+      ${pill(f.status === 'instock', 'In stock', "shopFilterStatus('instock')")}
+      ${pill(f.status === 'low', 'Low', "shopFilterStatus('low')")}
+      ${pill(f.status === 'out', 'Out', "shopFilterStatus('out')")}
+    </div>`;
+  if (cats.length) h += `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+      <span style="font-size:11px;color:var(--grey-500);">Category:</span>
+      ${cats.map(c => pill((f.cats || []).includes(c.id), c.name, `shopFilterToggleCat('${c.id}')`)).join('')}</div>`;
+  h += `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">`;
+  if (sups.length) h += `<label style="font-size:11px;color:var(--grey-500);">Supplier
+      <select onchange="shopFilterSupplier(this.value)" style="${sel}margin-left:4px;"><option value="">All</option>
+        ${sups.map(s => `<option value="${s.id}"${f.supplier === s.id ? ' selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}</select></label>`;
+  h += `<label style="font-size:11px;color:var(--grey-500);">Sort
+      <select onchange="shopFilterSort(this.value)" style="${sel}margin-left:4px;">
+        <option value="name"${f.sortBy === 'name' ? ' selected' : ''}>Name</option>
+        <option value="qty"${f.sortBy === 'qty' ? ' selected' : ''}>Quantity</option>
+        <option value="category"${f.sortBy === 'category' ? ' selected' : ''}>Category</option>
+      </select></label>
+      <button onclick="shopFilterToggleDir()" aria-label="Toggle sort direction" style="padding:5px 9px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;cursor:pointer;background:transparent;">${f.sortDir === 'desc' ? '↓ Desc' : '↑ Asc'}</button>
+    </div></div>`;
+  return h;
+}
+function shopStockListHtml(editable) {
+  const matched = shopMatchedItems();
+  const total = shopActiveItems().length;
+  const chips = shopActiveFilterChips();
+  let html = `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:4px 0 6px;">
+    <span aria-live="polite" style="font-size:12px;color:var(--grey-500);">Showing ${matched.length} of ${total} item${total === 1 ? '' : 's'}</span>
+    ${shopFilterActive() ? `<button onclick="shopFilterClear()" style="font-size:12px;color:var(--red);background:transparent;border:none;cursor:pointer;padding:0;">Clear all</button>` : ''}</div>`;
+  if (chips.length) html += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">${chips.map(c => `<span style="font-size:11px;background:var(--off-white,#f5f5f5);border:1px solid var(--grey-200);border-radius:999px;padding:2px 8px;color:var(--grey-600,#555);">${escapeHtml(c)}</span>`).join('')}</div>`;
+  if (!matched.length) {
+    html += `<div class="empty"><h2>No items match your filters</h2><p>Try removing a filter or clearing them all.</p>${shopFilterActive() ? `<button class="btn" onclick="shopFilterClear()" style="margin-top:8px;padding:8px 14px;">Clear filters</button>` : ''}</div>`;
+    return html;
+  }
+  const cats = state.shop.categories.slice().sort((a, b) => (a.sort - b.sort) || a.name.localeCompare(b.name));
+  const groups = cats.map(c => ({ name: c.name, items: matched.filter(i => i.categoryId === c.id) }))
+    .concat([{ name: 'Uncategorised', items: matched.filter(i => !i.categoryId || !shopCat(i.categoryId)) }])
+    .filter(g => g.items.length);
+  for (const g of groups) {
+    html += `<h3 style="font-family:'Oswald',sans-serif;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin:18px 0 8px;">${escapeHtml(g.name)}</h3>`;
+    for (const it of g.items) html += renderShopStockItem(it, editable);
+  }
+  return html;
+}
+
 // ── tab: STOCK (per-school counts) ──
 function renderShopStock() {
   const sid = state.shopStockSchool;
@@ -12261,24 +12393,26 @@ function renderShopStock() {
     html += `<p style="font-size:13px;color:var(--grey-500);margin:12px 0;">${escapeHtml(shopSchoolName(sid))}</p>`;
   }
 
+  if (state.shopStockLoading) { html += shopStockSkeletonHtml(); return html; }
+  if (state.shopLoadError || state.shopStockError) {
+    html += `<div class="empty"><h2>Couldn't load stock</h2><p>Something went wrong fetching the catalogue or counts. Check your connection and try again.</p><button class="btn" onclick="shopRetryLoad()" style="margin-top:10px;padding:8px 16px;">Retry</button></div>`;
+    return html;
+  }
+
   const items = shopActiveItems();
   if (!items.length) {
     html += `<div class="empty"><h2>No items yet</h2><p>${can.manageShop() ? 'Add items on the Catalogue tab.' : 'A shop admin needs to add items to the catalogue first.'}</p></div>`;
     return html;
   }
-  if (!editable) html += `<p style="font-size:12px;color:var(--grey-500);">You can view this school's stock but not change it.</p>`;
-  else html += `<div style="margin:0 0 10px;"><button class="btn" onclick="shopOpenImport('stock')" style="padding:6px 12px;font-size:12px;">Import counts (CSV)</button></div>`;
+  html += `<div style="margin:0 0 10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+    ${editable ? `<button class="btn" onclick="shopOpenImport('stock')" style="padding:6px 12px;font-size:12px;">Import counts (CSV)</button>` : ''}
+    <button class="btn" onclick="shopPrint('stocklist')" style="padding:6px 12px;font-size:12px;">🖨 Print list</button>
+    ${!editable ? `<span style="font-size:12px;color:var(--grey-500);">View only — you can't change this school's stock.</span>` : ''}
+  </div>`;
 
-  // group by category (uncategorised last)
-  const cats = state.shop.categories.slice().sort((a, b) => (a.sort - b.sort) || a.name.localeCompare(b.name));
-  const groups = cats.map(c => ({ name: c.name, items: items.filter(i => i.categoryId === c.id) }))
-    .concat([{ name: 'Uncategorised', items: items.filter(i => !i.categoryId || !shopCat(i.categoryId)) }])
-    .filter(g => g.items.length);
-
-  for (const g of groups) {
-    html += `<h3 style="font-family:'Oswald',sans-serif;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin:18px 0 8px;">${escapeHtml(g.name)}</h3>`;
-    for (const it of g.items) html += renderShopStockItem(it, editable);
-  }
+  if (!state.shopFilter) state.shopFilter = shopFilterLoad();
+  html += shopFilterBarHtml();
+  html += `<div id="shopStockList">${shopStockListHtml(editable)}</div>`;
   html += renderShopActivity();
   return html;
 }
@@ -12305,16 +12439,37 @@ function renderShopActivity() {
   return html;
 }
 
+// Status visual config (colour + text label — never colour alone).
+function shopStatusCfg(status) {
+  return ({ healthy: ['var(--ok,#16a34a)', 'In stock'], low: ['var(--warn,#d97706)', 'Low'], out: ['var(--red,#D22C12)', 'Out'] })[status] || ['var(--grey-500)', '—'];
+}
 function renderShopStockItem(it, editable) {
+  const status = shopItemStatus(it);
+  const cfg = shopStatusCfg(status);
+  const total = shopItemTotalQty(it);
+  const open = !!(state.shopExpanded && state.shopExpanded.has(it.id));
+  const swatch = it.gradeRef && typeof beltSwatch === 'function' ? beltSwatch(it.gradeRef, 14) : '';
+  const cat = shopCat(it.categoryId); const sup = shopSupplier(it.supplierId);
+  const meta = [it.sku ? 'SKU ' + escapeHtml(it.sku) : '', cat ? escapeHtml(cat.name) : '', sup ? escapeHtml(sup.name) : '', it.unit ? '/ ' + escapeHtml(it.unit) : ''].filter(Boolean).join(' · ');
+  return `<div class="stock-card">
+    <button class="stock-sum" aria-expanded="${open ? 'true' : 'false'}" aria-controls="stk-exp-${it.id}" onclick="shopToggleExpand('${it.id}')">
+      <span class="stock-dot" id="stk-dot-${it.id}" style="color:${cfg[0]};" aria-hidden="true">●</span>
+      <span class="s-main"><span class="s-name">${swatch}${escapeHtml(it.name)}</span><span class="s-meta">${meta || '—'}</span></span>
+      <span class="s-qty" id="stk-tot-${it.id}">${total}<small>in stock</small></span>
+      <span class="stock-stat s-statlabel" id="stk-stat-${it.id}" style="color:${cfg[0]};">${cfg[1]}</span>
+      <span class="stock-chev" aria-hidden="true">▶</span>
+    </button>
+    <div class="stock-exp${open ? ' open' : ''}" id="stk-exp-${it.id}" role="region"><div class="stock-exp-inner">${shopStockItemDetail(it, editable)}</div></div>
+  </div>`;
+}
+function shopStockItemDetail(it, editable) {
   const dis = editable ? '' : ' disabled';
-  const low = shopItemIsLow(it);
-  const swatch = it.gradeRef && typeof beltSwatch === 'function' ? beltSwatch(it.gradeRef, 16) : '';
-  let body = '';
   const sizes = shopItemSizes(it);
+  let body;
   if (it.sized && !sizes.length) {
     body = `<p style="font-size:12px;color:var(--c-mt,#b8860b);">No size set chosen — edit this item on the Catalogue tab.</p>`;
   } else {
-    body = `<table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:6px;">
+    body = `<table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:8px;">
       <thead><tr style="color:var(--grey-500);font-size:10px;text-transform:uppercase;letter-spacing:.05em;">
         ${it.sized ? '<th style="text-align:left;padding:3px 6px;">Size</th>' : ''}
         <th style="text-align:left;padding:3px 6px;">In stock</th>
@@ -12324,27 +12479,52 @@ function renderShopStockItem(it, editable) {
     for (const sz of sizes) {
       const r = shopStockRow(it.id, sz) || { qty: 0, reorderLevel: 0, targetLevel: 0 };
       const cellLow = r.reorderLevel > 0 && r.qty <= r.reorderLevel;
+      const lbl = it.sized ? ('size ' + sz) : it.name;
       body += `<tr>
         ${it.sized ? `<td style="padding:3px 6px;font-weight:600;">${escapeHtml(String(sz))}</td>` : ''}
-        <td style="padding:3px 6px;"><input type="number" min="0" value="${r.qty || 0}"${dis}
+        <td style="padding:3px 6px;"><input type="number" min="0" value="${r.qty || 0}"${dis} aria-label="In stock, ${escapeHtml(lbl)}"
           onchange="shopSetStock('${it.id}','${escapeHtml(String(sz))}','qty',this.value)"
           style="width:64px;padding:5px;border:1px solid ${cellLow ? 'var(--red)' : 'var(--grey-200)'};border-radius:var(--r-sm);font-family:'JetBrains Mono',monospace;text-align:center;"></td>
-        <td style="padding:3px 6px;"><input type="number" min="0" value="${r.reorderLevel || 0}"${dis}
+        <td style="padding:3px 6px;"><input type="number" min="0" value="${r.reorderLevel || 0}"${dis} aria-label="Reorder at, ${escapeHtml(lbl)}"
           onchange="shopSetStock('${it.id}','${escapeHtml(String(sz))}','reorder',this.value)"
           style="width:64px;padding:5px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-family:'JetBrains Mono',monospace;text-align:center;"></td>
-        <td style="padding:3px 6px;"><input type="number" min="0" value="${r.targetLevel || 0}"${dis}
+        <td style="padding:3px 6px;"><input type="number" min="0" value="${r.targetLevel || 0}"${dis} aria-label="Target, ${escapeHtml(lbl)}"
           onchange="shopSetStock('${it.id}','${escapeHtml(String(sz))}','target',this.value)"
           style="width:64px;padding:5px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-family:'JetBrains Mono',monospace;text-align:center;"></td>
       </tr>`;
     }
     body += `</tbody></table>`;
   }
-  return `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:10px 12px;margin-bottom:8px;">
-    <div style="display:flex;align-items:center;gap:6px;">
-      ${swatch}<strong style="font-size:14px;">${escapeHtml(it.name)}</strong>
-      <span id="lowbadge-${it.id}" style="display:${low ? 'inline' : 'none'};font-size:10px;color:var(--red);font-weight:700;text-transform:uppercase;letter-spacing:.04em;">● Low</span>
-      ${it.unit ? `<span style="font-size:11px;color:var(--grey-500);">/ ${escapeHtml(it.unit)}</span>` : ''}
-    </div>${body}</div>`;
+  return body + shopItemMovementsHtml(it.id);
+}
+function shopItemMovementsHtml(itemId) {
+  const moves = (state.shopMovements || []).filter(m => m.itemId === itemId).slice(0, 6);
+  if (!moves.length) return '';
+  const fmt = ts => { try { return new Date(ts).toLocaleDateString(); } catch (e) { return ''; } };
+  const kindLabel = { received: 'Received', sold: 'Sold', issued: 'Issued', adjusted: 'Adjusted', correction: 'Correction', transfer_in: 'Transfer in', transfer_out: 'Transfer out', stocktake: 'Stocktake' };
+  let h = `<div style="margin-top:8px;"><div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin-bottom:3px;">Recent movements</div>`;
+  moves.forEach(m => {
+    const up = m.delta >= 0;
+    h += `<div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;padding:2px 0;">
+      <span style="color:var(--grey-500);min-width:0;">${escapeHtml(kindLabel[m.kind] || m.kind)}${m.size ? ' · sz ' + escapeHtml(String(m.size)) : ''}${m.note ? ' · ' + escapeHtml(m.note) : ''}</span>
+      <span style="flex-shrink:0;"><span style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${up ? 'var(--ok,#16a34a)' : 'var(--red)'};">${up ? '+' : ''}${m.delta}</span> <span style="color:var(--grey-500);">${fmt(m.createdAt)}</span></span></div>`;
+  });
+  return h + `</div>`;
+}
+function shopToggleExpand(id) {
+  if (!state.shopExpanded) state.shopExpanded = new Set();
+  const panel = document.getElementById('stk-exp-' + id);
+  const btn = panel && panel.parentElement ? panel.parentElement.querySelector('.stock-sum') : null;
+  if (state.shopExpanded.has(id)) { state.shopExpanded.delete(id); if (panel) panel.classList.remove('open'); if (btn) btn.setAttribute('aria-expanded', 'false'); }
+  else { state.shopExpanded.add(id); if (panel) panel.classList.add('open'); if (btn) btn.setAttribute('aria-expanded', 'true'); }
+}
+// Live-update one card's status dot/label/total without a full re-render (keeps input focus).
+function shopUpdateItemStatus(itemId) {
+  const it = state.shop.items.find(i => i.id === itemId); if (!it) return;
+  const cfg = shopStatusCfg(shopItemStatus(it));
+  const dot = document.getElementById('stk-dot-' + itemId); if (dot) dot.style.color = cfg[0];
+  const lab = document.getElementById('stk-stat-' + itemId); if (lab) { lab.textContent = cfg[1]; lab.style.color = cfg[0]; }
+  const tot = document.getElementById('stk-tot-' + itemId); if (tot && tot.childNodes[0]) tot.childNodes[0].nodeValue = String(shopItemTotalQty(it));
 }
 
 async function shopSetStock(itemId, size, field, value) {
@@ -12375,9 +12555,9 @@ async function shopSetStock(itemId, size, field, value) {
     else alert('Could not save: ' + (e.message || e));
     return;
   }
-  const it = state.shop.items.find(i => i.id === itemId);
-  const badge = document.getElementById('lowbadge-' + itemId);
-  if (it && badge) badge.style.display = shopItemIsLow(it) ? 'inline' : 'none';
+  // threshold path keeps focus — live-refresh this card's status + the nav low badge in place
+  shopUpdateItemStatus(itemId);
+  if (typeof updateShopNavBadge === 'function') updateShopNavBadge();
 }
 
 // ── tab: REORDER LIST (low items grouped by supplier) ──
@@ -12395,6 +12575,7 @@ function renderShopReorder() {
     }
   }
   if (!lines.length) { html += `<div class="empty"><h2>Nothing to reorder</h2><p>Everything is above its reorder level.</p></div>`; return html; }
+  html += `<div style="margin:0 0 10px;"><button class="btn" onclick="shopPrint('order')" style="padding:6px 12px;font-size:12px;">🖨 Print order</button></div>`;
 
   // group by supplier
   const bySup = {};
@@ -12451,6 +12632,91 @@ function shopExportReorderCsv(supKey) {
   a.href = url; a.download = 'reorder-' + (sup ? sup.name.replace(/\W+/g, '-').toLowerCase() : 'unassigned') + '.csv';
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ── Print support (stage 3): build into #printArea, then window.print() ──
+function shopPrintHead(title, subtitle) {
+  const school = escapeHtml(shopSchoolName(state.shopStockSchool));
+  const date = new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+  return `<div class="print-head"><div><div class="school">${school}</div><h1>${escapeHtml(title)}</h1>${subtitle ? `<div class="muted">${escapeHtml(subtitle)}</div>` : ''}</div>
+    <div class="print-meta">Printed ${escapeHtml(date)}</div></div>`;
+}
+// Low lines for the order sheet (carries itemId + unit cost so we can total).
+function shopReorderLines(sid) {
+  const lines = [];
+  for (const it of shopActiveItems()) {
+    for (const sz of shopItemSizes(it)) {
+      const r = shopStockRow(it.id, sz);
+      if (r && r.reorderLevel > 0 && r.qty <= r.reorderLevel) {
+        lines.push({ supplierId: it.supplierId || '', itemId: it.id, itemName: it.name, sku: it.sku || '', size: sz, qty: r.qty, reorderLevel: r.reorderLevel, targetLevel: r.targetLevel || 0, orderQty: (r.targetLevel > 0 ? Math.max(0, r.targetLevel - r.qty) : 0), unit: it.unit || '', unitCost: (it.unitCost == null ? null : Number(it.unitCost)) });
+      }
+    }
+  }
+  return lines;
+}
+// The printable supplier order sheet ("print the order out") — one supplier per page.
+function shopBuildOrderSheet() {
+  const lines = shopReorderLines(state.shopStockSchool);
+  let inner = shopPrintHead('Stock order', 'Items at or below their reorder level');
+  if (!lines.length) return `<div class="print-doc">${inner}<p>Nothing to reorder — everything is above its reorder level.</p></div>`;
+  const money = n => '$' + (Number(n) || 0).toFixed(2);
+  const bySup = {};
+  for (const l of lines) { const k = l.supplierId || '_none'; (bySup[k] = bySup[k] || []).push(l); }
+  const supName = k => (k === '_none' ? 'zzz' : (shopSupplier(k) ? shopSupplier(k).name : 'zzz'));
+  const order = Object.keys(bySup).sort((a, b) => supName(a).localeCompare(supName(b)));
+  const anyCost = lines.some(l => l.unitCost != null);
+  for (const k of order) {
+    const sup = k === '_none' ? null : shopSupplier(k);
+    const contact = sup ? [sup.contactEmail, sup.contactPhone].filter(Boolean).join(' · ') : '';
+    let blockTotal = 0;
+    inner += `<div class="supplier-block"><h2 class="block-title">${escapeHtml(sup ? sup.name : 'No supplier set')}</h2>
+      ${contact ? `<div class="muted">${escapeHtml(contact)}</div>` : ''}
+      <table><thead><tr><th>Item</th><th>SKU</th><th>Size</th><th class="num">In stock</th><th class="num">Order qty</th>${anyCost ? '<th class="num">Unit cost</th><th class="num">Line total</th>' : ''}</tr></thead><tbody>`;
+    for (const r of bySup[k]) {
+      const lineTotal = (r.unitCost != null) ? r.unitCost * r.orderQty : null;
+      if (lineTotal != null) blockTotal += lineTotal;
+      inner += `<tr><td>${escapeHtml(r.itemName)}</td><td>${escapeHtml(r.sku)}</td><td>${escapeHtml(String(r.size || ''))}</td>
+        <td class="num">${r.qty}</td><td class="num">${r.orderQty}</td>${anyCost ? `<td class="num">${r.unitCost != null ? money(r.unitCost) : '—'}</td><td class="num">${lineTotal != null ? money(lineTotal) : '—'}</td>` : ''}</tr>`;
+    }
+    inner += `</tbody></table>${anyCost ? `<div class="totals">Order total: ${money(blockTotal)}</div>` : ''}</div>`;
+  }
+  return `<div class="print-doc">${inner}</div>`;
+}
+// The printable stock list — exactly what the active filters/sort show.
+function shopBuildPrintStockList() {
+  const matched = shopMatchedItems();
+  const chips = shopActiveFilterChips();
+  let inner = shopPrintHead('Stock list', shopSchoolName(state.shopStockSchool));
+  if (chips.length) inner += `<div class="filters-summary"><strong>Filters:</strong> ${chips.map(escapeHtml).join(' · ')}</div>`;
+  inner += `<table><thead><tr><th>Item</th><th>SKU</th><th>Category</th><th>Size</th><th class="num">In stock</th><th class="num">Reorder at</th><th class="num">Target</th><th>Status</th></tr></thead><tbody>`;
+  for (const it of matched) {
+    const cat = shopCat(it.categoryId);
+    for (const sz of shopItemSizes(it)) {
+      const r = shopStockRow(it.id, sz) || { qty: 0, reorderLevel: 0, targetLevel: 0 };
+      const st = (r.qty <= 0) ? 'Out' : (r.reorderLevel > 0 && r.qty <= r.reorderLevel) ? 'Low' : 'OK';
+      inner += `<tr><td>${escapeHtml(it.name)}</td><td>${escapeHtml(it.sku || '')}</td><td>${escapeHtml(cat ? cat.name : '—')}</td><td>${escapeHtml(String(sz || ''))}</td>
+        <td class="num">${r.qty || 0}</td><td class="num">${r.reorderLevel || 0}</td><td class="num">${r.targetLevel || 0}</td><td>${st}</td></tr>`;
+    }
+  }
+  inner += `</tbody></table>`;
+  return `<div class="print-doc">${inner}</div>`;
+}
+// The printable value report.
+function shopBuildPrintValue() {
+  const rows = (state.stockValue || []).filter(r => r.schoolId === state.shopStockSchool);
+  const money = n => '$' + (Number(n) || 0).toFixed(2);
+  const total = rows.reduce((a, r) => a + (r.totalValue || 0), 0);
+  let inner = shopPrintHead('Stock value', shopSchoolName(state.shopStockSchool));
+  inner += `<table><thead><tr><th>Category</th><th class="num">On hand</th><th class="num">Value</th></tr></thead><tbody>`;
+  rows.slice().sort((a, b) => b.totalValue - a.totalValue).forEach(r => { inner += `<tr><td>${escapeHtml(r.category)}</td><td class="num">${r.totalQty}</td><td class="num">${money(r.totalValue)}</td></tr>`; });
+  inner += `</tbody></table><div class="totals">Total: ${money(total)}</div>`;
+  return `<div class="print-doc">${inner}</div>`;
+}
+function shopPrint(kind) {
+  const area = document.getElementById('printArea');
+  if (!area) return;
+  area.innerHTML = kind === 'order' ? shopBuildOrderSheet() : kind === 'value' ? shopBuildPrintValue() : shopBuildPrintStockList();
+  window.print();
 }
 
 // ── tab: TRANSFERS (move stock between schools; shop admin / superadmin) ──
@@ -12684,7 +12950,8 @@ function renderShopValue() {
   const here = rows.filter(r => r.schoolId === sid);
   const hereTotal = here.reduce((a, r) => a + (r.totalValue || 0), 0);
   const hereQty = here.reduce((a, r) => a + (r.totalQty || 0), 0);
-  let html = `<div style="margin:14px 0;">
+  let html = `<div style="text-align:right;margin:8px 0 -4px;"><button class="btn" onclick="shopPrint('value')" style="padding:6px 12px;font-size:12px;">🖨 Print</button></div>
+  <div style="margin:14px 0;">
     <div style="font-size:12px;color:var(--grey-500);text-transform:uppercase;letter-spacing:.05em;">${escapeHtml(shopSchoolName(sid))} — stock value</div>
     <div style="font-family:'Oswald',sans-serif;font-size:30px;font-weight:600;">${money(hereTotal)}</div>
     <div style="font-size:12px;color:var(--grey-500);">${hereQty} item${hereQty === 1 ? '' : 's'} on hand · valued at each item's catalogue unit cost</div>
