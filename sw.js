@@ -1,11 +1,12 @@
 /* KRMAS Instructor App — service worker (offline support) */
-const CACHE = 'krmas-roster-v73';
+const VERSION = '74';
+const CACHE = 'krmas-roster-v' + VERSION;
 const ASSETS = [
   './',
   './index.html',
-  './app.js',
-  './data.js',
-  './db.js',
+  './app.js?v=' + VERSION,
+  './db.js?v=' + VERSION,
+  './data.js?v=' + VERSION,
   './manifest.json',
   './icon-192.png',
   './icon-512.png',

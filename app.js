@@ -1249,7 +1249,6 @@ function navModel() {
       { icon: '🥋', label: 'Grading', view: 'grading', desc: 'Belts & progression' },
       { icon: '✎', label: 'Lesson plans', view: 'plans', desc: 'Plans & topic library' },
       { icon: '🛡', label: 'Cover requests', view: 'cover', desc: 'Find cover for a class' },
-      { icon: '📅', label: 'Events', view: 'calendar', desc: 'Calendar of classes & events' },
       { icon: '⚠', label: 'Incident reports', view: 'incidents', desc: 'Log & review incidents', gate: () => can.viewIncidents() },
     ] },
     { dataView: 'shop', icon: '📦', label: 'Stock', type: 'view', view: 'shop', gate: () => can.seeShop() },
@@ -1265,6 +1264,7 @@ function navModel() {
 function navDataViewFor(v) {
   if (v === 'teach' || v === 'more') return v;
   if (v === 'topics') return 'teach'; // topic library lives under Plans → Teach
+  if (v === 'calendar') return 'feed'; // Events now lives on Home
   for (const t of navModel()) {
     if (t.type === 'view' && t.view === v) return t.dataView;
     if (t.type === 'hub' && (t.tiles || []).some(x => x.view === v)) return t.dataView;
@@ -1290,13 +1290,15 @@ function renderHub(hubDataView) {
   }
   main.innerHTML = html + `</div>`;
 }
-// "‹ Teach" / "‹ More" back chip shown above sub-views reached from a hub.
+// "‹ Home" / "‹ Teach" / "‹ More" back chip shown above a sub-view reached from a tab.
 function updateSubviewBar(v) {
   const bar = document.getElementById('subviewBar');
   if (!bar) return;
-  const owner = (v === 'teach' || v === 'more') ? null : navDataViewFor(v);
-  if (owner === 'teach' || owner === 'more') {
-    const tab = navModel().find(t => t.dataView === owner);
+  const owner = navDataViewFor(v);
+  const tab = navModel().find(t => t.dataView === owner);
+  const isHubRoot = (v === 'teach' || v === 'more');          // the hub landing itself
+  const isOwnLanding = tab && tab.type === 'view' && tab.view === v; // a direct tab's own view
+  if (tab && !isHubRoot && !isOwnLanding) {
     bar.innerHTML = `<button class="subview-back" onclick="setView('${owner}')">‹ ${escapeHtml(tab.label)}</button>`;
     bar.style.display = '';
   } else { bar.innerHTML = ''; bar.style.display = 'none'; }
@@ -7411,6 +7413,8 @@ function renderFeed() {
     <h1 class="section-head" style="margin:0;">Feed</h1>
     ${state.user ? `<button class="btn btn-primary" onclick="openPostComposer()" style="padding:8px 16px;">✎ Post</button>` : ''}
   </div>`;
+
+  html += `<button class="btn" onclick="setView('calendar')" style="width:100%;margin-bottom:12px;display:flex;align-items:center;justify-content:center;gap:8px;">📅 Events</button>`;
 
   // Pinned notices at top of feed
   const pinned = [...state.notices, ...state.networkNotices]
