@@ -1237,18 +1237,76 @@ function changeWeek(delta) {
 }
 
 // ---------- View switching ----------
+// ── Navigation model (5-tab shell + hub landings) ───────────────────────────
+// Two tabs are direct views (Home→feed, Roster→roster, Stock→shop); Teach and More
+// are hubs whose tiles route to the existing views. Every legacy view is still
+// reachable and unchanged — only the shell + the hub screens are new.
+function navModel() {
+  return [
+    { dataView: 'feed', icon: '🏠', label: 'Home', type: 'view', view: 'feed' },
+    { dataView: 'roster', icon: '▤', label: 'Roster', type: 'view', view: 'roster' },
+    { dataView: 'teach', icon: '🥋', label: 'Teach', type: 'hub', tiles: [
+      { icon: '🥋', label: 'Grading', view: 'grading', desc: 'Belts & progression' },
+      { icon: '✎', label: 'Lesson plans', view: 'plans', desc: 'Plans & topic library' },
+      { icon: '🛡', label: 'Cover requests', view: 'cover', desc: 'Find cover for a class' },
+      { icon: '📅', label: 'Events', view: 'calendar', desc: 'Calendar of classes & events' },
+      { icon: '⚠', label: 'Incident reports', view: 'incidents', desc: 'Log & review incidents', gate: () => can.viewIncidents() },
+    ] },
+    { dataView: 'shop', icon: '📦', label: 'Stock', type: 'view', view: 'shop', gate: () => can.seeShop() },
+    { dataView: 'more', icon: '⋯', label: 'More', type: 'hub', tiles: [
+      { icon: '◷', label: 'Students', view: 'students', desc: 'Student records', gate: () => can.viewStudents() },
+      { icon: '📚', label: 'Documents', view: 'docs', desc: 'Files & resources' },
+      { icon: '⚙', label: 'Admin & settings', view: 'admin', desc: 'Schools, users, configuration', gate: () => can.manageInstructors() },
+      { icon: '人', label: 'My profile', view: 'me', desc: 'Account & sign out' },
+    ] },
+  ];
+}
+// Which nav button (by data-view) owns a given view, so the right tab highlights.
+function navDataViewFor(v) {
+  if (v === 'teach' || v === 'more') return v;
+  if (v === 'topics') return 'teach'; // topic library lives under Plans → Teach
+  for (const t of navModel()) {
+    if (t.type === 'view' && t.view === v) return t.dataView;
+    if (t.type === 'hub' && (t.tiles || []).some(x => x.view === v)) return t.dataView;
+  }
+  return v;
+}
+// A hub landing: tiles (role-gated) that route to the existing views.
+function renderHub(hubDataView) {
+  hideDayHead();
+  const main = document.getElementById('mainContent');
+  if (!main) return;
+  const tab = navModel().find(t => t.dataView === hubDataView && t.type === 'hub');
+  if (!tab) { main.innerHTML = ''; return; }
+  const tiles = (tab.tiles || []).filter(x => !x.gate || x.gate());
+  let html = `<h1 class="section-head">${escapeHtml(tab.label)}</h1><div class="hub-grid">`;
+  for (const tl of tiles) {
+    const badge = typeof tl.badge === 'function' ? (tl.badge() || 0) : 0;
+    html += `<button class="hub-tile" onclick="setView('${tl.view}')">
+      <span class="hub-ic" aria-hidden="true">${tl.icon}</span>
+      <span class="hub-tx"><span class="hub-tl">${escapeHtml(tl.label)}${badge ? ` <span class="hub-badge">${badge}</span>` : ''}</span>
+      ${tl.desc ? `<span class="hub-desc">${escapeHtml(tl.desc)}</span>` : ''}</span>
+      <span class="hub-chev" aria-hidden="true">›</span></button>`;
+  }
+  main.innerHTML = html + `</div>`;
+}
+// "‹ Teach" / "‹ More" back chip shown above sub-views reached from a hub.
+function updateSubviewBar(v) {
+  const bar = document.getElementById('subviewBar');
+  if (!bar) return;
+  const owner = (v === 'teach' || v === 'more') ? null : navDataViewFor(v);
+  if (owner === 'teach' || owner === 'more') {
+    const tab = navModel().find(t => t.dataView === owner);
+    bar.innerHTML = `<button class="subview-back" onclick="setView('${owner}')">‹ ${escapeHtml(tab.label)}</button>`;
+    bar.style.display = '';
+  } else { bar.innerHTML = ''; bar.style.display = 'none'; }
+}
+
 function setView(v) {
   state.view = v;
-  document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === v));
-  // Show/hide admin nav tab based on role
-  const adminTab = document.querySelector('[data-view="admin"]');
-  if (adminTab) adminTab.style.display = can.manageInstructors() ? '' : 'none';
-  // Show/hide Incidents nav tab based on role (instructor+)
-  const incTab = document.querySelector('[data-view="incidents"]');
-  if (incTab) incTab.style.display = can.viewIncidents() ? '' : 'none';
-  // Show/hide Students nav tab based on the students 'view' permission (same approach).
-  const stuTab = document.querySelector('[data-view="students"]');
-  if (stuTab) stuTab.style.display = can.viewStudents() ? '' : 'none';
+  const activeTab = navDataViewFor(v);
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === activeTab));
+  // Stock is the only role-gated top-level tab now (Admin/Incidents/Students moved into hubs).
   const shopTab = document.querySelector('[data-view="shop"]');
   if (shopTab) shopTab.style.display = can.seeShop() ? '' : 'none';
   if (typeof updateShopNavBadge === 'function') updateShopNavBadge();
@@ -1257,6 +1315,8 @@ function setView(v) {
 
   if (v === 'roster') {
     renderDay();
+  } else if (v === 'teach' || v === 'more') {
+    renderHub(v);
   } else if (v === 'plans') {
     renderPlans();
   } else if (v === 'incidents') {
@@ -1282,6 +1342,7 @@ function setView(v) {
   } else if (v === 'me') {
     renderMe();
   }
+  updateSubviewBar(v);
 }
 
 function hideDayHead() {
@@ -6752,8 +6813,8 @@ function renderNoticeBanners() {
     }
   }
 
-  // Badge on Me nav button
-  const meBtn = document.querySelector('[data-view="me"]');
+  // Badge on the More nav button (My profile / notices now live under More)
+  const meBtn = document.querySelector('[data-view="more"]');
   if (meBtn) {
     const existing = meBtn.querySelector('.notice-badge');
     if (existing) existing.remove();
