@@ -1007,6 +1007,9 @@
     <button class="nav-btn" data-view="admin" onclick="setView('admin')" style="display:none;">
       <span class="nav-icon">⚙</span><span>Admin</span>
     </button>
+    <button class="nav-btn" data-view="shop" onclick="setView('shop')" id="navShop" style="display:none;">
+      <span class="nav-icon">📦</span><span>Stock</span>
+    </button>
 
     <button class="nav-btn" data-view="me" onclick="setView('me')">
       <span class="nav-icon">人</span><span>Me</span>
@@ -1929,6 +1932,12 @@
       <label>Schools <span style="font-weight:400;color:var(--grey-500);font-size:11px;">— teaches at (and can see) every school ticked</span></label>
       <div id="userSchoolsList" style="display:flex;flex-direction:column;gap:2px;max-height:150px;overflow-y:auto;border:1px solid var(--grey-200);border-radius:8px;padding:8px;"></div>
     </div>
+    <div class="form-row compact" id="userShopAdminRow" style="display:none;margin-top:4px;">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:500;">
+        <input type="checkbox" id="userShopAdmin" style="width:auto;margin:0;">
+        <span>📦 Shop admin <span style="font-weight:400;color:var(--grey-500);font-size:11px;">— can manage the catalogue + every school's stock</span></span>
+      </label>
+    </div>
     <div class="detail-actions" style="margin-top:8px;">
       <button class="btn btn-primary" onclick="saveUser()" style="flex:1;">Save</button>
       <button class="btn" onclick="closeModal('modalUserEditor')">Cancel</button>
@@ -2763,7 +2772,7 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '68';
+  window.KRMAS_APP_VERSION = '69';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';

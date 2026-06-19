@@ -57,6 +57,12 @@ const state = {
   gradingView: 'sessions',
   editingCandidateIdx: null,
   stocktake: {},
+  // ── Inventory / shop ──
+  shopView: 'stock',                 // stock | reorder | catalogue | suppliers
+  shop: { categories: [], sizeSets: [], suppliers: [], items: [] },
+  shopStock: [],                     // stock rows for shopStockSchool
+  shopStockSchool: null,             // which school the stock grid is showing
+  shopEdit: null,                    // { kind:'item'|'supplier'|'sizeset', data:{...} } inline draft
   notices: [],           // school-level notices
   networkNotices: [],    // network-wide notices (superadmin)
   dismissedNotices: new Set(), // dismissed this session
@@ -172,6 +178,11 @@ const can = {
   switchAnySchool:   () => hasRole('superadmin'),
   manageRoles:       () => hasRole('superadmin'),
   viewAuditLog:      () => hasRole('admin'),
+  // Shop: catalogue/suppliers/categories/sizes = shop admin or superadmin.
+  // A school's stock = superadmin, any shop admin, or an admin of that school.
+  manageShop:        () => hasRole('superadmin') || !!(state.user && state.user.isShopAdmin),
+  seeShop:           () => hasRole('superadmin') || hasRole('admin') || !!(state.user && state.user.isShopAdmin),
+  editStock:         (sid) => hasRole('superadmin') || !!(state.user && state.user.isShopAdmin) || (hasRole('admin') && (state.userSchools || []).includes(sid)),
 };
 
 // A school admin may edit only their own school; a superadmin may edit any.
@@ -1230,6 +1241,8 @@ function setView(v) {
   // Show/hide Students nav tab based on the students 'view' permission (same approach).
   const stuTab = document.querySelector('[data-view="students"]');
   if (stuTab) stuTab.style.display = can.viewStudents() ? '' : 'none';
+  const shopTab = document.querySelector('[data-view="shop"]');
+  if (shopTab) shopTab.style.display = can.seeShop() ? '' : 'none';
   refreshAuthUI();
   syncNavHeight(); // nav row-count can change with which tabs are visible
 
@@ -1255,6 +1268,8 @@ function setView(v) {
     renderCoverRequests();
   } else if (v === 'grading') {
     renderGrading();
+  } else if (v === 'shop') {
+    renderShop();
   } else if (v === 'me') {
     renderMe();
   }
@@ -5989,6 +6004,20 @@ async function saveStocktake() {
 /* ================================================================
    BELT ORDER VIEW
    ================================================================ */
+// Belt counts are unified into the shop's inventory_stock. Prefer that (for the
+// current school) and fall back to the legacy grading stocktake when the shop isn't
+// loaded for this school — so the belt order keeps working for everyone.
+function beltStockCount(grade, size) {
+  if (state.shop && state.shop.items && state.shop.items.length && state.shopStockSchool === state.schoolId) {
+    const it = state.shop.items.find(i => !i.archived && i.gradeRef === grade);
+    if (it) {
+      const r = (state.shopStock || []).find(x => x.itemId === it.id && x.size === String(size));
+      return r ? r.qty : 0;
+    }
+  }
+  return (state.stocktake[grade] || {})[size] || 0;
+}
+
 function renderGradingBeltOrder() {
   // Tally new grades across all sessions
   const needed = {}; // { 'Belt label': { '1': n, '2': n, ... } }
@@ -6009,7 +6038,7 @@ function renderGradingBeltOrder() {
   const order = [];
   for (const [grade, sizes] of Object.entries(needed)) {
     for (const [size, count] of Object.entries(sizes)) {
-      const stock = (state.stocktake[grade] || {})[size] || 0;
+      const stock = beltStockCount(grade, size);
       const net = count - stock;
       order.push({ grade, size: parseInt(size), count, stock, net });
     }
@@ -6079,7 +6108,7 @@ function printBeltOrder() {
       const size = parseInt(c.beltSize, 10);
       if (!size) continue;
       let entry = order.find(r => r.grade === ng && r.size === size);
-      if (!entry) { entry = { grade: ng, size, count: 0, stock: (state.stocktake[ng] || {})[size] || 0 }; order.push(entry); }
+      if (!entry) { entry = { grade: ng, size, count: 0, stock: beltStockCount(ng, size) }; order.push(entry); }
       entry.count++;
     }
   }
@@ -6205,6 +6234,8 @@ async function renderUserManager() {
   let users = [];
   try { users = await DB.users.list(); }
   catch (e) { list.innerHTML = '<div style="color:var(--red);font-size:13px;padding:8px;">Could not load logins: ' + escapeHtml((e && e.message) || '') + '</div>'; return; }
+  state._shopAdminByUid = {};
+  users.forEach(u => { state._shopAdminByUid[u.id] = !!u.is_shop_admin; });
   if (!users.length) { list.innerHTML = '<div style="font-size:13px;color:var(--grey-500);padding:8px;">No login accounts yet. Invite someone above.</div>'; return; }
   const me = state.user && state.user.id;
   const schools = (typeof KRMAS_SCHOOLS !== 'undefined') ? KRMAS_SCHOOLS : [];
@@ -6313,6 +6344,13 @@ function openUserEditor(instrId) {
   document.getElementById('userDeleteBtn').style.display = instr ? 'block' : 'none';
   const rpBtn = document.getElementById('userResetPwBtn');
   if (rpBtn) rpBtn.style.display = (instr && instr.uid && DB.isSupabase) ? 'block' : 'none';
+  // Shop admin: superadmin-only, and only meaningful once the person has a login.
+  // Additive — shown regardless of role (a shop admin can be any role).
+  const saRow = document.getElementById('userShopAdminRow');
+  const saChk = document.getElementById('userShopAdmin');
+  const canShop = !!(state.user && state.user.role === 'superadmin' && instr && instr.uid);
+  if (saRow) saRow.style.display = canShop ? '' : 'none';
+  if (saChk) saChk.checked = canShop && !!(state._shopAdminByUid && state._shopAdminByUid[instr.uid]);
   renderUserSchoolsChecklist(instr);
   openModal('modalUserEditor');
 }
@@ -6428,6 +6466,18 @@ async function saveUser() {
   }
 
   await saveCustomSchools();
+
+  // Shop admin (superadmin only, requires a login). Independent of role — additive,
+  // so it isn't tied to the role/schools sync below. Persisted via the set_shop_admin RPC.
+  if (state.user && state.user.role === 'superadmin' && instr.uid) {
+    const chk = document.getElementById('userShopAdmin');
+    const want = !!(chk && chk.checked);
+    const had  = !!(state._shopAdminByUid && state._shopAdminByUid[instr.uid]);
+    if (want !== had) {
+      try { await DB.setShopAdmin(instr.uid, want); if (state._shopAdminByUid) state._shopAdminByUid[instr.uid] = want; }
+      catch (e) { alert('Could not update shop admin: ' + (e.message || e)); }
+    }
+  }
 
   // If editing yourself, sync the session
   if (state.user && instr.id === state.user.id) {
@@ -6987,7 +7037,7 @@ async function enterAppWithSession(session) {
     return;
   }
   _enteredOnce = true;
-  state.user = { id: session.user.id, name: prof.display_name || session.user.email, role: prof.role, email: session.user.email || null };
+  state.user = { id: session.user.id, name: prof.display_name || session.user.email, role: prof.role, email: session.user.email || null, isShopAdmin: !!prof.is_shop_admin };
   // Multi-school membership (instructors may belong to more than one school). Falls
   // back to the single home school for everyone else. Drives the school-pill filter.
   state.user.schools = (Array.isArray(prof.schools) && prof.schools.length)
@@ -7003,6 +7053,7 @@ async function enterAppWithSession(session) {
   try { state.roleConfig = await DB.roles.loadConfig(); } catch (e) { console.warn('loadRoleConfig:', e && e.message); }
   try { state.classTypes = (await DB.classTypes.load()) || []; applyClassTypeOverrides(state.classTypes); } catch (e) { console.warn('loadClassTypes:', e && e.message); }
   try { await loadCustomSchools(); } catch (e) { console.warn('loadCustomSchools:', e && e.message); }
+  try { if (can.seeShop()) await loadShopData(); } catch (e) { console.warn('loadShopData:', e && e.message); }
   try { await loadCurrentSchoolData(); } catch (e) { console.warn('loadCurrentSchoolData:', e && e.message); }
   state.user.instructorId = resolveMyInstructorId(); // bridge auth uid -> roster instructor id
   finishBootRender();
@@ -12053,4 +12104,503 @@ function renderMyOnboarding() {
     </div>
     <div style="font-size:12px;color:#92400e;margin-top:6px;">${prog.done}/${prog.total} items done — tap to continue</div>
   </div>`;
+}
+
+/* ================================================================
+   INVENTORY / SHOP  (Phase 1)
+   Shared catalogue (categories, size sets, suppliers, items) +
+   per-school stock counts. Catalogue is managed by shop admins /
+   superadmins; a school's stock by that school's admin (or shop/SA).
+   ================================================================ */
+
+async function loadShopData() {
+  try { state.shop = await DB.loadShop(); }
+  catch (e) { console.warn('loadShop:', e && e.message); state.shop = { categories: [], sizeSets: [], suppliers: [], items: [] }; }
+  const sid = state.shopStockSchool || state.schoolId || (state.userSchools || [])[0] || null;
+  if (sid) await loadShopStock(sid);
+}
+async function loadShopStock(sid) {
+  state.shopStockSchool = sid;
+  try { state.shopStock = await DB.loadSchoolStock(sid); }
+  catch (e) { console.warn('loadShopStock:', e && e.message); state.shopStock = []; }
+}
+async function shopSwitchSchool(sid) {
+  if (!sid) return;
+  await loadShopStock(sid);
+  renderShop();
+}
+function setShopView(v) { state.shopView = v; state.shopEdit = null; renderShop(); }
+function shopCancelEdit() { state.shopEdit = null; renderShop(); }
+
+// ── small lookups ──
+function shopSchoolName(sid) {
+  const s = (typeof KRMAS_SCHOOLS !== 'undefined') && KRMAS_SCHOOLS.find(x => x.id === sid);
+  return s ? s.name : (sid || '—');
+}
+function shopCat(id) { return state.shop.categories.find(c => c.id === id) || null; }
+function shopSizeSet(id) { return state.shop.sizeSets.find(z => z.id === id) || null; }
+function shopSupplier(id) { return state.shop.suppliers.find(s => s.id === id) || null; }
+function shopStockRow(itemId, size) { return state.shopStock.find(r => r.itemId === itemId && r.size === (size || '')); }
+function shopItemSizes(item) {
+  if (!item.sized) return [''];
+  const z = shopSizeSet(item.sizeSetId);
+  return (z && z.sizes && z.sizes.length) ? z.sizes.slice() : [];
+}
+function shopItemIsLow(item) {
+  return shopItemSizes(item).some(sz => {
+    const r = shopStockRow(item.id, sz);
+    return r && r.reorderLevel > 0 && r.qty <= r.reorderLevel;
+  });
+}
+function shopBeltGrades() {
+  const out = []; const seen = new Set();
+  if (typeof GRADING_SYLLABI === 'undefined') return out;
+  for (const syl of Object.values(GRADING_SYLLABI)) {
+    if (!syl.hasBeltSize) continue;
+    for (const g of syl.grades) { if (!seen.has(g.label)) { seen.add(g.label); out.push(g.label); } }
+  }
+  return out;
+}
+function shopActiveItems() { return state.shop.items.filter(i => !i.archived); }
+
+// ── dispatch ──
+function renderShop() {
+  hideDayHead();
+  const main = document.getElementById('mainContent');
+  if (!main) return;
+  if (!can.seeShop()) { main.innerHTML = '<div class="empty"><h2>No access</h2><p>The shop is for shop admins and school admins.</p></div>'; return; }
+  if (!state.shopStockSchool) state.shopStockSchool = state.schoolId || (state.userSchools || [])[0] || null;
+
+  const tabs = [{ id: 'stock', label: 'Stock' }, { id: 'reorder', label: 'Reorder list' }];
+  if (can.manageShop()) { tabs.push({ id: 'catalogue', label: 'Catalogue' }); tabs.push({ id: 'suppliers', label: 'Suppliers' }); }
+  if (!tabs.find(t => t.id === state.shopView)) state.shopView = 'stock';
+
+  let html = `<div style="padding:16px;max-width:920px;margin:0 auto;">
+    <h1 style="font-family:'Oswald',sans-serif;font-size:22px;text-transform:uppercase;letter-spacing:.04em;margin:0 0 12px;">📦 Stock / inventory</h1>
+    <div class="grading-tabs">${tabs.map(t => `<button class="grading-tab ${state.shopView === t.id ? 'active' : ''}" onclick="setShopView('${t.id}')">${escapeHtml(t.label)}</button>`).join('')}</div>`;
+
+  if      (state.shopView === 'stock')     html += renderShopStock();
+  else if (state.shopView === 'reorder')   html += renderShopReorder();
+  else if (state.shopView === 'catalogue') html += renderShopCatalogue();
+  else if (state.shopView === 'suppliers') html += renderShopSuppliers();
+  html += `</div>`;
+  main.innerHTML = html;
+}
+
+// ── tab: STOCK (per-school counts) ──
+function renderShopStock() {
+  const sid = state.shopStockSchool;
+  const editable = can.editStock(sid);
+  let html = '';
+
+  // school switcher (shop/superadmin see all schools; multi-school members see theirs)
+  const schoolOpts = can.manageShop()
+    ? ((typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS : []).map(s => ({ id: s.id, name: s.name })))
+    : ((state.userSchools || []).map(id => ({ id, name: shopSchoolName(id) })));
+  if (schoolOpts.length > 1) {
+    html += `<div style="margin:12px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+      <span style="font-size:12px;color:var(--grey-500);">School:</span>
+      <select onchange="shopSwitchSchool(this.value)" style="padding:6px 8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;">
+        ${schoolOpts.map(s => `<option value="${escapeHtml(s.id)}"${s.id === sid ? ' selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}
+      </select></div>`;
+  } else {
+    html += `<p style="font-size:13px;color:var(--grey-500);margin:12px 0;">${escapeHtml(shopSchoolName(sid))}</p>`;
+  }
+
+  const items = shopActiveItems();
+  if (!items.length) {
+    html += `<div class="empty"><h2>No items yet</h2><p>${can.manageShop() ? 'Add items on the Catalogue tab.' : 'A shop admin needs to add items to the catalogue first.'}</p></div>`;
+    return html;
+  }
+  if (!editable) html += `<p style="font-size:12px;color:var(--grey-500);">You can view this school's stock but not change it.</p>`;
+
+  // group by category (uncategorised last)
+  const cats = state.shop.categories.slice().sort((a, b) => (a.sort - b.sort) || a.name.localeCompare(b.name));
+  const groups = cats.map(c => ({ name: c.name, items: items.filter(i => i.categoryId === c.id) }))
+    .concat([{ name: 'Uncategorised', items: items.filter(i => !i.categoryId || !shopCat(i.categoryId)) }])
+    .filter(g => g.items.length);
+
+  for (const g of groups) {
+    html += `<h3 style="font-family:'Oswald',sans-serif;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin:18px 0 8px;">${escapeHtml(g.name)}</h3>`;
+    for (const it of g.items) html += renderShopStockItem(it, editable);
+  }
+  return html;
+}
+
+function renderShopStockItem(it, editable) {
+  const dis = editable ? '' : ' disabled';
+  const low = shopItemIsLow(it);
+  const swatch = it.gradeRef && typeof beltSwatch === 'function' ? beltSwatch(it.gradeRef, 16) : '';
+  let body = '';
+  const sizes = shopItemSizes(it);
+  if (it.sized && !sizes.length) {
+    body = `<p style="font-size:12px;color:var(--c-mt,#b8860b);">No size set chosen — edit this item on the Catalogue tab.</p>`;
+  } else {
+    body = `<table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:6px;">
+      <thead><tr style="color:var(--grey-500);font-size:10px;text-transform:uppercase;letter-spacing:.05em;">
+        ${it.sized ? '<th style="text-align:left;padding:3px 6px;">Size</th>' : ''}
+        <th style="text-align:left;padding:3px 6px;">In stock</th>
+        <th style="text-align:left;padding:3px 6px;">Reorder at</th>
+      </tr></thead><tbody>`;
+    for (const sz of sizes) {
+      const r = shopStockRow(it.id, sz) || { qty: 0, reorderLevel: 0 };
+      const cellLow = r.reorderLevel > 0 && r.qty <= r.reorderLevel;
+      body += `<tr>
+        ${it.sized ? `<td style="padding:3px 6px;font-weight:600;">${escapeHtml(String(sz))}</td>` : ''}
+        <td style="padding:3px 6px;"><input type="number" min="0" value="${r.qty || 0}"${dis}
+          onchange="shopSetStock('${it.id}','${escapeHtml(String(sz))}','qty',this.value)"
+          style="width:64px;padding:5px;border:1px solid ${cellLow ? 'var(--red)' : 'var(--grey-200)'};border-radius:var(--r-sm);font-family:'JetBrains Mono',monospace;text-align:center;"></td>
+        <td style="padding:3px 6px;"><input type="number" min="0" value="${r.reorderLevel || 0}"${dis}
+          onchange="shopSetStock('${it.id}','${escapeHtml(String(sz))}','reorder',this.value)"
+          style="width:64px;padding:5px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-family:'JetBrains Mono',monospace;text-align:center;"></td>
+      </tr>`;
+    }
+    body += `</tbody></table>`;
+  }
+  return `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:10px 12px;margin-bottom:8px;">
+    <div style="display:flex;align-items:center;gap:6px;">
+      ${swatch}<strong style="font-size:14px;">${escapeHtml(it.name)}</strong>
+      <span id="lowbadge-${it.id}" style="display:${low ? 'inline' : 'none'};font-size:10px;color:var(--red);font-weight:700;text-transform:uppercase;letter-spacing:.04em;">● Low</span>
+      ${it.unit ? `<span style="font-size:11px;color:var(--grey-500);">/ ${escapeHtml(it.unit)}</span>` : ''}
+    </div>${body}</div>`;
+}
+
+async function shopSetStock(itemId, size, field, value) {
+  const sid = state.shopStockSchool;
+  if (!can.editStock(sid)) return;
+  size = size || '';
+  let r = shopStockRow(itemId, size);
+  if (!r) { r = { schoolId: sid, itemId, size, qty: 0, reorderLevel: 0 }; state.shopStock.push(r); }
+  const n = Math.max(0, parseInt(value, 10) || 0);
+  if (field === 'qty') r.qty = n; else r.reorderLevel = n;
+  try { await DB.saveStockRow(sid, itemId, size, r.qty, r.reorderLevel); }
+  catch (e) { alert('Could not save: ' + (e.message || e)); return; }
+  // live-update the item's low badge without a full re-render (keeps focus/scroll)
+  const it = state.shop.items.find(i => i.id === itemId);
+  const badge = document.getElementById('lowbadge-' + itemId);
+  if (it && badge) badge.style.display = shopItemIsLow(it) ? 'inline' : 'none';
+}
+
+// ── tab: REORDER LIST (low items grouped by supplier) ──
+function renderShopReorder() {
+  const sid = state.shopStockSchool;
+  let html = `<p style="font-size:13px;color:var(--grey-500);margin:12px 0;">Items at or below their reorder level for <strong>${escapeHtml(shopSchoolName(sid))}</strong>, grouped by supplier.</p>`;
+
+  // collect low lines
+  const lines = []; // {supplierId, itemName, size, qty, reorderLevel, unit, gradeRef}
+  for (const it of shopActiveItems()) {
+    for (const sz of shopItemSizes(it)) {
+      const r = shopStockRow(it.id, sz);
+      if (r && r.reorderLevel > 0 && r.qty <= r.reorderLevel)
+        lines.push({ supplierId: it.supplierId, itemName: it.name, size: sz, qty: r.qty, reorderLevel: r.reorderLevel, unit: it.unit });
+    }
+  }
+  if (!lines.length) { html += `<div class="empty"><h2>Nothing to reorder</h2><p>Everything is above its reorder level.</p></div>`; return html; }
+
+  // group by supplier
+  const bySup = {};
+  for (const l of lines) { const k = l.supplierId || '_none'; (bySup[k] = bySup[k] || []).push(l); }
+  const order = Object.keys(bySup).sort((a, b) => {
+    const an = a === '_none' ? 'zzz' : (shopSupplier(a) ? shopSupplier(a).name : 'zzz');
+    const bn = b === '_none' ? 'zzz' : (shopSupplier(b) ? shopSupplier(b).name : 'zzz');
+    return an.localeCompare(bn);
+  });
+
+  let idx = 0;
+  for (const k of order) {
+    const sup = k === '_none' ? null : shopSupplier(k);
+    const supName = sup ? sup.name : 'No supplier set';
+    const blockId = 'reorder-block-' + (idx++);
+    const rows = bySup[k];
+    html += `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:12px;margin-bottom:12px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;">
+        <strong style="font-size:14px;">${escapeHtml(supName)}</strong>
+        <span style="display:flex;gap:6px;">
+          <button class="btn" onclick="shopCopyReorder('${blockId}')" style="padding:5px 10px;font-size:12px;">Copy</button>
+          <button class="btn" onclick="shopExportReorderCsv('${k}')" style="padding:5px 10px;font-size:12px;">CSV</button>
+        </span>
+      </div>
+      ${sup && sup.contactEmail ? `<p style="font-size:11px;color:var(--grey-500);margin:0 0 6px;">${escapeHtml(sup.contactEmail)}</p>` : ''}
+      <div id="${blockId}" style="font-family:'JetBrains Mono',monospace;font-size:12px;white-space:pre-wrap;line-height:1.7;">${rows.map(r => `${escapeHtml(r.itemName)}${r.size ? ' — size ' + escapeHtml(String(r.size)) : ''}: have ${r.qty} (reorder at ${r.reorderLevel})`).join('\n')}</div>
+    </div>`;
+  }
+  return html;
+}
+function shopCopyReorder(blockId) {
+  const el = document.getElementById(blockId);
+  if (!el) return;
+  const text = el.innerText || el.textContent || '';
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => toast && toast('Copied'), () => {});
+}
+function shopExportReorderCsv(supKey) {
+  const sup = supKey === '_none' ? null : shopSupplier(supKey);
+  const rows = [['Item', 'Size', 'In stock', 'Reorder at', 'Unit', 'Supplier']];
+  for (const it of shopActiveItems()) {
+    if ((it.supplierId || '_none') !== supKey) continue;
+    for (const sz of shopItemSizes(it)) {
+      const r = shopStockRow(it.id, sz);
+      if (r && r.reorderLevel > 0 && r.qty <= r.reorderLevel)
+        rows.push([it.name, sz, r.qty, r.reorderLevel, it.unit || '', sup ? sup.name : '']);
+    }
+  }
+  const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'reorder-' + (sup ? sup.name.replace(/\W+/g, '-').toLowerCase() : 'unassigned') + '.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ── tab: CATALOGUE (items) ──
+function renderShopCatalogue() {
+  if (!can.manageShop()) return `<div class="empty"><h2>No access</h2></div>`;
+  if (state.shopEdit && state.shopEdit.kind === 'item') return renderShopItemEditor();
+
+  let html = `<div style="margin:12px 0;"><button class="btn btn-black" onclick="shopNewItem()" style="padding:8px 14px;">+ Add item</button></div>`;
+  const items = state.shop.items.slice().sort((a, b) => a.name.localeCompare(b.name));
+  if (!items.length) { html += `<div class="empty"><h2>No items</h2><p>Add your first catalogue item.</p></div>`; return html; }
+
+  for (const it of items) {
+    const cat = shopCat(it.categoryId); const sup = shopSupplier(it.supplierId);
+    const swatch = it.gradeRef && typeof beltSwatch === 'function' ? beltSwatch(it.gradeRef, 16) : '';
+    html += `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:8px;${it.archived ? 'opacity:.5;' : ''}">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        ${swatch}<strong style="font-size:14px;">${escapeHtml(it.name)}</strong>
+        ${it.sized ? `<span style="font-size:11px;color:var(--grey-500);">sized${shopSizeSet(it.sizeSetId) ? ' · ' + escapeHtml(shopSizeSet(it.sizeSetId).name) : ''}</span>` : `<span style="font-size:11px;color:var(--grey-500);">single qty</span>`}
+        ${cat ? `<span style="font-size:11px;color:var(--grey-500);">· ${escapeHtml(cat.name)}</span>` : ''}
+        ${sup ? `<span style="font-size:11px;color:var(--grey-500);">· ${escapeHtml(sup.name)}</span>` : ''}
+        ${it.unitCost != null ? `<span style="font-size:11px;color:var(--grey-500);">· $${Number(it.unitCost).toFixed(2)}</span>` : ''}
+        ${it.archived ? `<span style="font-size:10px;color:var(--red);font-weight:700;text-transform:uppercase;">archived</span>` : ''}
+      </div>
+      <span style="display:flex;gap:6px;flex-shrink:0;">
+        <button class="btn" onclick="shopEditItem('${it.id}')" style="padding:5px 10px;font-size:12px;">Edit</button>
+        <button class="btn" onclick="shopToggleArchive('${it.id}')" style="padding:5px 10px;font-size:12px;">${it.archived ? 'Restore' : 'Archive'}</button>
+      </span></div>`;
+  }
+  return html;
+}
+
+function renderShopItemEditor() {
+  const d = state.shopEdit.data;
+  const grades = shopBeltGrades();
+  const inp = 'width:100%;padding:8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:14px;margin-top:4px;';
+  const lbl = 'font-size:12px;color:var(--grey-500);font-weight:600;display:block;margin-top:12px;';
+  let html = `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:16px;margin-top:12px;max-width:520px;">
+    <h3 style="margin:0 0 4px;font-size:16px;">${d.id ? 'Edit item' : 'New item'}</h3>
+    <label style="${lbl}">Name</label>
+    <input id="shopItemName" value="${escapeHtml(d.name || '')}" style="${inp}">
+    <label style="${lbl}">Category</label>
+    <select id="shopItemCat" style="${inp}"><option value="">— none —</option>
+      ${state.shop.categories.map(c => `<option value="${c.id}"${c.id === d.categoryId ? ' selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}</select>
+    <label style="${lbl}">Supplier</label>
+    <select id="shopItemSup" style="${inp}"><option value="">— none —</option>
+      ${state.shop.suppliers.map(s => `<option value="${s.id}"${s.id === d.supplierId ? ' selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}</select>
+    <div style="display:flex;gap:10px;">
+      <div style="flex:1;"><label style="${lbl}">Unit cost ($)</label><input id="shopItemCost" type="number" step="0.01" min="0" value="${d.unitCost != null ? d.unitCost : ''}" style="${inp}"></div>
+      <div style="flex:1;"><label style="${lbl}">Unit (each/box…)</label><input id="shopItemUnit" value="${escapeHtml(d.unit || '')}" style="${inp}"></div>
+    </div>
+    <label style="${lbl}">SKU (optional)</label>
+    <input id="shopItemSku" value="${escapeHtml(d.sku || '')}" style="${inp}">
+    <label style="display:flex;align-items:center;gap:8px;margin-top:14px;font-size:14px;cursor:pointer;">
+      <input type="checkbox" id="shopItemSized" ${d.sized ? 'checked' : ''} onchange="shopItemToggleSized(this.checked)"> This item has sizes
+    </label>
+    <div id="shopItemSizedRow" style="display:${d.sized ? 'block' : 'none'};">
+      <label style="${lbl}">Size set</label>
+      <select id="shopItemSizeSet" style="${inp}"><option value="">— choose —</option>
+        ${state.shop.sizeSets.map(z => `<option value="${z.id}"${z.id === d.sizeSetId ? ' selected' : ''}>${escapeHtml(z.name)} (${(z.sizes || []).length})</option>`).join('')}</select>
+      <label style="${lbl}">Belt grade (only for belts — links to gradings)</label>
+      <select id="shopItemGrade" style="${inp}"><option value="">— not a belt —</option>
+        ${grades.map(g => `<option value="${escapeHtml(g)}"${g === d.gradeRef ? ' selected' : ''}>${escapeHtml(g)}</option>`).join('')}</select>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:18px;">
+      <button class="btn btn-black" onclick="shopSaveItem()" style="padding:9px 16px;">Save</button>
+      <button class="btn" onclick="shopCancelEdit()" style="padding:9px 16px;">Cancel</button>
+    </div>
+  </div>`;
+  return html;
+}
+function shopItemToggleSized(on) {
+  const row = document.getElementById('shopItemSizedRow');
+  if (row) row.style.display = on ? 'block' : 'none';
+}
+function shopNewItem() { state.shopEdit = { kind: 'item', data: { sized: false } }; renderShop(); }
+function shopEditItem(id) {
+  const it = state.shop.items.find(i => i.id === id);
+  if (it) { state.shopEdit = { kind: 'item', data: Object.assign({}, it) }; renderShop(); }
+}
+async function shopSaveItem() {
+  const g = id => document.getElementById(id);
+  const sized = g('shopItemSized').checked;
+  const draft = Object.assign({}, state.shopEdit.data, {
+    name: g('shopItemName').value.trim(),
+    categoryId: g('shopItemCat').value || null,
+    supplierId: g('shopItemSup').value || null,
+    unitCost: g('shopItemCost').value === '' ? null : Number(g('shopItemCost').value),
+    unit: g('shopItemUnit').value.trim() || null,
+    sku: g('shopItemSku').value.trim() || null,
+    sized: sized,
+    sizeSetId: sized ? (g('shopItemSizeSet').value || null) : null,
+    gradeRef: sized ? (g('shopItemGrade').value || null) : null,
+  });
+  if (!draft.name) { alert('Give the item a name.'); return; }
+  if (sized && !draft.sizeSetId) { alert('Choose a size set for a sized item.'); return; }
+  try {
+    const saved = await DB.saveItem(draft);
+    const i = state.shop.items.findIndex(x => x.id === saved.id);
+    if (i >= 0) state.shop.items[i] = saved; else state.shop.items.push(saved);
+    state.shopEdit = null; renderShop();
+  } catch (e) { alert('Could not save item: ' + (e.message || e)); }
+}
+async function shopToggleArchive(id) {
+  const it = state.shop.items.find(i => i.id === id);
+  if (!it) return;
+  try {
+    const saved = await DB.saveItem(Object.assign({}, it, { archived: !it.archived }));
+    const i = state.shop.items.findIndex(x => x.id === saved.id);
+    if (i >= 0) state.shop.items[i] = saved;
+    renderShop();
+  } catch (e) { alert('Could not update item: ' + (e.message || e)); }
+}
+
+// ── tab: SUPPLIERS (+ categories + size sets) ──
+function renderShopSuppliers() {
+  if (!can.manageShop()) return `<div class="empty"><h2>No access</h2></div>`;
+  if (state.shopEdit && state.shopEdit.kind === 'supplier') return renderShopSupplierEditor();
+  if (state.shopEdit && state.shopEdit.kind === 'sizeset') return renderShopSizeSetEditor();
+
+  let html = '';
+  // suppliers
+  html += `<h3 style="font-family:'Oswald',sans-serif;font-size:14px;text-transform:uppercase;letter-spacing:.04em;margin:16px 0 8px;">Suppliers</h3>
+    <button class="btn btn-black" onclick="shopNewSupplier()" style="padding:7px 12px;margin-bottom:8px;">+ Add supplier</button>`;
+  if (!state.shop.suppliers.length) html += `<p style="font-size:12px;color:var(--grey-500);">None yet.</p>`;
+  for (const s of state.shop.suppliers) {
+    html += `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:8px 12px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:8px;">
+      <div><strong style="font-size:14px;">${escapeHtml(s.name)}</strong>
+        ${s.contactEmail ? `<span style="font-size:11px;color:var(--grey-500);"> · ${escapeHtml(s.contactEmail)}</span>` : ''}
+        ${s.contactPhone ? `<span style="font-size:11px;color:var(--grey-500);"> · ${escapeHtml(s.contactPhone)}</span>` : ''}</div>
+      <span style="display:flex;gap:6px;flex-shrink:0;">
+        <button class="btn" onclick="shopEditSupplier('${s.id}')" style="padding:4px 10px;font-size:12px;">Edit</button>
+        <button class="btn" onclick="shopDeleteSupplier('${s.id}')" style="padding:4px 10px;font-size:12px;">Delete</button></span></div>`;
+  }
+
+  // categories
+  html += `<h3 style="font-family:'Oswald',sans-serif;font-size:14px;text-transform:uppercase;letter-spacing:.04em;margin:24px 0 8px;">Categories</h3>
+    <button class="btn btn-black" onclick="shopAddCategory()" style="padding:7px 12px;margin-bottom:8px;">+ Add category</button>`;
+  if (!state.shop.categories.length) html += `<p style="font-size:12px;color:var(--grey-500);">None yet.</p>`;
+  for (const c of state.shop.categories) {
+    html += `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:8px 12px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:8px;">
+      <strong style="font-size:14px;">${escapeHtml(c.name)}</strong>
+      <span style="display:flex;gap:6px;flex-shrink:0;">
+        <button class="btn" onclick="shopRenameCategory('${c.id}')" style="padding:4px 10px;font-size:12px;">Rename</button>
+        <button class="btn" onclick="shopDeleteCategory('${c.id}')" style="padding:4px 10px;font-size:12px;">Delete</button></span></div>`;
+  }
+
+  // size sets
+  html += `<h3 style="font-family:'Oswald',sans-serif;font-size:14px;text-transform:uppercase;letter-spacing:.04em;margin:24px 0 8px;">Size sets</h3>
+    <button class="btn btn-black" onclick="shopNewSizeSet()" style="padding:7px 12px;margin-bottom:8px;">+ Add size set</button>`;
+  if (!state.shop.sizeSets.length) html += `<p style="font-size:12px;color:var(--grey-500);">None yet.</p>`;
+  for (const z of state.shop.sizeSets) {
+    html += `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:8px 12px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:8px;">
+      <div><strong style="font-size:14px;">${escapeHtml(z.name)}</strong>
+        <span style="font-size:11px;color:var(--grey-500);"> · ${(z.sizes || []).map(s => escapeHtml(String(s))).join(', ') || 'no sizes'}</span></div>
+      <span style="display:flex;gap:6px;flex-shrink:0;">
+        <button class="btn" onclick="shopEditSizeSet('${z.id}')" style="padding:4px 10px;font-size:12px;">Edit</button>
+        <button class="btn" onclick="shopDeleteSizeSet('${z.id}')" style="padding:4px 10px;font-size:12px;">Delete</button></span></div>`;
+  }
+  return html;
+}
+
+function renderShopSupplierEditor() {
+  const d = state.shopEdit.data;
+  const inp = 'width:100%;padding:8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:14px;margin-top:4px;';
+  const lbl = 'font-size:12px;color:var(--grey-500);font-weight:600;display:block;margin-top:12px;';
+  return `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:16px;margin-top:12px;max-width:480px;">
+    <h3 style="margin:0 0 4px;font-size:16px;">${d.id ? 'Edit supplier' : 'New supplier'}</h3>
+    <label style="${lbl}">Name</label><input id="shopSupName" value="${escapeHtml(d.name || '')}" style="${inp}">
+    <label style="${lbl}">Email</label><input id="shopSupEmail" value="${escapeHtml(d.contactEmail || '')}" style="${inp}">
+    <label style="${lbl}">Phone</label><input id="shopSupPhone" value="${escapeHtml(d.contactPhone || '')}" style="${inp}">
+    <label style="${lbl}">Website</label><input id="shopSupWeb" value="${escapeHtml(d.website || '')}" style="${inp}">
+    <label style="${lbl}">Notes</label><textarea id="shopSupNotes" style="${inp}min-height:60px;">${escapeHtml(d.notes || '')}</textarea>
+    <div style="display:flex;gap:8px;margin-top:18px;">
+      <button class="btn btn-black" onclick="shopSaveSupplier()" style="padding:9px 16px;">Save</button>
+      <button class="btn" onclick="shopCancelEdit()" style="padding:9px 16px;">Cancel</button></div></div>`;
+}
+function shopNewSupplier() { state.shopEdit = { kind: 'supplier', data: {} }; renderShop(); }
+function shopEditSupplier(id) { const s = shopSupplier(id); if (s) { state.shopEdit = { kind: 'supplier', data: Object.assign({}, s) }; renderShop(); } }
+async function shopSaveSupplier() {
+  const g = id => document.getElementById(id);
+  const draft = Object.assign({}, state.shopEdit.data, {
+    name: g('shopSupName').value.trim(),
+    contactEmail: g('shopSupEmail').value.trim() || null,
+    contactPhone: g('shopSupPhone').value.trim() || null,
+    website: g('shopSupWeb').value.trim() || null,
+    notes: g('shopSupNotes').value.trim() || null,
+  });
+  if (!draft.name) { alert('Give the supplier a name.'); return; }
+  try {
+    const saved = await DB.saveSupplier(draft);
+    const i = state.shop.suppliers.findIndex(x => x.id === saved.id);
+    if (i >= 0) state.shop.suppliers[i] = saved; else state.shop.suppliers.push(saved);
+    state.shopEdit = null; renderShop();
+  } catch (e) { alert('Could not save supplier: ' + (e.message || e)); }
+}
+async function shopDeleteSupplier(id) {
+  if (!confirm('Delete this supplier? Items keep their other details but lose this supplier link.')) return;
+  try { await DB.deleteSupplier(id); state.shop.suppliers = state.shop.suppliers.filter(s => s.id !== id); renderShop(); }
+  catch (e) { alert('Could not delete: ' + (e.message || e)); }
+}
+
+async function shopAddCategory() {
+  const name = (prompt('New category name:') || '').trim();
+  if (!name) return;
+  try { const saved = await DB.saveCategory({ name }); state.shop.categories.push(saved); renderShop(); }
+  catch (e) { alert('Could not add: ' + (e.message || e)); }
+}
+async function shopRenameCategory(id) {
+  const c = shopCat(id); if (!c) return;
+  const name = (prompt('Rename category:', c.name) || '').trim();
+  if (!name || name === c.name) return;
+  try { const saved = await DB.saveCategory(Object.assign({}, c, { name })); const i = state.shop.categories.findIndex(x => x.id === id); if (i >= 0) state.shop.categories[i] = saved; renderShop(); }
+  catch (e) { alert('Could not rename: ' + (e.message || e)); }
+}
+async function shopDeleteCategory(id) {
+  if (!confirm('Delete this category? Items in it become uncategorised.')) return;
+  try { await DB.deleteCategory(id); state.shop.categories = state.shop.categories.filter(c => c.id !== id); renderShop(); }
+  catch (e) { alert('Could not delete: ' + (e.message || e)); }
+}
+
+function renderShopSizeSetEditor() {
+  const d = state.shopEdit.data;
+  const inp = 'width:100%;padding:8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:14px;margin-top:4px;';
+  const lbl = 'font-size:12px;color:var(--grey-500);font-weight:600;display:block;margin-top:12px;';
+  return `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:16px;margin-top:12px;max-width:480px;">
+    <h3 style="margin:0 0 4px;font-size:16px;">${d.id ? 'Edit size set' : 'New size set'}</h3>
+    <label style="${lbl}">Name (e.g. T-shirt, Belt / Gi)</label><input id="shopSetName" value="${escapeHtml(d.name || '')}" style="${inp}">
+    <label style="${lbl}">Sizes — comma separated, in order (e.g. S, M, L, XL)</label>
+    <input id="shopSetSizes" value="${escapeHtml((d.sizes || []).join(', '))}" style="${inp}">
+    <div style="display:flex;gap:8px;margin-top:18px;">
+      <button class="btn btn-black" onclick="shopSaveSizeSet()" style="padding:9px 16px;">Save</button>
+      <button class="btn" onclick="shopCancelEdit()" style="padding:9px 16px;">Cancel</button></div></div>`;
+}
+function shopNewSizeSet() { state.shopEdit = { kind: 'sizeset', data: { sizes: [] } }; renderShop(); }
+function shopEditSizeSet(id) { const z = shopSizeSet(id); if (z) { state.shopEdit = { kind: 'sizeset', data: Object.assign({}, z) }; renderShop(); } }
+async function shopSaveSizeSet() {
+  const g = id => document.getElementById(id);
+  const name = g('shopSetName').value.trim();
+  const sizes = g('shopSetSizes').value.split(',').map(s => s.trim()).filter(Boolean);
+  if (!name) { alert('Give the size set a name.'); return; }
+  if (!sizes.length) { alert('Add at least one size.'); return; }
+  const draft = Object.assign({}, state.shopEdit.data, { name, sizes });
+  try {
+    const saved = await DB.saveSizeSet(draft);
+    const i = state.shop.sizeSets.findIndex(x => x.id === saved.id);
+    if (i >= 0) state.shop.sizeSets[i] = saved; else state.shop.sizeSets.push(saved);
+    state.shopEdit = null; renderShop();
+  } catch (e) { alert('Could not save size set: ' + (e.message || e)); }
+}
+async function shopDeleteSizeSet(id) {
+  if (!confirm('Delete this size set? Items using it will need a new one.')) return;
+  try { await DB.deleteSizeSet(id); state.shop.sizeSets = state.shop.sizeSets.filter(z => z.id !== id); renderShop(); }
+  catch (e) { alert('Could not delete: ' + (e.message || e)); }
 }

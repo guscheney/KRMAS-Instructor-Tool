@@ -1303,6 +1303,64 @@ const DB = (() => {
     return migrated;
   }
 
+  // ── Inventory / shop (Phase 1): shared catalogue + per-school stock ──
+  // Catalogue rows are first-class columns (not jsonb), so we map snake_case
+  // DB columns <-> camelCase objects the same way students do.
+  function _itemFromRow(r){ return { id:r.id, name:r.name, categoryId:r.category_id, supplierId:r.supplier_id, unitCost:r.unit_cost, unit:r.unit, sku:r.sku, sized:!!r.sized, sizeSetId:r.size_set_id, gradeRef:r.grade_ref, archived:!!r.archived }; }
+  function _itemToRow(it){ const r={ name:it.name||'', category_id:it.categoryId||null, supplier_id:it.supplierId||null, unit_cost:(it.unitCost===''||it.unitCost==null)?null:Number(it.unitCost), unit:it.unit||null, sku:it.sku||null, sized:!!it.sized, size_set_id:it.sized?(it.sizeSetId||null):null, grade_ref:it.gradeRef||null, archived:!!it.archived, updated_at:new Date().toISOString() }; if(it.id) r.id=it.id; return r; }
+  function _supFromRow(r){ return { id:r.id, name:r.name, contactEmail:r.contact_email, contactPhone:r.contact_phone, website:r.website, notes:r.notes }; }
+  function _supToRow(s){ const r={ name:s.name||'', contact_email:s.contactEmail||null, contact_phone:s.contactPhone||null, website:s.website||null, notes:s.notes||null }; if(s.id) r.id=s.id; return r; }
+  function _setFromRow(r){ return { id:r.id, name:r.name, sizes:Array.isArray(r.sizes)?r.sizes:(r.sizes||[]), sort:r.sort||0 }; }
+  function _setToRow(s){ const r={ name:s.name||'', sizes:Array.isArray(s.sizes)?s.sizes:[], sort:s.sort||0 }; if(s.id) r.id=s.id; return r; }
+  function _catFromRow(r){ return { id:r.id, name:r.name, sort:r.sort||0 }; }
+  function _catToRow(c){ const r={ name:c.name||'', sort:c.sort||0 }; if(c.id) r.id=c.id; return r; }
+  function _stockFromRow(r){ return { schoolId:r.school_id, itemId:r.item_id, size:r.size||'', qty:r.qty||0, reorderLevel:r.reorder_level||0 }; }
+
+  async function loadShop(){
+    const sb=sbClient();
+    if(!sb) return { categories:[], sizeSets:[], suppliers:[], items:[] };
+    const [c,z,s,i] = await Promise.all([
+      sb.from('inventory_categories').select('*').order('sort'),
+      sb.from('inventory_size_sets').select('*').order('sort'),
+      sb.from('suppliers').select('*').order('name'),
+      sb.from('inventory_items').select('*').order('name'),
+    ]);
+    if(c.error) console.warn('[DB] loadShop categories:', c.error.message);
+    if(i.error) console.warn('[DB] loadShop items:', i.error.message);
+    return {
+      categories:(c.data||[]).map(_catFromRow),
+      sizeSets:(z.data||[]).map(_setFromRow),
+      suppliers:(s.data||[]).map(_supFromRow),
+      items:(i.data||[]).map(_itemFromRow),
+    };
+  }
+  async function loadSchoolStock(schoolId){
+    const sb=sbClient(); if(!sb) return [];
+    const { data,error } = await sb.from('inventory_stock').select('*').eq('school_id',schoolId);
+    if(error){ console.warn('[DB] loadSchoolStock:', error.message); return []; }
+    return (data||[]).map(_stockFromRow);
+  }
+  async function saveStockRow(schoolId,itemId,size,qty,reorderLevel){
+    const sb=sbClient(); if(!sb) return false;
+    const row={ school_id:schoolId, item_id:itemId, size:size||'', qty:Math.max(0,qty|0), reorder_level:Math.max(0,reorderLevel|0), updated_at:new Date().toISOString() };
+    if(_uid) row.updated_by=_uid;
+    const { error } = await sb.from('inventory_stock').upsert(row,{ onConflict:'school_id,item_id,size' });
+    if(error){ console.warn('[DB] saveStockRow:', error.message); throw new Error(error.message); }
+    return true;
+  }
+  async function _saveCatalogue(table,fromRow,toRow,obj){
+    const sb=sbClient(); if(!sb) throw new Error('Supabase unavailable');
+    const { data,error } = await sb.from(table).upsert(toRow(obj),{ onConflict:'id' }).select().single();
+    if(error){ console.warn('[DB] save '+table+':', error.message); throw new Error(error.message); }
+    return fromRow(data);
+  }
+  async function _delCatalogue(table,id){
+    const sb=sbClient(); if(!sb) throw new Error('Supabase unavailable');
+    const { error } = await sb.from(table).delete().eq('id',id);
+    if(error){ console.warn('[DB] delete '+table+':', error.message); throw new Error(error.message); }
+    return true;
+  }
+
   // ── Public API ────────────────────────────────────────────────────
   return {
     get isSupabase() { return isSB(); },
@@ -1460,7 +1518,7 @@ const DB = (() => {
     users: {
       async list() {
         const sb = sbClient(); if (!sb) return [];
-        const { data, error } = await sb.from('profiles').select('id,display_name,email,role,school_id').order('display_name');
+        const { data, error } = await sb.from('profiles').select('id,display_name,email,role,school_id,is_shop_admin').order('display_name');
         if (error) { console.warn('[DB] users.list:', error.message); return []; }
         return data || [];
       },
@@ -1495,6 +1553,20 @@ const DB = (() => {
     saveLastLogins:   (schoolId, d) => set('last-login:' + schoolId, d),
     loadGrading:      (schoolId) => get('grading:' + schoolId),
     saveGrading:      (schoolId, d) => set('grading:' + schoolId, d),
+
+    // ── Inventory / shop ──
+    loadShop:         ()                   => loadShop(),
+    loadSchoolStock:  (schoolId)           => loadSchoolStock(schoolId),
+    saveStockRow:     (sid,itemId,sz,q,rl) => saveStockRow(sid,itemId,sz,q,rl),
+    saveCategory:     (c)                  => _saveCatalogue('inventory_categories',_catFromRow,_catToRow,c),
+    deleteCategory:   (id)                 => _delCatalogue('inventory_categories',id),
+    saveSizeSet:      (s)                  => _saveCatalogue('inventory_size_sets',_setFromRow,_setToRow,s),
+    deleteSizeSet:    (id)                 => _delCatalogue('inventory_size_sets',id),
+    saveSupplier:     (s)                  => _saveCatalogue('suppliers',_supFromRow,_supToRow,s),
+    deleteSupplier:   (id)                 => _delCatalogue('suppliers',id),
+    saveItem:         (i)                  => _saveCatalogue('inventory_items',_itemFromRow,_itemToRow,i),
+    deleteItem:       (id)                 => _delCatalogue('inventory_items',id),
+    setShopAdmin:     (userId,val)         => { const sb=sbClient(); return sb ? sb.rpc('set_shop_admin',{ target:userId, val:!!val }) : Promise.reject(new Error('Supabase unavailable')); },
     loadOnboardingTemplate: (schoolId) => get('onboarding-template:' + schoolId),
     saveOnboardingTemplate: (schoolId, d) => set('onboarding-template:' + schoolId, d),
 
