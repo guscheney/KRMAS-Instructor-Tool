@@ -928,6 +928,10 @@
     body { background: white; }
     .card, .lp-section { box-shadow: none; border: 1px solid #999; }
   }
+/* ── View transition (re-triggered on each setView) ── */
+@keyframes viewIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+#mainContent.view-in { animation: viewIn .22s ease; }
+@media (prefers-reduced-motion: reduce){ #mainContent.view-in { animation: none; } }
 /* ── Navigation hubs (Teach / More landing tiles) ── */
 .hub-grid { display:grid; grid-template-columns:1fr; gap:10px; margin-top:6px; }
 @media (min-width:560px){ .hub-grid { grid-template-columns:1fr 1fr; } }
@@ -1053,7 +1057,7 @@
       <span class="nav-icon">🥋</span><span>Teach</span>
     </button>
     <button class="nav-btn" data-view="shop" onclick="setView('shop')" id="navShop" style="display:none;position:relative;">
-      <span class="nav-icon">📦</span><span>Stock</span>
+      <span class="nav-icon">📦</span><span>Shop</span>
       <span id="navShopBadge" style="display:none;position:absolute;top:2px;right:8px;min-width:15px;height:15px;line-height:15px;padding:0 4px;border-radius:8px;background:var(--red,#D22C12);color:#fff;font-size:9px;font-weight:700;text-align:center;">0</span>
     </button>
     <button class="nav-btn" data-view="more" onclick="setView('more')">
@@ -2817,14 +2821,14 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '75';
+  window.KRMAS_APP_VERSION = '77';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
 </script>
-<script src="data.js?v=75"></script>
-<script src="db.js?v=75"></script>
-<script src="app.js?v=75"></script>
+<script src="data.js?v=77"></script>
+<script src="db.js?v=77"></script>
+<script src="app.js?v=77"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

@@ -779,7 +779,7 @@ function renderClosuresAdmin() {
 // schema change. Forward writes go straight to DB.saveCalendarEvent and reverse writes
 // straight to the closures store, so the two directions never call each other's hooks;
 // `_calSync` is a belt-and-suspenders re-entry guard.
-const SYNC_TYPE = { closure: { name: 'Closure', colour: '#D22C12' }, grading: { name: 'Grading', colour: '#16a34a' } };
+const SYNC_TYPE = { closure: { name: 'Closure', colour: '#D22C12' }, grading: { name: 'Grading', colour: '#16a34a' }, special: { name: 'Special', colour: '#7c3aed' } };
 let _calSync = false;
 function _evtId() { return 'EVT-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase(); }
 function findSyncTypeId(sid, key) {
@@ -838,6 +838,51 @@ async function syncClosureRemoveFromEvent(ev) {
   if (o.closures.length !== before) {
     _calSync = true;
     try { await saveCustomSchools(ev.schoolId); if (state.view === 'roster') renderDay(); } finally { _calSync = false; }
+  }
+}
+// Reverse: a Grading/Special-typed event saved on the calendar → create/update that
+// day's override. Grading seeds its classes from the normal timetable; Special starts
+// with one slot the user staffs from the roster (matches the in-app "add classes" flow).
+async function syncOverrideFromEvent(ev) {
+  if (_calSync || !ev || ev.schoolId === null) return;
+  if (typeof canEditSchool === 'function' && !canEditSchool(ev.schoolId)) return;
+  const gId = findSyncTypeId(ev.schoolId, 'grading');
+  const sId = findSyncTypeId(ev.schoolId, 'special');
+  const kind = (gId && ev.typeId === gId) ? 'grading' : (sId && ev.typeId === sId) ? 'special' : null;
+  if (!kind) return;
+  _calSync = true;
+  try {
+    const o = ensureOverrideStores(ev.schoolId);
+    const iso = ev.startDate;
+    const existing = o.overrides[iso];
+    if (existing && existing.eventId === ev.id) {
+      existing.label = ev.title || (kind === 'grading' ? 'Grading' : 'Special');
+      existing.kind = kind;
+    } else if (!existing) {
+      let slots;
+      if (kind === 'grading') {
+        const dow = new Date(iso + 'T00:00:00').getDay();
+        const normal = (ev.schoolId === state.schoolId ? currentSchedule() : []).filter(c => c.day === dow);
+        slots = normal.map(c => ({ id: newOvrId('GR'), start: c.start, end: c.end, type: c.type, label: c.label || null, areaId: c.areaId || null }));
+        if (!slots.length) slots = [{ id: newOvrId('GR'), start: '09:00', end: '12:00', type: defaultClassType(), label: null, areaId: null }];
+      } else {
+        slots = [{ id: newOvrId('OS'), start: '17:00', end: '18:00', type: defaultClassType(), label: null, areaId: null }];
+      }
+      o.overrides[iso] = { kind, label: ev.title || (kind === 'grading' ? 'Grading' : 'Special'), replaceNormal: kind === 'grading', slots, gradingId: kind === 'grading' ? (typeof findGradingSessionForDate === 'function' ? findGradingSessionForDate(iso) : null) : null, eventId: ev.id };
+    }
+    await saveCustomSchools(ev.schoolId);
+    if (state.view === 'roster') renderDay();
+  } finally { _calSync = false; }
+}
+// Reverse: a Grading/Special-typed event deleted on the calendar → remove its override.
+async function syncOverrideRemoveFromEvent(ev) {
+  if (_calSync || !ev || ev.schoolId === null) return;
+  if (typeof canEditSchool === 'function' && !canEditSchool(ev.schoolId)) return;
+  const o = ensureOverrideStores(ev.schoolId);
+  const iso = ev.startDate;
+  if (o.overrides[iso] && o.overrides[iso].eventId === ev.id) {
+    _calSync = true;
+    try { delete o.overrides[iso]; await saveCustomSchools(ev.schoolId); if (state.view === 'roster') renderDay(); } finally { _calSync = false; }
   }
 }
 
@@ -1002,9 +1047,9 @@ async function saveDayOverride() {
   const prev = o.overrides[state._ovrDate];
   const ovr = { kind: d.kind, label: d.label, replaceNormal: !!d.replaceNormal, slots: d.slots, gradingId: d.gradingId || null, eventId: (prev && prev.eventId) || null };
   o.overrides[state._ovrDate] = ovr;
-  if (d.kind === 'grading') {
-    ovr.eventId = await syncEventFromSource(sid, 'grading', { eventId: ovr.eventId, title: d.label || 'Grading', from: state._ovrDate, to: state._ovrDate });
-  } else if (prev && prev.eventId) { // was a grading day, now special → drop the mirrored event
+  if (d.kind === 'grading' || d.kind === 'special') {
+    ovr.eventId = await syncEventFromSource(sid, d.kind, { eventId: ovr.eventId, title: d.label || (d.kind === 'grading' ? 'Grading' : 'Special'), from: state._ovrDate, to: state._ovrDate });
+  } else if (prev && prev.eventId) {
     await syncRemoveEvent(sid, prev.eventId);
     ovr.eventId = null;
   }
@@ -1335,10 +1380,10 @@ function navModel() {
     { dataView: 'teach', icon: '🥋', label: 'Teach', type: 'hub', tiles: [
       { icon: '🥋', label: 'Grading', view: 'grading', desc: 'Belts & progression' },
       { icon: '✎', label: 'Lesson plans', view: 'plans', desc: 'Plans & topic library' },
-      { icon: '🛡', label: 'Cover requests', view: 'cover', desc: 'Find cover for a class' },
+      { icon: '🛡', label: 'Cover requests', view: 'cover', desc: 'Find cover for a class', badge: () => (typeof countUrgentCover === 'function' ? countUrgentCover() : 0) },
       { icon: '⚠', label: 'Incident reports', view: 'incidents', desc: 'Log & review incidents', gate: () => can.viewIncidents() },
     ] },
-    { dataView: 'shop', icon: '📦', label: 'Stock', type: 'view', view: 'shop', gate: () => can.seeShop() },
+    { dataView: 'shop', icon: '📦', label: 'Shop', type: 'view', view: 'shop', gate: () => can.seeShop() },
     { dataView: 'more', icon: '⋯', label: 'More', type: 'hub', tiles: [
       { icon: '◷', label: 'Students', view: 'students', desc: 'Student records', gate: () => can.viewStudents() },
       { icon: '📚', label: 'Documents', view: 'docs', desc: 'Files & resources' },
@@ -1431,6 +1476,8 @@ function setView(v) {
   } else if (v === 'me') {
     renderMe();
   }
+  const _mc = document.getElementById('mainContent');
+  if (_mc) { _mc.classList.remove('view-in'); void _mc.offsetWidth; _mc.classList.add('view-in'); }
   updateSubviewBar(v);
 }
 
@@ -7501,7 +7548,7 @@ function renderFeed() {
     ${state.user ? `<button class="btn btn-primary" onclick="openPostComposer()" style="padding:8px 16px;">✎ Post</button>` : ''}
   </div>`;
 
-  html += `<button class="btn" onclick="setView('calendar')" style="width:100%;margin-bottom:12px;display:flex;align-items:center;justify-content:center;gap:8px;">📅 Events</button>`;
+  html += renderHomeCalendar();
 
   // Pinned notices at top of feed
   const pinned = [...state.notices, ...state.networkNotices]
@@ -9059,6 +9106,45 @@ function renderUpcomingStrip() {
   return html;
 }
 
+// ---------- Home embedded calendar (compact, whole widget opens the Events section) ----------
+function renderHomeCalendar() {
+  const base = new Date(); // always show the current month on Home
+  const y = base.getFullYear(), m = base.getMonth();
+  const monthName = base.toLocaleDateString('en-AU', { month: 'long', year: 'numeric' });
+  const today = isoDate(new Date());
+  const events = state.calendarEvents || [];
+  const types = state.eventTypes || [];
+  const colourFor = ev => (types.find(t => t.id === ev.typeId)?.colour) || 'var(--grey-400)';
+  let html = `<div onclick="setView('calendar')" role="button" tabindex="0" aria-label="Open the Events calendar" style="cursor:pointer;background:var(--white);border:1px solid var(--grey-200);border-radius:var(--r-md);padding:10px 12px;margin-bottom:12px;box-shadow:var(--shadow);">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+      <span style="font-family:'Oswald',sans-serif;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;">📅 ${escapeHtml(monthName)}</span>
+      <span style="font-size:11px;font-weight:700;color:var(--red);">Events ›</span>
+    </div>
+    <div class="cal-grid" style="margin-bottom:2px;">` +
+    ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(d => `<div style="text-align:center;font-size:9px;font-weight:700;color:var(--grey-400);text-transform:uppercase;padding:1px 0;">${d}</div>`).join('') +
+    `</div><div class="cal-grid">`;
+  const firstOfMonth = new Date(y, m, 1);
+  const lead = (firstOfMonth.getDay() + 6) % 7; // Monday-first
+  const gridStart = new Date(y, m, 1 - lead);
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(gridStart); d.setDate(gridStart.getDate() + i);
+    const iso = isoDate(d);
+    const inMonth = d.getMonth() === m;
+    const evs = events.filter(ev => ev.startDate <= iso && (ev.endDate || ev.startDate) >= iso);
+    const isToday = iso === today;
+    let dots = '';
+    if (evs.length) {
+      dots = `<div style="display:flex;gap:2px;justify-content:center;flex-wrap:wrap;margin-top:2px;line-height:0;">` +
+        evs.slice(0, 3).map(ev => `<span style="width:5px;height:5px;border-radius:50%;background:${colourFor(ev)};display:inline-block;"></span>`).join('') +
+        `</div>`;
+    }
+    html += `<div class="cal-cell${inMonth ? '' : ' other'}${isToday ? ' today' : ''}" style="min-height:34px;">
+      <span style="font-size:11px;">${d.getDate()}</span>${dots}</div>`;
+  }
+  html += `</div></div>`;
+  return html;
+}
+
 // ---------- Calendar view ----------
 function renderCalendar() {
   hideDayHead();
@@ -9337,6 +9423,7 @@ async function saveEvent() {
   else if (state.view === 'feed') renderFeed();
   for (const o of occurrences) await DB.saveCalendarEvent(o);
   for (const o of occurrences) await syncClosureFromEvent(o); // Closure-typed events → closures
+  for (const o of occurrences) await syncOverrideFromEvent(o); // Grading/Special events → that day's override
   if (occurrences.length > 1) {
     setTimeout(() => alert(occurrences.length + ' events created (' + repeat + ' until ' + repeatUntil + ').'), 100);
   }
@@ -9356,6 +9443,7 @@ async function deleteEvent() {
   if (state.view === 'calendar') renderCalendar();
   await DB.deleteCalendarEvent(id, ev?.schoolId);
   if (ev) await syncClosureRemoveFromEvent(ev); // deleting a Closure-typed event removes its closure
+  if (ev) await syncOverrideRemoveFromEvent(ev); // deleting a Grading/Special event removes its override
 }
 
 // ---------- Event types manager ----------
@@ -10713,40 +10801,52 @@ function renderAdmin() {
 
   let html = `<h1 class="section-head">Admin</h1>`;
 
-  // Admin tools grid
-  html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;">`;
-  const btns = [
-    { icon: '📊', label: 'Dashboard',           fn: 'openDashboard()' },
-    { icon: '📋', label: 'Reports',             fn: 'openReports()' },
-    { icon: '🎓', label: 'Onboarding',          fn: 'openOnboardingAdmin()' },
-    { icon: '🏫', label: 'Schools / locations', fn: 'openSchoolManager()' },
-    { icon: '👥', label: 'User management',      fn: 'openInstructorManager()' },
-    { icon: '📥', label: 'Import users',        fn: 'openBulkImport()' },
-    { icon: '🏷', label: 'Groups',              fn: 'openGroupsAdmin()' },
-    { icon: '📋', label: 'Class assignments',   fn: 'openClassAssignments()' },
-    { icon: '🚫', label: 'Closures / holidays',  fn: 'openClosuresAdmin()' },
-    { icon: '🎯', label: 'Class type mapping',  fn: 'openClassTypeMapper()' },
-    { icon: '🎨', label: 'Event types',         fn: 'openEventTypes()' },
-    { icon: '📅', label: 'Import events',       fn: 'openEventImport()' },
-    { icon: '🛡', label: 'Compliance',          fn: 'openComplianceDashboard()' },
-    { icon: '📝', label: 'Audit log',           fn: 'openAuditLog()' },
-    { icon: '📤', label: 'Export roster',       fn: 'exportWeekRoster()' },
-    { icon: '📢', label: 'Notices board',       fn: 'openNoticesBoard()' },
+  // Grouped admin sections (replaces the old flat grid).
+  const sections = [
+    { title: 'People & schools', items: [
+      { icon: '👥', label: 'User management',      fn: 'openInstructorManager()' },
+      { icon: '📥', label: 'Import users',         fn: 'openBulkImport()' },
+      { icon: '🏷', label: 'Groups',               fn: 'openGroupsAdmin()' },
+      { icon: '📋', label: 'Class assignments',    fn: 'openClassAssignments()' },
+      { icon: '🏫', label: 'Schools / locations',  fn: 'openSchoolManager()' },
+      { icon: '🎓', label: 'Onboarding',           fn: 'openOnboardingAdmin()' },
+      { icon: '🌐', label: 'All schools overview', fn: 'openAllSchoolsOverview()', sup: true },
+    ] },
+    { title: 'Scheduling & events', items: [
+      { icon: '🚫', label: 'Closures / holidays',  fn: 'openClosuresAdmin()' },
+      { icon: '🎯', label: 'Class type mapping',   fn: 'openClassTypeMapper()' },
+      { icon: '🎨', label: 'Event types',          fn: 'openEventTypes()' },
+      { icon: '📅', label: 'Import events',        fn: 'openEventImport()' },
+      { icon: '🏷️', label: 'Class types',          fn: 'openClassTypesEditor()', sup: true },
+    ] },
+    { title: 'Records & compliance', items: [
+      { icon: '📊', label: 'Dashboard',            fn: 'openDashboard()' },
+      { icon: '📋', label: 'Reports',              fn: 'openReports()' },
+      { icon: '🛡', label: 'Compliance',           fn: 'openComplianceDashboard()' },
+      { icon: '📝', label: 'Audit log',            fn: 'openAuditLog()' },
+      { icon: '📤', label: 'Export roster',        fn: 'exportWeekRoster()' },
+    ] },
+    { title: 'Communication', items: [
+      { icon: '📢', label: 'Notices board',        fn: 'openNoticesBoard()' },
+    ] },
+    { title: 'System', items: [
+      { icon: '🔑', label: 'Roles & permissions',  fn: 'openRolesMatrix()', sup: true },
+      { icon: '📄', label: 'Upload docs',          fn: 'openDocUpload()', sup: true },
+      ...(isSuperAdmin && !DB.isSupabase ? [{ icon: '☁', label: 'Migrate to Supabase', fn: 'runMigration()', sup: true }] : []),
+    ] },
   ];
-  if (isSuperAdmin) {
-    btns.unshift({ icon: '🔑', label: 'Roles & permissions', fn: 'openRolesMatrix()' });
-    btns.unshift({ icon: '🌐', label: 'All schools overview', fn: 'openAllSchoolsOverview()' });
-    btns.push({ icon: '🏷️', label: 'Class types', fn: 'openClassTypesEditor()' });
-    btns.push({ icon: '📄', label: 'Upload docs', fn: 'openDocUpload()' });
-    if (!DB.isSupabase) btns.push({ icon: '☁', label: 'Migrate to Supabase', fn: 'runMigration()' });
+  for (const sec of sections) {
+    const items = sec.items.filter(it => !it.sup || isSuperAdmin);
+    if (!items.length) continue;
+    html += `<div class="section-sub" style="margin-top:14px;">${sec.title}</div>`;
+    html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px;">`;
+    for (const b of items) {
+      html += `<button class="btn" onclick="${b.fn}" style="width:100%;display:flex;align-items:center;gap:8px;justify-content:flex-start;padding:12px 14px;font-size:13px;">
+        <span style="font-size:18px;">${b.icon}</span><span>${b.label}</span></button>`;
+    }
+    html += `</div>`;
   }
-  for (const b of btns) {
-    html += `<button class="btn" onclick="${b.fn}" style="width:100%;display:flex;align-items:center;gap:8px;justify-content:flex-start;padding:12px 14px;font-size:13px;">
-      <span style="font-size:18px;">${b.icon}</span>
-      <span>${b.label}</span>
-    </button>`;
-  }
-  html += `</div>`;
+  html += `<div style="height:6px;"></div>`;
 
   // Team hours
   const currentWeekMonday = startOfWeek(new Date());
