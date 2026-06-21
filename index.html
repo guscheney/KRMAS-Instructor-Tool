@@ -1505,10 +1505,129 @@
       </div>
     </div>
 
+    <!-- ===== KRMAS Member Injury Report — shown only when type = Injury ===== -->
+    <div id="incInjurySections" style="display:none;">
+      <div class="ir-section" style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:12px;">
+        <div class="ir-section-title" style="color:#c2410c;">KRMAS Member Injury Report</div>
+        <p style="font-size:12px;color:#7c2d12;margin:4px 0 0;line-height:1.45;">
+          Complete this for any incident that <strong>(1)</strong> happens during a supervised KRMAS class or activity,
+          <strong>(2)</strong> injures a current financial member or trial participant (or worsens an existing injury), and
+          <strong>(3)</strong> results in treatment from a hospital, doctor or physiotherapist. Send the finished report to
+          KRMAS within 12 months — use <strong>Export PDF</strong> below.
+        </p>
+      </div>
+
+      <div class="ir-section">
+        <div class="ir-section-title">Dojo / event details</div>
+        <div class="form-row compact"><label>Dojo or event name</label><input type="text" id="incDojoName"></div>
+        <div class="form-row compact"><label>Dojo Licence Holder / staff in charge</label><input type="text" id="incDLH"></div>
+        <div class="form-grid-2">
+          <div class="form-row compact"><label>Dojo phone</label><input type="text" id="incDojoPhone"></div>
+          <div class="form-row compact"><label>Dojo email</label><input type="text" id="incDojoEmail"></div>
+        </div>
+        <div class="form-row compact"><label>Dojo address</label><input type="text" id="incDojoAddress"></div>
+        <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:0 10px;">
+          <div class="form-row compact"><label>City/suburb</label><input type="text" id="incDojoCity"></div>
+          <div class="form-row compact"><label>State</label><input type="text" id="incDojoState"></div>
+          <div class="form-row compact"><label>Postcode</label><input type="text" id="incDojoPostcode"></div>
+        </div>
+      </div>
+
+      <div class="ir-section">
+        <div class="ir-section-title">Injured member — contact details</div>
+        <div class="form-row compact"><label>Address</label><input type="text" id="incMemberAddress"></div>
+        <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:0 10px;">
+          <div class="form-row compact"><label>City/suburb</label><input type="text" id="incMemberCity"></div>
+          <div class="form-row compact"><label>State</label><input type="text" id="incMemberState"></div>
+          <div class="form-row compact"><label>Postcode</label><input type="text" id="incMemberPostcode"></div>
+        </div>
+        <div class="form-grid-2">
+          <div class="form-row compact"><label>Phone</label><input type="text" id="incMemberPhone"></div>
+          <div class="form-row compact"><label>Email</label><input type="text" id="incMemberEmail"></div>
+        </div>
+        <div class="ir-checkbox-row"><input type="checkbox" id="incFinancialMember"><label for="incFinancialMember">Current financial member</label></div>
+        <div class="form-row compact"><label>Membership number</label><input type="text" id="incMembershipNo"></div>
+        <p style="font-size:11px;color:var(--grey-500);margin:2px 0 0;">Name, age and role are captured in "Person involved" above.</p>
+      </div>
+
+      <div class="ir-section">
+        <div class="ir-section-title">Incident summary</div>
+        <div class="ir-checkbox-row"><input type="checkbox" id="incPreExisting"><label for="incPreExisting">Injury was already present before the incident</label></div>
+        <div class="form-row compact"><label>If pre-existing, details</label><input type="text" id="incPreExistingDetails"></div>
+        <p style="font-size:11px;color:var(--grey-500);margin:2px 0 0;">Date, time, location and a description are captured in the sections above.</p>
+      </div>
+
+      <div class="ir-section">
+        <div class="ir-section-title">First aid details</div>
+        <div class="form-row compact"><label>First aider's full name</label><input type="text" id="incFirstAiderName"></div>
+        <p style="font-size:11px;color:var(--grey-500);margin:2px 0 0;">"First aid administered" and what was done are in "Response taken" above.</p>
+      </div>
+
+      <div class="ir-section">
+        <div class="ir-section-title">Incident reporting details</div>
+        <div class="form-row compact"><label>Who reported it to KRMAS staff</label><input type="text" id="incReportedByName"></div>
+        <div class="form-row compact"><label>KRMAS staff member it was reported to</label><input type="text" id="incReportedToStaff"></div>
+        <div class="ir-section-title" style="font-size:11px;margin-top:8px;">Report made by</div>
+        <div class="ir-chip-group" id="incReportMethod">
+          <button class="ir-chip" data-val="phone" onclick="selectChip('incReportMethod', this)">Phone</button>
+          <button class="ir-chip" data-val="sms" onclick="selectChip('incReportMethod', this)">SMS</button>
+          <button class="ir-chip" data-val="email" onclick="selectChip('incReportMethod', this)">Email</button>
+          <button class="ir-chip" data-val="in-person" onclick="selectChip('incReportMethod', this)">In person</button>
+          <button class="ir-chip" data-val="other" onclick="selectChip('incReportMethod', this)">Other</button>
+        </div>
+        <div class="form-row compact"><label>Other method</label><input type="text" id="incReportMethodOther"></div>
+        <div class="form-grid-2">
+          <div class="form-row compact"><label>Report date</label><input type="date" id="incReportDate"></div>
+          <div class="form-row compact"><label>Report time</label><input type="time" id="incReportTime"></div>
+        </div>
+      </div>
+
+      <div class="ir-section">
+        <div class="ir-section-title">Treatment, current status & medical follow-up</div>
+        <div class="ir-checkbox-row"><input type="checkbox" id="incTreatVisitedHospital"><label for="incTreatVisitedHospital">Visited hospital</label></div>
+        <div class="form-grid-2">
+          <div class="form-row compact"><label>Hospital</label><input type="text" id="incTreatVisitedHospitalName"></div>
+          <div class="form-row compact"><label>Department</label><input type="text" id="incTreatVisitedHospitalDept"></div>
+        </div>
+        <div class="ir-checkbox-row"><input type="checkbox" id="incTreatAdmitted"><label for="incTreatAdmitted">Admitted to hospital</label></div>
+        <div class="form-grid-2">
+          <div class="form-row compact"><label>Hospital</label><input type="text" id="incTreatAdmittedName"></div>
+          <div class="form-row compact"><label>Department</label><input type="text" id="incTreatAdmittedDept"></div>
+        </div>
+        <div class="ir-checkbox-row"><input type="checkbox" id="incTreatDoctor"><label for="incTreatDoctor">Saw a doctor</label></div>
+        <div class="form-grid-2">
+          <div class="form-row compact"><label>Doctor name</label><input type="text" id="incTreatDoctorName"></div>
+          <div class="form-row compact"><label>Practice</label><input type="text" id="incTreatDoctorPractice"></div>
+        </div>
+        <div class="ir-checkbox-row"><input type="checkbox" id="incTreatPhysio"><label for="incTreatPhysio">Saw a physiotherapist</label></div>
+        <div class="form-grid-2">
+          <div class="form-row compact"><label>Physio name</label><input type="text" id="incTreatPhysioName"></div>
+          <div class="form-row compact"><label>Practice</label><input type="text" id="incTreatPhysioPractice"></div>
+        </div>
+        <div class="form-row compact"><label>Other treatment</label><input type="text" id="incTreatOther"></div>
+        <div class="form-row compact"><label>Current health status (e.g. in hospital, light duties, back to training)</label><textarea id="incHealthStatus" rows="2"></textarea></div>
+        <div class="form-row compact"><label>Follow-up treatment recommended by a doctor / physio</label><textarea id="incFollowUp" rows="2"></textarea></div>
+        <div class="form-row compact">
+          <label>Medical certificates / reports</label>
+          <select id="incMedCerts">
+            <option value="">—</option>
+            <option value="attached">Attached</option>
+            <option value="not-available">Not available</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="ir-section">
+        <div class="ir-section-title">Witness statements</div>
+        <div id="incWitnessList"></div>
+        <button class="btn btn-ghost" style="width:100%;border:1px dashed var(--grey-300);" onclick="addIncidentWitness()">+ Add witness statement</button>
+      </div>
+    </div>
+
     <div class="detail-actions" style="position: sticky; bottom: 0; background: var(--white); padding: 12px 0 4px; margin-top: 4px; border-top: 1px solid var(--grey-200);">
       <button class="btn btn-primary" onclick="saveIncident()" style="flex: 1; min-width: 100px;">Save</button>
       <button class="btn btn-black" onclick="downloadIncident()">Download</button>
-      <button class="btn" onclick="printIncident()">Print</button>
+      <button class="btn" onclick="printIncident()">Export PDF</button>
       <button class="btn" onclick="emailIncident()">Email</button>
     </div>
     <button class="btn btn-ghost" id="deleteIncidentBtn" style="width:100%;margin-top:6px;color:var(--red);display:none;" onclick="deleteIncident()">Delete incident report</button>
@@ -2832,14 +2951,14 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '83';
+  window.KRMAS_APP_VERSION = '84';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
 </script>
-<script src="data.js?v=83"></script>
-<script src="db.js?v=83"></script>
-<script src="app.js?v=83"></script>
+<script src="data.js?v=84"></script>
+<script src="db.js?v=84"></script>
+<script src="app.js?v=84"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

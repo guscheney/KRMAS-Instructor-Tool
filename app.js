@@ -1387,7 +1387,7 @@ function renderCardDetail(c) {
     ${(() => {
       if (!c.plan) return canAddPlan(c.dateKey) ? `<button class="btn btn-black" onclick="event.stopPropagation(); openPlan('${c.dateKey}')">Create lesson plan</button>` : '';
       if (canEditPlan(c.dateKey)) return `<button class="btn btn-black" onclick="event.stopPropagation(); openPlan('${c.dateKey}')">Edit lesson plan</button>`;
-      if (can.viewPlans()) return `<button class="btn btn-light" onclick="event.stopPropagation(); openPlan('${c.dateKey}')">View lesson plan</button>`;
+      if (can.viewPlans()) return `<button class="btn btn-ghost" onclick="event.stopPropagation(); openPlan('${c.dateKey}')">View lesson plan</button>`;
       return '';
     })()}
     ${can.editRoster() ? `<button class="btn" onclick="event.stopPropagation(); openEdit('${c.dateKey}')">Edit roster</button>` : ''}
@@ -3666,6 +3666,7 @@ function selectChip(groupId, btn) {
   const grp = document.getElementById(groupId);
   grp.querySelectorAll('.ir-chip').forEach(c => c.classList.remove('active'));
   btn.classList.add('active');
+  if (groupId === 'incType') updateIncidentInjuryVisibility();
 }
 
 function getChipValue(groupId) {
@@ -3676,6 +3677,125 @@ function getChipValue(groupId) {
 function setChipValue(groupId, val) {
   const grp = document.getElementById(groupId);
   grp.querySelectorAll('.ir-chip').forEach(c => c.classList.toggle('active', c.dataset.val === val));
+}
+
+// ===== KRMAS Member Injury Report — dojo prefill, injury-only sections, witnesses & signatures =====
+
+// Best-effort auto-fill of the dojo / event block from the current school.
+function incidentDojoDefaults() {
+  const school = (typeof KRMAS_SCHOOLS !== 'undefined' ? (KRMAS_SCHOOLS.find(s => s.id === state.schoolId) || {}) : {});
+  const contact = currentContact() || {};
+  return {
+    dojoName:     school.name || contact.locationLabel || '',
+    dlh:          contact.dlh || contact.principal || contact.headInstructor || '',
+    dojoPhone:    school.phone || contact.phone || '',
+    dojoEmail:    contact.adminEmail || contact.email || '',
+    dojoAddress:  school.address || contact.address || '',
+    dojoCity:     contact.city || contact.suburb || '',
+    dojoState:    contact.state || 'NSW',
+    dojoPostcode: contact.postcode || ''
+  };
+}
+
+// Show the full KRMAS Member Injury Report sections only when the type is "injury".
+function updateIncidentInjuryVisibility() {
+  const sec = document.getElementById('incInjurySections');
+  if (sec) sec.style.display = (getChipValue('incType') === 'injury') ? '' : 'none';
+}
+
+// ---- Witness statements: repeatable, each with a drawn signature ----
+function blankWitness() {
+  return { name:'', age:'', phone:'', email:'', time:'', date:'', location:'', activity:'', role:'', roleOther:'', statement:'', signature:'', signedDate:'' };
+}
+function addIncidentWitness() {
+  if (!Array.isArray(state.incidentWitnesses)) state.incidentWitnesses = [];
+  state.incidentWitnesses.push(blankWitness());
+  renderIncidentWitnesses();
+}
+function removeIncidentWitness(i) {
+  if (!Array.isArray(state.incidentWitnesses)) return;
+  state.incidentWitnesses.splice(i, 1);
+  renderIncidentWitnesses();
+}
+function updateWitnessField(i, field, val) {
+  if (state.incidentWitnesses && state.incidentWitnesses[i]) {
+    state.incidentWitnesses[i][field] = val;
+    if (field === 'role') renderIncidentWitnesses(); // reveal/hide "other role"
+  }
+}
+function clearWitnessSignature(i) {
+  if (state.incidentWitnesses && state.incidentWitnesses[i]) state.incidentWitnesses[i].signature = '';
+  const c = document.getElementById('incSig-' + i);
+  const ctx = c && c.getContext ? c.getContext('2d') : null;
+  if (ctx) ctx.clearRect(0, 0, c.width, c.height);
+}
+function renderIncidentWitnesses() {
+  const host = document.getElementById('incWitnessList');
+  if (!host) return;
+  const ws = Array.isArray(state.incidentWitnesses) ? state.incidentWitnesses : [];
+  if (!ws.length) {
+    host.innerHTML = `<p style="font-size:12px;color:var(--grey-500);margin:2px 0 8px;">No witness statements yet — add one for each staff member or instructor who witnessed the incident.</p>`;
+  } else {
+    host.innerHTML = ws.map((w, i) => `
+      <div class="ir-witness" style="border:1px solid var(--grey-200);border-radius:10px;padding:12px;margin-bottom:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <strong style="font-size:13px;">Witness ${i + 1}</strong>
+          <button class="btn btn-ghost" style="color:var(--red);padding:2px 8px;font-size:12px;" onclick="removeIncidentWitness(${i})">Remove</button>
+        </div>
+        <div class="form-grid-2">
+          <div class="form-row compact"><label>Full name</label><input type="text" value="${escapeHtml(w.name)}" oninput="updateWitnessField(${i},'name',this.value)"></div>
+          <div class="form-row compact"><label>Age at time</label><input type="number" min="0" max="120" value="${escapeHtml(w.age)}" oninput="updateWitnessField(${i},'age',this.value)"></div>
+        </div>
+        <div class="form-grid-2">
+          <div class="form-row compact"><label>Phone</label><input type="text" value="${escapeHtml(w.phone)}" oninput="updateWitnessField(${i},'phone',this.value)"></div>
+          <div class="form-row compact"><label>Email</label><input type="text" value="${escapeHtml(w.email)}" oninput="updateWitnessField(${i},'email',this.value)"></div>
+        </div>
+        <div class="form-grid-2">
+          <div class="form-row compact"><label>Incident time</label><input type="time" value="${escapeHtml(w.time)}" oninput="updateWitnessField(${i},'time',this.value)"></div>
+          <div class="form-row compact"><label>Date</label><input type="date" value="${escapeHtml(w.date)}" oninput="updateWitnessField(${i},'date',this.value)"></div>
+        </div>
+        <div class="form-row compact"><label>Location</label><input type="text" value="${escapeHtml(w.location)}" oninput="updateWitnessField(${i},'location',this.value)"></div>
+        <div class="form-row compact"><label>Activity</label><input type="text" value="${escapeHtml(w.activity)}" oninput="updateWitnessField(${i},'activity',this.value)"></div>
+        <div class="form-row compact">
+          <label>Role in the activity</label>
+          <select onchange="updateWitnessField(${i},'role',this.value)">
+            <option value=""${w.role === '' ? ' selected' : ''}>—</option>
+            <option value="instructor"${w.role === 'instructor' ? ' selected' : ''}>Instructor</option>
+            <option value="assistant"${w.role === 'assistant' ? ' selected' : ''}>Assistant instructor</option>
+            <option value="other"${w.role === 'other' ? ' selected' : ''}>Other</option>
+          </select>
+        </div>
+        <div class="form-row compact" style="${w.role === 'other' ? '' : 'display:none;'}"><label>Other role</label><input type="text" value="${escapeHtml(w.roleOther)}" oninput="updateWitnessField(${i},'roleOther',this.value)"></div>
+        <div class="form-row compact"><label>What I saw and heard</label><textarea rows="3" oninput="updateWitnessField(${i},'statement',this.value)">${escapeHtml(w.statement)}</textarea></div>
+        <div class="form-row compact">
+          <label>Signature <span style="color:var(--grey-400);font-weight:400;">— draw with finger or mouse</span></label>
+          <canvas id="incSig-${i}" width="600" height="150" style="width:100%;height:120px;border:1px dashed var(--grey-300);border-radius:8px;background:var(--white);touch-action:none;cursor:crosshair;"></canvas>
+          <div style="margin-top:4px;"><button class="btn btn-ghost" style="font-size:12px;padding:2px 8px;" onclick="clearWitnessSignature(${i})">Clear signature</button></div>
+        </div>
+        <div class="form-row compact"><label>Signed date</label><input type="date" value="${escapeHtml(w.signedDate)}" oninput="updateWitnessField(${i},'signedDate',this.value)"></div>
+        <p style="font-size:11px;color:var(--grey-500);margin:4px 0 0;">By signing, the witness confirms this is a correct and complete statement of what they witnessed.</p>
+      </div>`).join('');
+  }
+  ws.forEach((w, i) => bindSignaturePad(document.getElementById('incSig-' + i), i));
+}
+function bindSignaturePad(canvas, i) {
+  if (!canvas) return;
+  const ctx = canvas.getContext ? canvas.getContext('2d') : null;
+  if (!ctx) return;                       // jsdom / no canvas support: skip drawing
+  ctx.lineWidth = 2.2; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#15324f';
+  const wit = state.incidentWitnesses[i];
+  if (wit && wit.signature) { const img = new Image(); img.onload = () => ctx.drawImage(img, 0, 0, canvas.width, canvas.height); img.src = wit.signature; }
+  let drawing = false, lx = 0, ly = 0;
+  const pt = (e) => {
+    const r = canvas.getBoundingClientRect();
+    const cx = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
+    const cy = (e.touches ? e.touches[0].clientY : e.clientY) - r.top;
+    return [cx * (canvas.width / (r.width || 1)), cy * (canvas.height / (r.height || 1))];
+  };
+  const down = (e) => { e.preventDefault(); drawing = true; [lx, ly] = pt(e); };
+  const move = (e) => { if (!drawing) return; e.preventDefault(); const [x, y] = pt(e); ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(x, y); ctx.stroke(); [lx, ly] = [x, y]; };
+  const up = () => { if (!drawing) return; drawing = false; try { if (state.incidentWitnesses[i]) state.incidentWitnesses[i].signature = canvas.toDataURL('image/png'); } catch (e) {} };
+  canvas.onpointerdown = down; canvas.onpointermove = move; canvas.onpointerup = up; canvas.onpointerleave = up;
 }
 
 function openIncident(existingId, classContext) {
@@ -3725,6 +3845,60 @@ function openIncident(existingId, classContext) {
   document.getElementById('incActions').value           = existing?.actions || '';
   document.getElementById('incNotes').value             = existing?.notes || '';
 
+  // --- KRMAS Member Injury Report fields (shown when type = injury) ---
+  const dj = incidentDojoDefaults();
+  document.getElementById('incDojoName').value     = existing?.dojoName     ?? dj.dojoName;
+  document.getElementById('incDLH').value          = existing?.dlh          ?? dj.dlh;
+  document.getElementById('incDojoPhone').value    = existing?.dojoPhone    ?? dj.dojoPhone;
+  document.getElementById('incDojoEmail').value    = existing?.dojoEmail    ?? dj.dojoEmail;
+  document.getElementById('incDojoAddress').value  = existing?.dojoAddress  ?? dj.dojoAddress;
+  document.getElementById('incDojoCity').value     = existing?.dojoCity     ?? dj.dojoCity;
+  document.getElementById('incDojoState').value    = existing?.dojoState    ?? dj.dojoState;
+  document.getElementById('incDojoPostcode').value = existing?.dojoPostcode ?? dj.dojoPostcode;
+
+  document.getElementById('incMemberAddress').value  = existing?.memberAddress  || '';
+  document.getElementById('incMemberCity').value     = existing?.memberCity     || '';
+  document.getElementById('incMemberState').value    = existing?.memberState    || '';
+  document.getElementById('incMemberPostcode').value = existing?.memberPostcode || '';
+  document.getElementById('incMemberPhone').value    = existing?.memberPhone    || '';
+  document.getElementById('incMemberEmail').value    = existing?.memberEmail    || '';
+  document.getElementById('incFinancialMember').checked = !!existing?.financialMember;
+  document.getElementById('incMembershipNo').value   = existing?.membershipNo   || '';
+
+  document.getElementById('incPreExisting').checked      = !!existing?.preExisting;
+  document.getElementById('incPreExistingDetails').value = existing?.preExistingDetails || '';
+  document.getElementById('incFirstAiderName').value     = existing?.firstAiderName || '';
+
+  document.getElementById('incReportedByName').value  = existing?.reportedByName || '';
+  document.getElementById('incReportedToStaff').value = existing?.reportedToStaff || '';
+  setChipValue('incReportMethod', existing?.reportMethod || '');
+  document.getElementById('incReportMethodOther').value = existing?.reportMethodOther || '';
+  document.getElementById('incReportDate').value = existing?.reportDate || '';
+  document.getElementById('incReportTime').value = existing?.reportTime || '';
+
+  document.getElementById('incTreatVisitedHospital').checked   = !!existing?.treatVisitedHospital;
+  document.getElementById('incTreatVisitedHospitalName').value = existing?.treatVisitedHospitalName || '';
+  document.getElementById('incTreatVisitedHospitalDept').value = existing?.treatVisitedHospitalDept || '';
+  document.getElementById('incTreatAdmitted').checked      = !!existing?.treatAdmitted;
+  document.getElementById('incTreatAdmittedName').value    = existing?.treatAdmittedName || '';
+  document.getElementById('incTreatAdmittedDept').value    = existing?.treatAdmittedDept || '';
+  document.getElementById('incTreatDoctor').checked        = !!existing?.treatDoctor;
+  document.getElementById('incTreatDoctorName').value      = existing?.treatDoctorName || '';
+  document.getElementById('incTreatDoctorPractice').value  = existing?.treatDoctorPractice || '';
+  document.getElementById('incTreatPhysio').checked        = !!existing?.treatPhysio;
+  document.getElementById('incTreatPhysioName').value      = existing?.treatPhysioName || '';
+  document.getElementById('incTreatPhysioPractice').value  = existing?.treatPhysioPractice || '';
+  document.getElementById('incTreatOther').value = existing?.treatOther || '';
+  document.getElementById('incHealthStatus').value = existing?.healthStatus || '';
+  document.getElementById('incFollowUp').value = existing?.followUp || '';
+  document.getElementById('incMedCerts').value = existing?.medCerts || '';
+
+  state.incidentWitnesses = Array.isArray(existing?.witnessStatements)
+    ? existing.witnessStatements.map(w => ({ ...blankWitness(), ...w }))
+    : [];
+  renderIncidentWitnesses();
+  updateIncidentInjuryVisibility();
+
   openModal('modalIncident');
   const delBtn = document.getElementById('deleteIncidentBtn');
   if (delBtn) delBtn.style.display = (existingId && can.editIncidents()) ? 'block' : 'none';
@@ -3758,7 +3932,52 @@ function collectIncident() {
     escalated:          document.getElementById('incEscalated').checked,
     escalatedTo:        document.getElementById('incEscalatedTo').value,
     actions:            document.getElementById('incActions').value,
-    notes:              document.getElementById('incNotes').value
+    notes:              document.getElementById('incNotes').value,
+    // --- KRMAS Member Injury Report ---
+    dojoName:        document.getElementById('incDojoName').value,
+    dlh:             document.getElementById('incDLH').value,
+    dojoPhone:       document.getElementById('incDojoPhone').value,
+    dojoEmail:       document.getElementById('incDojoEmail').value,
+    dojoAddress:     document.getElementById('incDojoAddress').value,
+    dojoCity:        document.getElementById('incDojoCity').value,
+    dojoState:       document.getElementById('incDojoState').value,
+    dojoPostcode:    document.getElementById('incDojoPostcode').value,
+    memberAddress:   document.getElementById('incMemberAddress').value,
+    memberCity:      document.getElementById('incMemberCity').value,
+    memberState:     document.getElementById('incMemberState').value,
+    memberPostcode:  document.getElementById('incMemberPostcode').value,
+    memberPhone:     document.getElementById('incMemberPhone').value,
+    memberEmail:     document.getElementById('incMemberEmail').value,
+    financialMember: document.getElementById('incFinancialMember').checked,
+    membershipNo:    document.getElementById('incMembershipNo').value,
+    preExisting:        document.getElementById('incPreExisting').checked,
+    preExistingDetails: document.getElementById('incPreExistingDetails').value,
+    firstAiderName:     document.getElementById('incFirstAiderName').value,
+    reportedByName:   document.getElementById('incReportedByName').value,
+    reportedToStaff:  document.getElementById('incReportedToStaff').value,
+    reportMethod:     getChipValue('incReportMethod'),
+    reportMethodOther:document.getElementById('incReportMethodOther').value,
+    reportDate:       document.getElementById('incReportDate').value,
+    reportTime:       document.getElementById('incReportTime').value,
+    treatVisitedHospital:     document.getElementById('incTreatVisitedHospital').checked,
+    treatVisitedHospitalName: document.getElementById('incTreatVisitedHospitalName').value,
+    treatVisitedHospitalDept: document.getElementById('incTreatVisitedHospitalDept').value,
+    treatAdmitted:      document.getElementById('incTreatAdmitted').checked,
+    treatAdmittedName:  document.getElementById('incTreatAdmittedName').value,
+    treatAdmittedDept:  document.getElementById('incTreatAdmittedDept').value,
+    treatDoctor:        document.getElementById('incTreatDoctor').checked,
+    treatDoctorName:    document.getElementById('incTreatDoctorName').value,
+    treatDoctorPractice:document.getElementById('incTreatDoctorPractice').value,
+    treatPhysio:        document.getElementById('incTreatPhysio').checked,
+    treatPhysioName:    document.getElementById('incTreatPhysioName').value,
+    treatPhysioPractice:document.getElementById('incTreatPhysioPractice').value,
+    treatOther:      document.getElementById('incTreatOther').value,
+    healthStatus:    document.getElementById('incHealthStatus').value,
+    followUp:        document.getElementById('incFollowUp').value,
+    medCerts:        document.getElementById('incMedCerts').value,
+    witnessStatements: Array.isArray(state.incidentWitnesses)
+      ? state.incidentWitnesses.map(w => ({ ...w }))
+      : []
   };
 }
 
@@ -3908,41 +4127,172 @@ function formatIncidentHtml(inc) {
   const school = KRMAS_SCHOOLS.find(s => s.id === state.schoolId);
   const schoolName = school ? school.name : state.schoolId;
   const id = state.editingIncidentId || '(new)';
-  const cb = v => v ? '<strong style="color: #d62828;">Yes</strong>' : 'No';
-  const esc = s => s ? escapeHtml(s).replace(/\n/g, '<br>') : '—';
+  const cb  = v => v ? '<strong style="color:#d62828;">Yes</strong>' : 'No';
+  const esc = s => (s || s === 0) ? escapeHtml(String(s)).replace(/\n/g, '<br>') : '—';
+  const isInjury = inc.type === 'injury';
+  const row = (l, v) => `<div class="row"><div class="lbl">${l}</div><div>${v}</div></div>`;
+  const joinAddr = (a, c, st, pc) => {
+    const tail = [c, st, pc].filter(Boolean).map(x => escapeHtml(String(x))).join(' ');
+    return (a ? esc(a) : '') + (a && tail ? ', ' : '') + (tail || (a ? '' : '—'));
+  };
 
+  let body = '';
+  if (isInjury) {
+    const roleLabel = r => r === 'other' ? 'Other' : r === 'assistant' ? 'Assistant instructor' : r === 'instructor' ? 'Instructor' : '';
+    const methodLabel = ({ phone:'Phone', sms:'SMS', email:'Email', 'in-person':'In person',
+      other: 'Other' + (inc.reportMethodOther ? ' (' + escapeHtml(inc.reportMethodOther) + ')' : '') })[inc.reportMethod] || '—';
+    const medCertsLabel = inc.medCerts === 'attached' ? 'Attached' : inc.medCerts === 'not-available' ? 'Not available' : '—';
+    const treat = [];
+    if (inc.treatVisitedHospital) treat.push(`Visited hospital — ${esc(inc.treatVisitedHospitalName)}${inc.treatVisitedHospitalDept ? ' (Dept: ' + esc(inc.treatVisitedHospitalDept) + ')' : ''}`);
+    if (inc.treatAdmitted)        treat.push(`Admitted to hospital — ${esc(inc.treatAdmittedName)}${inc.treatAdmittedDept ? ' (Dept: ' + esc(inc.treatAdmittedDept) + ')' : ''}`);
+    if (inc.treatDoctor)          treat.push(`Doctor — ${esc(inc.treatDoctorName)}${inc.treatDoctorPractice ? ' (' + esc(inc.treatDoctorPractice) + ')' : ''}`);
+    if (inc.treatPhysio)          treat.push(`Physiotherapist — ${esc(inc.treatPhysioName)}${inc.treatPhysioPractice ? ' (' + esc(inc.treatPhysioPractice) + ')' : ''}`);
+    if (inc.treatOther)           treat.push(esc(inc.treatOther));
+
+    const witnesses = (inc.witnessStatements || []).map((w, n) => `
+      <div class="witness">
+        <div class="wtitle">Witness ${n + 1}</div>
+        ${row('Full name', esc(w.name))}
+        ${row('Age at time', esc(w.age))}
+        ${row('Phone', esc(w.phone))}
+        ${row('Email', esc(w.email))}
+        ${row('Incident time / date', `${esc(w.time)} ${w.date ? '· ' + esc(w.date) : ''}`)}
+        ${row('Location', esc(w.location))}
+        ${row('Activity', esc(w.activity))}
+        ${row('Role', esc(roleLabel(w.role) + (w.role === 'other' && w.roleOther ? ' — ' + w.roleOther : '')))}
+        ${row('What I saw and heard', esc(w.statement))}
+        <div class="declaration">"The information above is a correct and complete statement of what I witnessed of the incident."</div>
+        <div class="row"><div class="lbl">Signed</div><div>${w.signature ? `<img class="sig-img" src="${w.signature}" alt="signature">` : '<span class="sig-line"></span>'} &nbsp; Date: ${esc(w.signedDate)}</div></div>
+      </div>`).join('');
+
+    body = `
+      <section><h2>Dojo / event details</h2>
+        ${row('Dojo or event name', esc(inc.dojoName))}
+        ${row('Dojo Licence Holder / staff in charge', esc(inc.dlh))}
+        ${row('Dojo phone', esc(inc.dojoPhone))}
+        ${row('Dojo email', esc(inc.dojoEmail))}
+        ${row('Dojo address', joinAddr(inc.dojoAddress, inc.dojoCity, inc.dojoState, inc.dojoPostcode))}
+      </section>
+      <section><h2>Injured member details</h2>
+        ${row('Full name', esc(inc.personName))}
+        ${row('Age', esc(inc.personAge))}
+        ${row('Role', esc(inc.personRole))}
+        ${row('Parent / guardian', esc(inc.guardian))}
+        ${row('Address', joinAddr(inc.memberAddress, inc.memberCity, inc.memberState, inc.memberPostcode))}
+        ${row('Phone', esc(inc.memberPhone))}
+        ${row('Email', esc(inc.memberEmail))}
+        ${row('Current financial member', cb(inc.financialMember))}
+        ${row('Membership number', esc(inc.membershipNo))}
+      </section>
+      <section><h2>Incident summary</h2>
+        ${row('Date / time', `${esc(inc.date)} ${esc(inc.time)}`)}
+        ${row('Location', esc(inc.location))}
+        ${row('Class / activity', esc(inc.classContext))}
+        <div class="row"><div class="lbl">Brief description</div><div class="desc">${esc(inc.description)}</div></div>
+        ${row('Body part affected', esc(inc.bodyPart))}
+        ${row('Cause / contributing factors', esc(inc.cause))}
+        ${row('Injury already present before incident', cb(inc.preExisting))}
+        ${inc.preExisting ? row('Pre-existing details', esc(inc.preExistingDetails)) : ''}
+      </section>
+      <section><h2>First aid details</h2>
+        ${row('First aid provided', cb(inc.firstAid))}
+        ${row("First aider's full name", esc(inc.firstAiderName))}
+        ${row('What first aid was provided', esc(inc.firstAidDetails))}
+        ${row('Ambulance called', cb(inc.ambulance))}
+      </section>
+      <section><h2>Incident reporting details</h2>
+        ${row('Reported to KRMAS staff by', esc(inc.reportedByName))}
+        ${row('Reported to (staff member)', esc(inc.reportedToStaff))}
+        ${row('Report made by', methodLabel)}
+        ${row('Report date / time', `${esc(inc.reportDate)} ${esc(inc.reportTime)}`)}
+      </section>
+      <section><h2>Treatment, current status & medical follow-up</h2>
+        ${row('Treatment received', treat.length ? treat.join('<br>') : '—')}
+        ${row('Sent for further medical attention', cb(inc.medical))}
+        ${row('Current health status', esc(inc.healthStatus))}
+        ${row('Follow-up treatment recommended', esc(inc.followUp))}
+        ${row('Medical certificates / reports', medCertsLabel)}
+        ${row('Parent / guardian / next of kin notified', cb(inc.parentNotified))}
+        ${row('Returned to class', cb(inc.returnedToClass))}
+      </section>
+      ${(inc.witnessStatements && inc.witnessStatements.length) ? `<section><h2>Witness statements</h2>${witnesses}</section>` : ''}
+      <section><h2>Follow-up &amp; actions</h2>
+        ${row('Recorded in Dojo Incident Book', cb(inc.recordedDojoBook))}
+        ${row('Escalated', cb(inc.escalated))}
+        ${row('Escalated to', esc(inc.escalatedTo))}
+        ${row('Actions taken / prevention', esc(inc.actions))}
+        ${row('Additional notes', esc(inc.notes))}
+      </section>`;
+  } else {
+    body = `
+      <section><h2>Person involved</h2>
+        ${row('Full name', esc(inc.personName))}
+        ${row('Age', esc(inc.personAge))}
+        ${row('Role', esc(inc.personRole))}
+        ${row('Parent/guardian', esc(inc.guardian))}
+      </section>
+      <section><h2>What happened</h2>
+        <div class="desc">${esc(inc.description)}</div>
+        <div class="row" style="margin-top:10px;"><div class="lbl">Body part affected</div><div>${esc(inc.bodyPart)}</div></div>
+        ${row('Cause / contributing factors', esc(inc.cause))}
+      </section>
+      <section><h2>Response taken</h2>
+        ${row('First aid administered', cb(inc.firstAid))}
+        ${row('First aid details', esc(inc.firstAidDetails))}
+        ${row('Ambulance called', cb(inc.ambulance))}
+        ${row('Sent for medical attention', cb(inc.medical))}
+        ${row('Parent / guardian notified', cb(inc.parentNotified))}
+        ${row('Returned to class', cb(inc.returnedToClass))}
+      </section>
+      <section><h2>Witnesses &amp; instructors present</h2>
+        ${row('Other instructors present', esc(inc.instructorsPresent))}
+        ${row('Witnesses', esc(inc.witnesses))}
+      </section>
+      <section><h2>Follow-up</h2>
+        ${row('Recorded in Dojo Incident Book', cb(inc.recordedDojoBook))}
+        ${row('Escalated', cb(inc.escalated))}
+        ${row('Escalated to', esc(inc.escalatedTo))}
+        ${row('Actions taken / prevention', esc(inc.actions))}
+        ${row('Additional notes', esc(inc.notes))}
+      </section>`;
+  }
+
+  const title = isInjury ? 'KRMAS Member Injury Report' : 'KRMAS Incident Report';
   return `<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
-<title>KRMAS Incident Report — ${id}</title>
+<title>${title} — ${id}</title>
 <style>
   body { font-family: 'Helvetica Neue', Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 30px; color: #1a1a1a; line-height: 1.5; }
   .header { border-bottom: 4px solid #d62828; padding-bottom: 16px; margin-bottom: 24px; }
-  .header h1 { font-family: 'Arial Black', sans-serif; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px; font-size: 26px; }
+  .header h1 { font-family: 'Arial Black', sans-serif; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px; font-size: 24px; }
   .header .sub { font-size: 12px; color: #555; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+  .conf { font-size: 10px; color: #d62828; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 6px; }
   .meta-grid { display: grid; grid-template-columns: 120px 1fr; gap: 4px 16px; font-size: 13px; margin-bottom: 24px; padding: 14px; background: #f5f5f3; border-left: 4px solid #d62828; }
   .meta-grid .lbl { color: #555; text-transform: uppercase; letter-spacing: 0.05em; font-size: 10px; font-weight: 700; padding-top: 2px; }
   section { margin-bottom: 20px; page-break-inside: avoid; }
   h2 { font-family: 'Arial Black', sans-serif; text-transform: uppercase; letter-spacing: 0.05em; font-size: 12px; color: #d62828; border-bottom: 1px solid #d8d6d2; padding-bottom: 4px; margin-bottom: 10px; }
-  .row { display: grid; grid-template-columns: 200px 1fr; gap: 6px 16px; font-size: 13px; padding: 4px 0; }
+  .row { display: grid; grid-template-columns: 220px 1fr; gap: 6px 16px; font-size: 13px; padding: 4px 0; }
   .row .lbl { color: #555; font-weight: 600; }
   .severity { display: inline-block; padding: 3px 10px; border-radius: 3px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: white; }
-  .severity-low { background: #4a7a52; }
-  .severity-medium { background: #d48a1a; }
-  .severity-high { background: #d62828; }
+  .severity-low { background: #4a7a52; } .severity-medium { background: #d48a1a; } .severity-high { background: #d62828; }
   .desc { background: #f9f9f8; padding: 10px 12px; border-left: 3px solid #d8d6d2; font-size: 13px; white-space: pre-wrap; border-radius: 2px; }
-  .sig { margin-top: 36px; padding-top: 16px; border-top: 1px solid #d8d6d2; font-size: 12px; }
-  .sig-line { display: inline-block; border-bottom: 1px solid #1a1a1a; min-width: 240px; height: 36px; vertical-align: bottom; margin-right: 16px; }
+  .witness { border: 1px solid #d8d6d2; border-radius: 6px; padding: 12px 14px; margin-bottom: 12px; page-break-inside: avoid; }
+  .wtitle { font-weight: 700; font-size: 12px; margin-bottom: 6px; }
+  .declaration { font-style: italic; font-size: 12px; color: #555; margin: 8px 0 6px; }
+  .sig-img { max-height: 70px; max-width: 280px; border-bottom: 1px solid #1a1a1a; vertical-align: bottom; }
+  .sig-line { display: inline-block; border-bottom: 1px solid #1a1a1a; min-width: 220px; height: 30px; vertical-align: bottom; }
+  .sig { margin-top: 32px; padding-top: 16px; border-top: 1px solid #d8d6d2; font-size: 12px; }
+  .sig .sig-line { min-width: 240px; height: 36px; margin-right: 16px; }
   footer { margin-top: 28px; padding-top: 12px; border-top: 1px solid #d8d6d2; font-size: 10px; color: #888; text-align: center; }
   @media print { body { padding: 14mm; } @page { size: A4; margin: 0; } }
 </style>
 </head>
 <body>
-
+<div class="conf">KRMAS Staff-in-Confidence</div>
 <div class="header">
-  <h1>KRMAS Incident Report</h1>
+  <h1>${title}</h1>
   <div class="sub">${escapeHtml(schoolName)} · Report ID ${id}</div>
 </div>
-
 <div class="meta-grid">
   <div class="lbl">Date</div><div>${esc(inc.date)}</div>
   <div class="lbl">Time</div><div>${esc(inc.time)}</div>
@@ -3952,54 +4302,12 @@ function formatIncidentHtml(inc) {
   <div class="lbl">Severity</div><div><span class="severity severity-${inc.severity}">${esc(inc.severity)}</span></div>
   <div class="lbl">Type</div><div>${esc(inc.type)}</div>
 </div>
-
-<section>
-  <h2>Person involved</h2>
-  <div class="row"><div class="lbl">Full name</div><div>${esc(inc.personName)}</div></div>
-  <div class="row"><div class="lbl">Age</div><div>${esc(inc.personAge)}</div></div>
-  <div class="row"><div class="lbl">Role</div><div>${esc(inc.personRole)}</div></div>
-  <div class="row"><div class="lbl">Parent/guardian</div><div>${esc(inc.guardian)}</div></div>
-</section>
-
-<section>
-  <h2>What happened</h2>
-  <div class="desc">${esc(inc.description)}</div>
-  <div class="row" style="margin-top: 10px;"><div class="lbl">Body part affected</div><div>${esc(inc.bodyPart)}</div></div>
-  <div class="row"><div class="lbl">Cause / contributing factors</div><div>${esc(inc.cause)}</div></div>
-</section>
-
-<section>
-  <h2>Response taken</h2>
-  <div class="row"><div class="lbl">First aid administered</div><div>${cb(inc.firstAid)}</div></div>
-  <div class="row"><div class="lbl">First aid details</div><div>${esc(inc.firstAidDetails)}</div></div>
-  <div class="row"><div class="lbl">Ambulance called</div><div>${cb(inc.ambulance)}</div></div>
-  <div class="row"><div class="lbl">Sent for medical attention</div><div>${cb(inc.medical)}</div></div>
-  <div class="row"><div class="lbl">Parent / guardian notified</div><div>${cb(inc.parentNotified)}</div></div>
-  <div class="row"><div class="lbl">Returned to class</div><div>${cb(inc.returnedToClass)}</div></div>
-</section>
-
-<section>
-  <h2>Witnesses & instructors present</h2>
-  <div class="row"><div class="lbl">Other instructors present</div><div>${esc(inc.instructorsPresent)}</div></div>
-  <div class="row"><div class="lbl">Witnesses</div><div>${esc(inc.witnesses)}</div></div>
-</section>
-
-<section>
-  <h2>Follow-up</h2>
-  <div class="row"><div class="lbl">Recorded in Dojo Incident Book</div><div>${cb(inc.recordedDojoBook)}</div></div>
-  <div class="row"><div class="lbl">Escalated</div><div>${cb(inc.escalated)}</div></div>
-  <div class="row"><div class="lbl">Escalated to</div><div>${esc(inc.escalatedTo)}</div></div>
-  <div class="row"><div class="lbl">Actions taken / prevention</div><div>${esc(inc.actions)}</div></div>
-  <div class="row"><div class="lbl">Additional notes</div><div>${esc(inc.notes)}</div></div>
-</section>
-
+${body}
 <div class="sig">
-  <div>Instructor signature: <span class="sig-line"></span> Date: <span class="sig-line" style="min-width: 120px;"></span></div>
-  <div style="margin-top: 12px;">Senior review:        <span class="sig-line"></span> Date: <span class="sig-line" style="min-width: 120px;"></span></div>
+  <div>Completed by: <span class="sig-line"></span> Date: <span class="sig-line" style="min-width:120px;"></span></div>
+  <div style="margin-top:12px;">Senior review: <span class="sig-line"></span> Date: <span class="sig-line" style="min-width:120px;"></span></div>
 </div>
-
 <footer>Generated by KRMAS Roster app · ${new Date().toLocaleString()}</footer>
-
 </body></html>`;
 }
 
