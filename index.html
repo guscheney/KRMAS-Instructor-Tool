@@ -2832,14 +2832,14 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '82';
+  window.KRMAS_APP_VERSION = '83';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
 </script>
-<script src="data.js?v=82"></script>
-<script src="db.js?v=82"></script>
-<script src="app.js?v=82"></script>
+<script src="data.js?v=83"></script>
+<script src="db.js?v=83"></script>
+<script src="app.js?v=83"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

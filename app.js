@@ -127,10 +127,10 @@ const DEFAULT_PERMS = {
   instructor: { feed:{view:1,add:1}, notices:{view:1}, calendar:{view:1}, documents:{view:1},
     compliance:{view:1}, students:{view:1,add:1,edit:1}, incidents:{view:1,add:1},
     grading:{view:1}, groups:{view:1}, roster:{view:1},
-    'lesson-plans':{view:1,edit:1,delete:1}, 'roster-edits':{view:1,edit:1} },
+    'lesson-plans':{view:1,add:1,edit:1,delete:1}, 'roster-edits':{view:1,edit:1} },
   junior: { feed:{view:1,add:1}, notices:{view:1}, calendar:{view:1}, documents:{view:1},
     students:{add:1,edit:1}, incidents:{add:1}, groups:{view:1}, roster:{view:1},
-    'lesson-plans':{view:1,edit:1}, 'roster-edits':{view:1,edit:1} },
+    'lesson-plans':{view:1,add:1,edit:1}, 'roster-edits':{view:1,edit:1} },
 };
 // Client mirror of the SQL has_perm(section, action). Drives which buttons show; the
 // database enforces the same logic for real.
@@ -161,7 +161,8 @@ const can = {
   manageQuickLinks:  () => hasRole('admin'),  // admins (own school) + superadmins (any/network)
   editPlans:         () => hasRole('junior'),       // general content edit (students/progressions)
   viewPlans:         () => hasPerm('lesson-plans','view'),
-  editLessonPlans:   () => hasPerm('lesson-plans','edit'),
+  addLessonPlans:    () => hasPerm('lesson-plans','add'),    // create a NEW lesson plan
+  editLessonPlans:   () => hasPerm('lesson-plans','edit'),   // modify an existing plan
   deletePlans:       () => hasPerm('lesson-plans','delete'),
   viewIncidents:     () => hasPerm('incidents','view'),
   fileIncidents:     () => hasPerm('incidents','add'),
@@ -297,15 +298,30 @@ function goToRosterDate(iso) {
 // ---------- Plan edit permission (change 2) ----------
 // Network-shared plans: superadmin only. Grading plans: grading managers.
 // Otherwise editable by roster admins OR the instructors rostered on that class.
+// Admins may write any class's plan; instructors/juniors only their OWN rostered classes
+// (lead / assist / junior / backup). Grading keys are handled by callers before this is reached.
+function planClassIsMine(dateKey) {
+  if (can.editRoster()) return true;            // admins + superadmins: any class
+  const c = classForDateKey(dateKey);
+  return !!c && isMyClass(c);
+}
+// Create a NEW lesson plan for this class (gated by the matrix "Lesson plans → add" tick box).
+function canAddPlan(dateKey) {
+  if (!state.user) return false;
+  if (typeof dateKey === 'string' && dateKey.startsWith('grading-')) return can.manageGrading();
+  return can.addLessonPlans() && planClassIsMine(dateKey);
+}
+// Edit an EXISTING lesson plan (gated by "Lesson plans → edit").
 function canEditPlan(dateKey) {
   if (!state.user) return false;
   const p = state.plans[dateKey];
   if (p && p.shared) return can.switchAnySchool();
   if (typeof dateKey === 'string' && dateKey.startsWith('grading-')) return can.manageGrading();
-  // Regular per-class lesson plan: the "Lesson plans → edit" permission governs (matrix/defaults).
-  // We no longer additionally require the editor to be rostered on that specific class — server-side
-  // these live in kv_store gated by rank, so anyone the matrix grants the permission may author them.
-  return can.editLessonPlans();
+  return can.editLessonPlans() && planClassIsMine(dateKey);
+}
+// Writing a plan = create when none exists yet, else edit. Used by the editor chrome + save.
+function canWritePlan(dateKey) {
+  return state.plans[dateKey] ? canEditPlan(dateKey) : canAddPlan(dateKey);
 }
 
 // ---------- School data accessor ----------
@@ -1368,7 +1384,12 @@ function renderCardDetail(c) {
   const canVolunteer = needsCover && can.volunteerCover();
   const canCover = can.markNeedsCover();
   html += `<div class="detail-actions">
-    ${can.editLessonPlans() ? `<button class="btn btn-black" onclick="event.stopPropagation(); openPlan('${c.dateKey}')">${c.plan ? 'Edit lesson plan' : 'Create lesson plan'}</button>` : ''}
+    ${(() => {
+      if (!c.plan) return canAddPlan(c.dateKey) ? `<button class="btn btn-black" onclick="event.stopPropagation(); openPlan('${c.dateKey}')">Create lesson plan</button>` : '';
+      if (canEditPlan(c.dateKey)) return `<button class="btn btn-black" onclick="event.stopPropagation(); openPlan('${c.dateKey}')">Edit lesson plan</button>`;
+      if (can.viewPlans()) return `<button class="btn btn-light" onclick="event.stopPropagation(); openPlan('${c.dateKey}')">View lesson plan</button>`;
+      return '';
+    })()}
     ${can.editRoster() ? `<button class="btn" onclick="event.stopPropagation(); openEdit('${c.dateKey}')">Edit roster</button>` : ''}
     ${canVolunteer
       ? `<button class="btn btn-primary" onclick="event.stopPropagation(); volunteerToCover('${c.dateKey}')">Volunteer to cover</button>`
@@ -3398,7 +3419,7 @@ function openPlan(dateKey) {
 // Shared chrome for the plan editor — read-only state, share toggle, delete visibility.
 // Used by both the roster lesson plan (openPlan) and the grading lesson plan (openGradingPlan).
 function applyPlanEditorChrome(key, existing) {
-  const editable = canEditPlan(key);
+  const editable = canWritePlan(key);
   const isGrading = typeof key === 'string' && key.startsWith('grading-');
   const planFieldIds = ['planDate','planTerm','planWeek','planLocation','planInstructor','planAssist',
     'planJunior','planTheme','planObjective','planNotices','planWarmup','planTechniques','planCooldown',
@@ -3500,7 +3521,7 @@ function fillFromTopic() {
 async function savePlan(status) {
   const dateKey = state.planningKey;
   if (!dateKey) return;
-  if (!canEditPlan(dateKey)) { alert("You don't have permission to edit lesson plans."); return; }
+  if (!canWritePlan(dateKey)) { alert("You don't have permission to edit lesson plans for this class."); return; }
 
   const isGrading = dateKey.startsWith('grading-');
   let c = null;
@@ -11063,7 +11084,7 @@ const MATRIX_SECTIONS = [
   { key:'compliance', label:'Compliance',        actions:['view','add','edit','delete'] },
   { key:'groups',     label:'Groups',            actions:['view','add','edit','delete'] },
   { key:'grading',      label:'Grading',         actions:['view','edit'] },
-  { key:'lesson-plans', label:'Lesson plans',    actions:['view','edit','delete'] },
+  { key:'lesson-plans', label:'Lesson plans',    actions:['view','add','edit','delete'] },
   { key:'roster',       label:'Roster view',     actions:['view'] },
 ];
 const STRUCTURAL_DISPLAY = [
