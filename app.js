@@ -653,11 +653,16 @@ function classForDateKey(dateKey) {
 }
 
 function rosterForDay(date) {
-  if (closureForDate(date)) return []; // school shut (public holiday / shutdown period)
+  const ovr = dayOverrideFor(date);
+  if (closureForDate(date)) {
+    // A grading / special override deliberately scheduled on a closed day still runs — it
+    // "opens" the day just for those classes. A closed day with no override runs nothing.
+    if (!ovr || !Array.isArray(ovr.slots) || !ovr.slots.length) return [];
+    return ovr.slots.map(s => buildOverrideClass(s, date, ovr)).filter(Boolean).sort((a, b) => a.start.localeCompare(b.start));
+  }
   const dow = date.getDay();
   const schedule = currentSchedule();
   const defaults = currentDefaults();
-  const ovr = dayOverrideFor(date);
   const classes = (ovr && ovr.replaceNormal) ? [] : schedule.filter(c => c.day === dow);
   const normalObjs = classes.map(c => {
     // Apply admin class-type override if one exists for this label
@@ -916,12 +921,9 @@ async function syncOverrideFromEvent(ev) {
       existing.label = ev.title || (kind === 'grading' ? 'Grading' : 'Special');
       existing.kind = kind;
     } else if (!o.overrides[iso]) {
-      let slots;
-      if (kind === 'grading') {
-        slots = buildGradingSlots(iso, ev.schoolId);
-      } else {
-        slots = [{ id: newOvrId('OS'), start: '17:00', end: '18:00', type: defaultClassType(), label: null, areaId: null }];
-      }
+      // Both grading and special start with a single blank slot the admin staffs/edits —
+      // grading no longer auto-seeds every normal class.
+      const slots = [{ id: newOvrId(kind === 'grading' ? 'GR' : 'OS'), start: '17:00', end: '18:00', type: defaultClassType(), label: null, areaId: null }];
       const label = ev.title || (kind === 'grading' ? gradingDayLabel(iso, 'Grading') : 'Special');
       o.overrides[iso] = { kind, label, replaceNormal: kind === 'grading', slots, gradingId: kind === 'grading' ? findGradingSessionForDate(iso) : null, eventId: ev.id };
     }
@@ -995,11 +997,18 @@ function renderDayOverride() {
   const tEl = document.getElementById('dayOverrideTitle'); if (tEl) tEl.textContent = formatDate(date);
   const closure = closureForDate(date, sid);
 
-  if (closure) {
-    body.innerHTML = `<div style="font-size:13px;color:var(--grey-500);margin-bottom:12px;line-height:1.5;">This day is part of a closure: <strong>${escapeHtml(closure.label || 'Closed')}</strong>${closure.from !== closure.to ? ' (' + fmtIsoNice(closure.from) + ' \u2192 ' + fmtIsoNice(closure.to) + ')' : ''}. No classes run.</div>
+  if (closure && !state._ovrDraft) {
+    body.innerHTML = `<div style="font-size:13px;color:var(--grey-500);margin-bottom:12px;line-height:1.5;">This day is part of a closure: <strong>${escapeHtml(closure.label || 'Closed')}</strong>${closure.from !== closure.to ? ' (' + fmtIsoNice(closure.from) + ' \u2192 ' + fmtIsoNice(closure.to) + ')' : ''}. No regular classes run.</div>
       ${closure.from === closure.to
         ? `<button class="btn" style="width:100%;" onclick="reopenSingleDay()">Reopen this day</button>`
-        : `<button class="btn" style="width:100%;" onclick="closeModal('modalDayOverride');openClosuresAdmin()">Manage in Closures \u2192</button>`}`;
+        : `<button class="btn" style="width:100%;" onclick="closeModal('modalDayOverride');openClosuresAdmin()">Manage in Closures \u2192</button>`}
+      <div style="margin-top:14px;padding-top:12px;border-top:2px solid var(--grey-200);">
+        <div style="font-size:12px;color:var(--grey-500);margin-bottom:8px;line-height:1.5;">Need to run a one-off session on this closed day (e.g. a grading or a workshop)? You can still schedule it \u2014 only these classes will run.</div>
+        <div style="display:grid;gap:8px;">
+          <button class="btn" onclick="startSpecialDay()">\u2728 Add special class(es)</button>
+          <button class="btn btn-primary" onclick="startGradingDay()">\ud83e\udd4b Make this a grading day</button>
+        </div>
+      </div>`;
     return;
   }
 
@@ -1025,7 +1034,9 @@ function renderDayOverride() {
   const areas = schoolAreas(sid);
   const ist = "padding:5px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;";
 
-  let html = `<div style="font-size:12px;color:var(--grey-500);margin-bottom:8px;line-height:1.5;">${isGrading ? '\ud83e\udd4b Grading day' : '\u2728 Special classes'} \u2014 define the classes, Save, then staff each one from the roster (tap the class \u2192 Edit roster).</div>`;
+  let html = `<div style="font-size:12px;color:var(--grey-500);margin-bottom:8px;line-height:1.5;">${isGrading ? '\ud83e\udd4b Grading day' : '\u2728 Special classes'} \u2014 name it, define the classes, Save, then staff each one from the roster (tap the class \u2192 Edit roster).</div>`;
+  html += `<label style="display:block;font-size:12px;color:var(--grey-500);margin-bottom:3px;">Event name <span style="color:var(--grey-400);">(shown on the calendar)</span></label>
+    <input id="ovrLabel" value="${escapeHtml(d.label || '')}" placeholder="${isGrading ? 'e.g. Yellow belt grading' : 'e.g. Holiday workshop'}" oninput="syncOvrDraftFromDOM()" style="width:100%;padding:7px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;margin-bottom:10px;box-sizing:border-box;">`;
   html += `<label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:10px;cursor:pointer;"><input type="checkbox" id="ovrReplace" ${d.replaceNormal ? 'checked' : ''} onchange="syncOvrDraftFromDOM()"> Replace the normal timetable for this day</label>`;
   html += (d.slots || []).map(s => {
     const typeSel = `<select id="os-type-${s.id}" style="${ist}flex:1;min-width:80px;">` + Object.entries(CLASS_TYPES).map(([k, m]) => `<option value="${k}" ${k === s.type ? 'selected' : ''}>${escapeHtml(m.name)}</option>`).join('') + `</select>`;
@@ -1039,7 +1050,7 @@ function renderDayOverride() {
   }).join('');
   html += `<div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap;">
     <button class="btn btn-sm" onclick="addOverrideSlot()">+ Add class</button>
-    ${isGrading ? `<button class="btn btn-sm" onclick="seedGradingFromClasses()">\u21bb Re-seed from normal classes</button>` : ''}
+    ${isGrading ? `<button class="btn btn-sm" onclick="seedGradingFromClasses()">\u21bb Use normal classes</button>` : ''}
   </div>`;
   html += `<div style="display:flex;gap:6px;margin-top:14px;padding-top:12px;border-top:2px solid var(--grey-200);">
     <button class="btn btn-primary" style="flex:1;" onclick="saveDayOverride()">Save</button>
@@ -1049,7 +1060,9 @@ function renderDayOverride() {
 }
 
 function syncOvrDraftFromDOM() {
-  const d = state._ovrDraft; if (!d || !Array.isArray(d.slots)) return;
+  const d = state._ovrDraft; if (!d) return;
+  const lb = document.getElementById('ovrLabel'); if (lb) d.label = lb.value;
+  if (!Array.isArray(d.slots)) return;
   for (const s of d.slots) {
     const st = document.getElementById('os-start-' + s.id); if (st) s.start = st.value;
     const en = document.getElementById('os-end-' + s.id); if (en) s.end = en.value;
@@ -1059,12 +1072,16 @@ function syncOvrDraftFromDOM() {
   const rep = document.getElementById('ovrReplace'); if (rep) d.replaceNormal = rep.checked;
 }
 function startSpecialDay() {
-  state._ovrDraft = { kind: 'special', label: 'Special', replaceNormal: false, slots: [], gradingId: null };
+  state._ovrDraft = { kind: 'special', label: '', replaceNormal: false, slots: [], gradingId: null };
+  renderDayOverride(); // paint the fresh (empty) editor so addOverrideSlot doesn't read a stale name/checkbox
   addOverrideSlot();
 }
 function startGradingDay() {
-  state._ovrDraft = { kind: 'grading', label: 'Grading', replaceNormal: true, slots: [], gradingId: findGradingSessionForDate(state._ovrDate) };
-  seedGradingFromClasses();
+  // Start blank — the admin adds the grading class(es) themselves (use "Use normal
+  // classes" to seed them from the timetable if wanted).
+  state._ovrDraft = { kind: 'grading', label: gradingDayLabel(state._ovrDate, 'Grading'), replaceNormal: true, slots: [], gradingId: findGradingSessionForDate(state._ovrDate) };
+  renderDayOverride();
+  addOverrideSlot();
 }
 function seedGradingFromClasses() {
   const d = state._ovrDraft; if (!d) return;
@@ -1096,6 +1113,13 @@ async function saveDayOverride() {
   }
   const o = ensureOverrideStores(sid);
   const prev = o.overrides[state._ovrDate];
+  // If the day already has scheduled classes, ask whether this override replaces them.
+  const dow = new Date(state._ovrDate + 'T00:00:00').getDay();
+  const onClosure = !!closureForDate(new Date(state._ovrDate + 'T00:00:00'), sid);
+  const normalCount = onClosure ? 0 : currentSchedule().filter(c => c.day === dow).length;
+  if (normalCount > 0) {
+    d.replaceNormal = confirm(`This day already has ${normalCount} scheduled class${normalCount === 1 ? '' : 'es'}.\n\nOK \u2014 replace them with this ${d.kind === 'grading' ? 'grading day' : 'special session'}.\nCancel \u2014 keep them and add these alongside.`);
+  }
   const ovr = { kind: d.kind, label: d.label, replaceNormal: !!d.replaceNormal, slots: d.slots, gradingId: d.gradingId || null, eventId: (prev && prev.eventId) || null };
   o.overrides[state._ovrDate] = ovr;
   if (d.kind === 'grading' || d.kind === 'special') {
@@ -4029,6 +4053,7 @@ async function saveIncident() {
   }
   const id = state.editingIncidentId || ('INC-' + Date.now().toString(36).toUpperCase());
   const existing = state.incidents[id];
+  const isNew = !existing;
   state.incidents[id] = {
     ...inc,
     id,
@@ -4039,10 +4064,20 @@ async function saveIncident() {
     updatedBy: state.user ? state.user.name : 'unknown'
   };
   await saveIncidents();
+  // New incident → notify the school's admin(s) with a review action (same actions system
+  // as audits). Best-effort: the incident is saved regardless of whether this succeeds.
+  if (isNew) {
+    const summary = `Review incident report: ${inc.type || 'incident'} \u2014 ${inc.personName || 'unknown'}${inc.date ? ' (' + inc.date + ')' : ''}`;
+    try {
+      const res = await DB.audits.createIncidentReviewAction(state.schoolId, id, summary);
+      if (res && res.error) console.warn('incident review action:', res.error);
+      else { state.auditData = null; state.auditSignals = null; }
+    } catch (e) { console.warn('incident review action:', e && e.message); }
+  }
   closeModal('modalIncident');
   if (state.view === 'incidents') renderIncidents();
   else if (state.view === 'roster') renderDay();
-  alert('Incident saved · ID: ' + id);
+  alert('Incident saved \u00b7 ID: ' + id + (isNew ? '\nThe school admin has been assigned a review action.' : ''));
 }
 
 async function deleteIncident() {
@@ -13209,6 +13244,9 @@ function shopStockSkeletonHtml() {
 }
 function setShopView(v) {
   state.shopView = v; state.shopEdit = null; renderShop();
+  if (v === 'special') {
+    DB.specialOrders.list(state.shopStockSchool).then(o => { state.specialOrders = o || []; if (state.shopView === 'special') renderShop(); }).catch(() => {});
+  }
   if (v === 'transfers' && can.manageShop()) {
     DB.loadTransfers(60).then(t => { state.shopTransfers = t; if (state.shopView === 'transfers') renderShop(); }).catch(() => {});
   }
@@ -13270,7 +13308,7 @@ function renderShop() {
   if (!can.seeShop()) { main.innerHTML = '<div class="empty"><h2>No access</h2><p>The shop is for shop admins and school admins.</p></div>'; return; }
   if (!state.shopStockSchool) state.shopStockSchool = state.schoolId || (state.userSchools || [])[0] || null;
 
-  const tabs = [{ id: 'stock', label: 'Stock' }, { id: 'reorder', label: 'Reorder list' }, { id: 'stocktake', label: 'Stocktake' }, { id: 'value', label: 'Value' }];
+  const tabs = [{ id: 'stock', label: 'Stock' }, { id: 'reorder', label: 'Reorder list' }, { id: 'special', label: 'Special orders' }, { id: 'stocktake', label: 'Stocktake' }, { id: 'value', label: 'Value' }];
   if (can.manageShop()) { tabs.push({ id: 'transfers', label: 'Transfers' }); tabs.push({ id: 'catalogue', label: 'Catalogue' }); tabs.push({ id: 'suppliers', label: 'Suppliers' }); }
   if (!tabs.find(t => t.id === state.shopView)) state.shopView = 'stock';
 
@@ -13280,6 +13318,7 @@ function renderShop() {
 
   if      (state.shopView === 'stock')     html += renderShopStock();
   else if (state.shopView === 'reorder')   html += renderShopReorder();
+  else if (state.shopView === 'special')   html += renderShopSpecial();
   else if (state.shopView === 'stocktake') html += renderShopStocktake();
   else if (state.shopView === 'value')     html += renderShopValue();
   else if (state.shopView === 'transfers') html += renderShopTransfers();
@@ -13605,19 +13644,26 @@ function renderShopReorder() {
     }
   }
   if (!lines.length) { html += `<div class="empty"><h2>Nothing to reorder</h2><p>Everything is above its reorder level.</p></div>`; return html; }
-  html += `<div style="margin:0 0 10px;"><button class="btn" onclick="shopPrint('order')" style="padding:6px 12px;font-size:12px;">🖨 Print order</button></div>`;
 
   // group by supplier
   const bySup = {};
   for (const l of lines) { const k = l.supplierId || '_none'; (bySup[k] = bySup[k] || []).push(l); }
-  const order = Object.keys(bySup).sort((a, b) => {
-    const an = a === '_none' ? 'zzz' : (shopSupplier(a) ? shopSupplier(a).name : 'zzz');
-    const bn = b === '_none' ? 'zzz' : (shopSupplier(b) ? shopSupplier(b).name : 'zzz');
-    return an.localeCompare(bn);
-  });
+  const supLabel = k => k === '_none' ? 'No supplier set' : (shopSupplier(k) ? shopSupplier(k).name : 'No supplier set');
+  const order = Object.keys(bySup).sort((a, b) => supLabel(a).localeCompare(supLabel(b)));
+  const filt = state.shopReorderSupplier || 'all';
+  const shown = (filt === 'all') ? order : order.filter(k => k === filt);
+
+  // Controls: filter by supplier + print/save-as-PDF (the print sheet respects the filter).
+  html += `<div style="margin:0 0 12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+    <select onchange="setShopReorderSupplier(this.value)" style="padding:6px 10px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;background:var(--white);">
+      <option value="all">All suppliers</option>
+      ${order.map(k => `<option value="${escapeHtml(k)}" ${filt === k ? 'selected' : ''}>${escapeHtml(supLabel(k))}</option>`).join('')}
+    </select>
+    <button class="btn" onclick="shopPrint('order')" style="padding:6px 12px;font-size:12px;">\u{1F5A8} Print / Save as PDF</button>
+  </div>`;
 
   let idx = 0;
-  for (const k of order) {
+  for (const k of shown) {
     const sup = k === '_none' ? null : shopSupplier(k);
     const supName = sup ? sup.name : 'No supplier set';
     const blockId = 'reorder-block-' + (idx++);
@@ -13626,6 +13672,7 @@ function renderShopReorder() {
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;">
         <strong style="font-size:14px;">${escapeHtml(supName)}</strong>
         <span style="display:flex;gap:6px;">
+          <button class="btn" onclick="shopEmailReorder('${k}')" style="padding:5px 10px;font-size:12px;">\u2709 Email</button>
           <button class="btn" onclick="shopCopyReorder('${blockId}')" style="padding:5px 10px;font-size:12px;">Copy</button>
           <button class="btn" onclick="shopExportReorderCsv('${k}')" style="padding:5px 10px;font-size:12px;">CSV</button>
         </span>
@@ -13663,6 +13710,156 @@ function shopExportReorderCsv(supKey) {
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+function setShopReorderSupplier(v) { state.shopReorderSupplier = v; renderShop(); }
+// Email a supplier their reorder via the device's mail app (mailto — same approach the
+// app uses elsewhere; no third-party mail integration). Pre-fills the supplier's email
+// if we have one, otherwise leaves the To: blank for the user to complete.
+function shopEmailReorder(supKey) {
+  const sid = state.shopStockSchool;
+  const sup = supKey === '_none' ? null : shopSupplier(supKey);
+  const lines = shopReorderLines(sid).filter(l => (l.supplierId || '_none') === supKey);
+  if (!lines.length) { if (typeof toast === 'function') toast('Nothing to order for this supplier'); return; }
+  const school = shopSchoolName(sid);
+  const itemsTxt = lines.map(l => {
+    const sizeTxt = l.size ? ' \u2014 size ' + l.size : '';
+    const qtyTxt = l.orderQty > 0 ? String(l.orderQty) : 'TBC';
+    return `\u2022 ${l.itemName}${sizeTxt} \u2014 qty ${qtyTxt}  (have ${l.qty}, reorder at ${l.reorderLevel})`;
+  }).join('\n');
+  const subject = `Stock order \u2014 ${school}${sup ? ' \u2014 ' + sup.name : ''}`;
+  const body = `Hi${sup ? ' ' + sup.name : ''},\n\nCould we please order the following for ${school}:\n\n${itemsTxt}\n\nThanks.`;
+  const to = (sup && sup.contactEmail) ? sup.contactEmail : '';
+  const mailto = `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  const a2 = document.createElement('a'); a2.href = mailto; document.body.appendChild(a2); a2.click(); document.body.removeChild(a2);
+}
+
+// ── Special orders (custom one-off orders for a student) ────────────────────
+const SO_STATUS = { need_to_order: ['Need to order', '#b9710f', '#fff7ed'], ordered: ['Ordered', '#1d4ed8', '#eff6ff'], arrived: ['Arrived', '#2e7d32', '#e8f5e9'], paid: ['Paid', '#555', '#ededeb'] };
+const SO_FLOW = ['need_to_order', 'ordered', 'arrived', 'paid'];
+function soStatusPill(s) { const x = SO_STATUS[s] || [s, '#777', '#eee']; return `<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:700;color:${x[1]};background:${x[2]};">${escapeHtml(x[0])}</span>`; }
+function soStatusLabel(s) { return (SO_STATUS[s] || [s])[0]; }
+function soItemSizes(item) { return (item ? shopItemSizes(item) : []).filter(s => s !== '' && s != null); }
+
+function renderShopSpecial() {
+  const sid = state.shopStockSchool;
+  const editable = can.editStock(sid);
+  const all = (state.specialOrders || []).slice();
+  state.specialFilter = state.specialFilter || 'active'; // active | paid | all
+  const f = state.specialFilter;
+  const active = all.filter(o => o.status !== 'paid');
+  const paid = all.filter(o => o.status === 'paid');
+  let rows = f === 'paid' ? paid : f === 'all' ? all : active;
+  rows.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+
+  let html = `<p style="font-size:13px;color:var(--grey-500);margin:12px 0;">One-off orders for a student (e.g. a custom gi, or a belt in a size you don't stock) for <strong>${escapeHtml(shopSchoolName(sid))}</strong>. Mark an order <strong>Paid</strong> to close it.</p>`;
+  html += `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">`;
+  if (editable) html += `<button class="btn btn-primary" onclick="openSpecialOrder('')" style="padding:6px 12px;font-size:13px;">+ New special order</button>`;
+  html += `<select onchange="setSpecialFilter(this.value)" style="padding:6px 10px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;background:var(--white);">
+      <option value="active" ${f === 'active' ? 'selected' : ''}>Open orders (${active.length})</option>
+      <option value="paid" ${f === 'paid' ? 'selected' : ''}>Paid / closed (${paid.length})</option>
+      <option value="all" ${f === 'all' ? 'selected' : ''}>All (${all.length})</option>
+    </select></div>`;
+
+  if (!rows.length) { html += `<div class="empty"><h2>No ${f === 'paid' ? 'closed' : f === 'active' ? 'open' : ''} orders</h2><p>${editable ? 'Add a special order with the button above.' : 'Nothing here yet.'}</p></div>`; return html; }
+
+  for (const o of rows) {
+    const sup = o.supplier_id ? shopSupplier(o.supplier_id) : null;
+    const meta = [o.size ? 'Size ' + escapeHtml(String(o.size)) : '', sup ? escapeHtml(sup.name) : ''].filter(Boolean).join(' \u00b7 ');
+    html += `<div style="background:var(--white);border:1px solid var(--grey-200);border-radius:var(--r-md);padding:10px 12px;margin-bottom:8px;">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;">
+        <div style="min-width:0;">
+          <div style="font-weight:700;font-size:14px;">${escapeHtml(o.item_name)}</div>
+          <div style="font-size:12px;color:var(--grey-600);margin-top:2px;">For ${escapeHtml(o.student_name)}${meta ? ' \u00b7 ' + meta : ''}</div>
+          ${o.notes ? `<div style="font-size:11px;color:var(--grey-500);margin-top:3px;">${escapeHtml(o.notes)}</div>` : ''}
+        </div>
+        <div style="white-space:nowrap;">${soStatusPill(o.status)}</div>
+      </div>`;
+    if (editable) {
+      html += `<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center;">
+        <select onchange="updateSpecialOrderStatus('${o.id}',this.value)" style="padding:4px 8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;background:var(--white);">
+          ${SO_FLOW.map(s => `<option value="${s}" ${o.status === s ? 'selected' : ''}>${escapeHtml(soStatusLabel(s))}</option>`).join('')}
+        </select>
+        <button class="btn btn-ghost" onclick="openSpecialOrder('${o.id}')" style="padding:4px 10px;font-size:12px;">Edit</button>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+  return html;
+}
+function setSpecialFilter(v) { state.specialFilter = v; renderShop(); }
+function soFindOrder(id) { return (state.specialOrders || []).find(o => o.id === id) || null; }
+
+function openSpecialOrder(id) {
+  const sid = state.shopStockSchool;
+  if (!can.editStock(sid)) { alert('You can only manage orders for your own school.'); return; }
+  const o = id ? soFindOrder(id) : null;
+  state._soEdit = { id: id || '', schoolId: sid };
+  const items = shopActiveItems();
+  const itemSel = document.getElementById('soItem');
+  if (itemSel) itemSel.innerHTML = `<option value="">\u2014 choose an item \u2014</option>` + items.map(it => `<option value="${escapeHtml(it.id)}" ${o && o.item_id === it.id ? 'selected' : ''}>${escapeHtml(it.name)}</option>`).join('');
+  const supSel = document.getElementById('soSupplier');
+  if (supSel) supSel.innerHTML = `<option value="">\u2014 none \u2014</option>` + (state.shop.suppliers || []).map(s => `<option value="${escapeHtml(s.id)}" ${o && o.supplier_id === s.id ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('');
+  auditSetVal('soStudent', o ? o.student_name : '');
+  auditSetVal('soStatus', o ? o.status : 'need_to_order');
+  auditSetVal('soNotes', o ? (o.notes || '') : '');
+  soPopulateSizes(o ? o.item_id : '', o ? o.size : '');
+  const ttl = document.getElementById('soModalTitle'); if (ttl) ttl.textContent = id ? 'Edit special order' : 'New special order';
+  const del = document.getElementById('soDeleteBtn'); if (del) del.style.display = id ? '' : 'none';
+  openModal('modalSpecialOrder');
+}
+function soPopulateSizes(itemId, selected) {
+  const sizeSel = document.getElementById('soSize'); if (!sizeSel) return;
+  const item = (state.shop.items || []).find(i => i.id === itemId);
+  const sizes = soItemSizes(item);
+  if (!sizes.length) { sizeSel.innerHTML = `<option value="">\u2014 n/a \u2014</option>`; return; }
+  sizeSel.innerHTML = `<option value="">\u2014 size \u2014</option>` + sizes.map(s => `<option value="${escapeHtml(String(s))}" ${String(selected) === String(s) ? 'selected' : ''}>${escapeHtml(String(s))}</option>`).join('');
+}
+function soOnItemChange() {
+  const itemId = auditGetVal('soItem');
+  const item = (state.shop.items || []).find(i => i.id === itemId);
+  if (item && item.supplierId) auditSetVal('soSupplier', item.supplierId);
+  soPopulateSizes(itemId, '');
+}
+async function saveSpecialOrder() {
+  const d = state._soEdit || {};
+  const sid = d.schoolId || state.shopStockSchool;
+  if (!can.editStock(sid)) { alert('You can only manage orders for your own school.'); return; }
+  const itemId = auditGetVal('soItem');
+  const item = (state.shop.items || []).find(i => i.id === itemId);
+  const student = auditGetVal('soStudent').trim();
+  if (!item) { alert('Choose an item.'); return; }
+  if (!student) { alert("Enter the student's name."); return; }
+  const row = {
+    school_id: sid, item_id: item.id, item_name: item.name,
+    supplier_id: auditGetVal('soSupplier') || null, size: auditGetVal('soSize') || null,
+    student_name: student, status: auditGetVal('soStatus') || 'need_to_order',
+    notes: auditGetVal('soNotes').trim() || null,
+  };
+  let res;
+  if (d.id) res = await DB.specialOrders.update(d.id, row);
+  else { row.created_by = state.user && state.user.id; res = await DB.specialOrders.create(row); }
+  if (res && res.error) { alert('Could not save the order: ' + res.error); return; }
+  closeModal('modalSpecialOrder');
+  state.specialOrders = await DB.specialOrders.list(sid);
+  renderShop();
+}
+async function updateSpecialOrderStatus(id, status) {
+  const sid = state.shopStockSchool;
+  if (!can.editStock(sid)) return;
+  const res = await DB.specialOrders.update(id, { status });
+  if (res && res.error) { alert('Could not update: ' + res.error); return; }
+  const o = soFindOrder(id); if (o) o.status = status;
+  renderShop();
+}
+async function deleteSpecialOrder() {
+  const d = state._soEdit || {}; if (!d.id) return;
+  if (!can.editStock(d.schoolId)) return;
+  if (!confirm('Delete this special order?')) return;
+  const res = await DB.specialOrders.remove(d.id);
+  if (res && res.error) { alert('Could not delete: ' + res.error); return; }
+  closeModal('modalSpecialOrder');
+  state.specialOrders = await DB.specialOrders.list(d.schoolId);
+  renderShop();
+}
 
 // ── Print support (stage 3): build into #printArea, then window.print() ──
 function shopPrintHead(title, subtitle) {
@@ -13686,7 +13883,9 @@ function shopReorderLines(sid) {
 }
 // The printable supplier order sheet ("print the order out") — one supplier per page.
 function shopBuildOrderSheet() {
-  const lines = shopReorderLines(state.shopStockSchool);
+  const filt = state.shopReorderSupplier || 'all';
+  let lines = shopReorderLines(state.shopStockSchool);
+  if (filt !== 'all') lines = lines.filter(l => (l.supplierId || '_none') === filt);
   let inner = shopPrintHead('Stock order', 'Items at or below their reorder level');
   if (!lines.length) return `<div class="print-doc">${inner}<p>Nothing to reorder — everything is above its reorder level.</p></div>`;
   const money = n => '$' + (Number(n) || 0).toFixed(2);
@@ -14601,6 +14800,8 @@ function priorityPill(p) {
   const x = m[p] || [p, '#777', '#eee'];
   return `<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:700;color:${x[1]};background:${x[2]};">${escapeHtml(x[0])}</span>`;
 }
+// Capitalise the first letter of a dropdown label ("in progress" → "In progress").
+function capLabel(s) { s = String(s == null ? '' : s); return s.charAt(0).toUpperCase() + s.slice(1); }
 function statCard(value, label, color) {
   return `<div style="background:var(--white);border:1px solid var(--grey-200);border-radius:var(--r-md);padding:12px 10px;text-align:center;">
     <div style="font-size:21px;font-weight:800;line-height:1.1;color:${color || 'var(--ink)'};">${value}</div>
@@ -14798,7 +14999,7 @@ function renderAuditList(main) {
     html += `</select>`;
   }
   html += `<select onchange="setAuditFilter('status',this.value)" style="${auditSelectStyle()}">
-    ${['all','draft','in_progress','completed'].map(s => `<option value="${s}" ${f.status === s ? 'selected' : ''}>${s === 'all' ? 'Any status' : s.replace('_', ' ')}</option>`).join('')}</select>`;
+    ${['all','draft','in_progress','completed'].map(s => `<option value="${s}" ${f.status === s ? 'selected' : ''}>${s === 'all' ? 'Any status' : capLabel(s.replace('_', ' '))}</option>`).join('')}</select>`;
   html += `<select onchange="setAuditFilter('sort',this.value)" style="${auditSelectStyle()}">
     <option value="date" ${f.sort === 'date' ? 'selected' : ''}>Newest</option>
     <option value="score" ${f.sort === 'score' ? 'selected' : ''}>By score</option>
@@ -15212,19 +15413,28 @@ function actionRow(a, showSchool) {
       <button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="openActionEdit('${a.id}')">Edit</button></div>` : ''}</div>`;
 }
 function renderAuditActions(main) {
-  const f = state.actionFilters = state.actionFilters || { school: 'all', status: 'all', priority: 'all', overdue: false };
+  const f = state.actionFilters = state.actionFilters || { school: 'all', status: 'all', priority: 'all', overdue: false, mine: false, assignee: 'all' };
+  if (!f.assignee) f.assignee = 'all';
   let rows = (state.auditData.actions || []).slice();
   if (f.school !== 'all') rows = rows.filter(a => a.school_id === f.school);
   if (f.status !== 'all') rows = rows.filter(a => a.status === f.status);
   if (f.priority !== 'all') rows = rows.filter(a => a.priority === f.priority);
   if (f.overdue) rows = rows.filter(actionOverdue);
   if (f.mine && state.user) rows = rows.filter(a => a.assigned_to === state.user.id);
+  if (f.assignee !== 'all') rows = (f.assignee === '__none') ? rows.filter(a => !a.assigned_to) : rows.filter(a => a.assigned_to === f.assignee);
   rows.sort((a, b) => {
     const ao = actionOverdue(a) ? 0 : 1, bo = actionOverdue(b) ? 0 : 1;
     if (ao !== bo) return ao - bo;
     return String(a.due_date || '9999').localeCompare(String(b.due_date || '9999'));
   });
   const schools = auditableSchools();
+  // Assignee filter is built from whoever actually has actions in the rows the viewer can
+  // see (RLS already scopes this: an admin sees their school's people; a super admin sees
+  // everyone across all schools, including instructors who teach at more than one school).
+  const seen = {}, assignees = [];
+  (state.auditData.actions || []).forEach(a => { if (a.assigned_to && !seen[a.assigned_to]) { seen[a.assigned_to] = 1; assignees.push(a.assigned_to); } });
+  const hasUnassigned = (state.auditData.actions || []).some(a => !a.assigned_to);
+  assignees.sort((x, y) => auditPersonName(x).localeCompare(auditPersonName(y)));
   let html = auditHeader('Corrective actions', 'hub');
   html += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">`;
   if (schools.length > 1) {
@@ -15232,10 +15442,16 @@ function renderAuditActions(main) {
     schools.forEach(s => { html += `<option value="${escapeHtml(s.id)}" ${f.school === s.id ? 'selected' : ''}>${escapeHtml(s.name)}</option>`; });
     html += `</select>`;
   }
+  if (assignees.length || hasUnassigned) {
+    html += `<select onchange="setActionFilter('assignee',this.value)" style="${auditSelectStyle()}">
+      <option value="all" ${f.assignee === 'all' ? 'selected' : ''}>Any assignee</option>
+      ${hasUnassigned ? `<option value="__none" ${f.assignee === '__none' ? 'selected' : ''}>Unassigned</option>` : ''}
+      ${assignees.map(id => `<option value="${escapeHtml(id)}" ${f.assignee === id ? 'selected' : ''}>${escapeHtml(auditPersonName(id))}</option>`).join('')}</select>`;
+  }
   html += `<select onchange="setActionFilter('status',this.value)" style="${auditSelectStyle()}">
-    ${['all', 'open', 'in_progress', 'completed'].map(s => `<option value="${s}" ${f.status === s ? 'selected' : ''}>${s === 'all' ? 'Any status' : s.replace('_', ' ')}</option>`).join('')}</select>`;
+    ${['all', 'open', 'in_progress', 'completed'].map(s => `<option value="${s}" ${f.status === s ? 'selected' : ''}>${s === 'all' ? 'Any status' : capLabel(s.replace('_', ' '))}</option>`).join('')}</select>`;
   html += `<select onchange="setActionFilter('priority',this.value)" style="${auditSelectStyle()}">
-    ${['all', 'low', 'medium', 'high', 'critical'].map(s => `<option value="${s}" ${f.priority === s ? 'selected' : ''}>${s === 'all' ? 'Any priority' : s}</option>`).join('')}</select>`;
+    ${['all', 'low', 'medium', 'high', 'critical'].map(s => `<option value="${s}" ${f.priority === s ? 'selected' : ''}>${s === 'all' ? 'Any priority' : capLabel(s)}</option>`).join('')}</select>`;
   html += `<label style="display:flex;align-items:center;gap:5px;font-size:12px;padding:8px 10px;border:1px solid var(--grey-200);border-radius:var(--r-sm);background:var(--white);cursor:pointer;">
     <input type="checkbox" ${f.overdue ? 'checked' : ''} onchange="setActionFilter('overdue',this.checked)"> Overdue only</label>`;
   html += `<label style="display:flex;align-items:center;gap:5px;font-size:12px;padding:8px 10px;border:1px solid var(--grey-200);border-radius:var(--r-sm);background:var(--white);cursor:pointer;">

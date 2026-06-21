@@ -1205,6 +1205,48 @@
   </div>
 </div>
 
+<!-- ===== Modal: Special order ===== -->
+<div class="modal-bg" id="modalSpecialOrder">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2 id="soModalTitle">New special order</h2>
+    <div class="form-row">
+      <label>Item</label>
+      <select id="soItem" onchange="soOnItemChange()"><option value="">— choose an item —</option></select>
+    </div>
+    <div class="form-row">
+      <label>For (student name)</label>
+      <input id="soStudent" placeholder="Student's name">
+    </div>
+    <div class="form-row">
+      <label>Size</label>
+      <select id="soSize"><option value="">—</option></select>
+    </div>
+    <div class="form-row">
+      <label>Supplier</label>
+      <select id="soSupplier"><option value="">— none —</option></select>
+    </div>
+    <div class="form-row">
+      <label>Status</label>
+      <select id="soStatus">
+        <option value="need_to_order" selected>Need to order</option>
+        <option value="ordered">Ordered</option>
+        <option value="arrived">Arrived</option>
+        <option value="paid">Paid (closes the order)</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>Notes</label>
+      <textarea id="soNotes" rows="2" placeholder="Optional"></textarea>
+    </div>
+    <div class="detail-actions" style="margin-top:6px;">
+      <button class="btn btn-warn" id="soDeleteBtn" style="display:none;" onclick="deleteSpecialOrder()">Delete</button>
+      <button class="btn btn-primary" style="flex:1;" onclick="saveSpecialOrder()">Save order</button>
+    </div>
+    <button class="btn btn-ghost" style="width:100%;margin-top:6px;" onclick="closeModal('modalSpecialOrder')">Cancel</button>
+  </div>
+</div>
+
 <!-- ===== Modal: School onboarding wizard ===== -->
 <div class="modal-bg" id="modalWizard">
   <div class="modal">
@@ -3002,14 +3044,14 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '87';
+  window.KRMAS_APP_VERSION = '90';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
 </script>
-<script src="data.js?v=87"></script>
-<script src="db.js?v=87"></script>
-<script src="app.js?v=87"></script>
+<script src="data.js?v=90"></script>
+<script src="db.js?v=90"></script>
+<script src="app.js?v=90"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
