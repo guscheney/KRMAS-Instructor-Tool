@@ -9327,14 +9327,15 @@ function renderHomeCalendar() {
     const inMonth = d.getMonth() === m;
     const evs = events.filter(ev => ev.startDate <= iso && (ev.endDate || ev.startDate) >= iso);
     const isToday = iso === today;
-    let dots = '';
+    let chips = '';
     if (evs.length) {
-      dots = `<div style="display:flex;gap:2px;justify-content:center;flex-wrap:wrap;margin-top:2px;line-height:0;">` +
-        evs.slice(0, 3).map(ev => `<span style="width:5px;height:5px;border-radius:50%;background:${colourFor(ev)};display:inline-block;"></span>`).join('') +
+      chips = `<div class="cal-chips">` +
+        evs.slice(0, 1).map(ev => `<span class="cal-chip" style="background:${colourFor(ev)};" title="${escapeHtml(ev.title)}">${escapeHtml(ev.title)}</span>`).join('') +
+        (evs.length > 1 ? `<span class="cal-chip-more">+${evs.length - 1}</span>` : '') +
         `</div>`;
     }
-    html += `<div class="cal-cell${inMonth ? '' : ' other'}${isToday ? ' today' : ''}" style="min-height:34px;cursor:pointer;" onclick="event.stopPropagation(); openCalendarOnDay('${iso}')">
-      <span style="font-size:11px;">${d.getDate()}</span>${dots}</div>`;
+    html += `<div class="cal-cell${inMonth ? '' : ' other'}${isToday ? ' today' : ''}" style="min-height:40px;cursor:pointer;" onclick="event.stopPropagation(); openCalendarOnDay('${iso}')">
+      <span style="font-size:11px;">${d.getDate()}</span>${chips}</div>`;
   }
   html += `</div></div>`;
   return html;
@@ -11123,7 +11124,12 @@ function renderRolesMatrix() {
     html += `<tr style="border-bottom:1px solid var(--grey-100);"><td style="padding:5px 4px;font-weight:600;">${escapeHtml(s.label)}</td>`;
     for (const act of ['view','add','edit','delete']) {
       if (s.actions.indexOf(act) === -1) { html += `<td style="text-align:center;color:var(--grey-300);">—</td>`; continue; }
-      const on = !!(perms[s.key] && perms[s.key][act]);
+      // Mirror hasPerm: a section absent from the saved config falls back to the role's
+      // built-in defaults, so newly-added rows (e.g. Lesson plans) show their real granted
+      // state instead of looking empty. A section that IS present is authoritative.
+      const savedSection = perms[s.key];
+      const effSection = savedSection ? savedSection : ((DEFAULT_PERMS[sel] && DEFAULT_PERMS[sel][s.key]) || {});
+      const on = !!effSection[act];
       html += `<td style="text-align:center;padding:5px 4px;">
         <input type="checkbox" ${on ? 'checked' : ''}
           onchange="toggleRolePerm('${escapeHtml(sel)}','${s.key}','${act}',this.checked)"
@@ -11142,12 +11148,33 @@ function renderRolesMatrix() {
 function selectMatrixRole(key) { state._rolesEditingRole = key; renderRolesMatrix(); }
 
 async function toggleRolePerm(roleKey, section, action, allowed) {
+  const cfg = state.roleConfig;
+  if (!cfg.perms) cfg.perms = {};
+  // If this section has no saved rows yet but the role carries built-in defaults for it
+  // (e.g. a matrix row added in a later release), persist those defaults FIRST so toggling
+  // one box doesn't silently drop the section's other default-granted actions. Once any row
+  // exists, hasPerm treats the section as authoritative — so we freeze the defaults here.
+  let materialised = false;
+  const hasSavedSection = !!(cfg.perms[roleKey] && cfg.perms[roleKey][section]);
+  const defaults = (DEFAULT_PERMS[roleKey] && DEFAULT_PERMS[roleKey][section]) || null;
+  if (!hasSavedSection && defaults) {
+    for (const a of Object.keys(defaults)) {
+      if (a === action || !defaults[a]) continue;     // toggled action is set explicitly below
+      const rr = await DB.roles.setPermission(roleKey, section, a, true);
+      if (rr.error) { alert('Could not save: ' + rr.error); renderRolesMatrix(); return; }
+      if (!cfg.perms[roleKey]) cfg.perms[roleKey] = {};
+      if (!cfg.perms[roleKey][section]) cfg.perms[roleKey][section] = {};
+      cfg.perms[roleKey][section][a] = true;
+      materialised = true;
+    }
+  }
   const r = await DB.roles.setPermission(roleKey, section, action, allowed);
   if (r.error) { alert('Could not save: ' + r.error); renderRolesMatrix(); return; }
-  if (!state.roleConfig.perms[roleKey]) state.roleConfig.perms[roleKey] = {};
-  if (!state.roleConfig.perms[roleKey][section]) state.roleConfig.perms[roleKey][section] = {};
-  if (allowed) state.roleConfig.perms[roleKey][section][action] = true;
-  else delete state.roleConfig.perms[roleKey][section][action];
+  if (!cfg.perms[roleKey]) cfg.perms[roleKey] = {};
+  if (!cfg.perms[roleKey][section]) cfg.perms[roleKey][section] = {};
+  if (allowed) cfg.perms[roleKey][section][action] = true;
+  else delete cfg.perms[roleKey][section][action];
+  if (materialised) renderRolesMatrix();              // reflect the newly-frozen defaults
 }
 
 async function createCustomRole() {
