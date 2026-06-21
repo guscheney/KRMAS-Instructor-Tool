@@ -1447,7 +1447,6 @@ function navModel() {
     { dataView: 'shop', icon: '📦', label: 'Shop', type: 'view', view: 'shop', gate: () => can.seeShop() },
     { dataView: 'more', icon: '⋯', label: 'More', type: 'hub', tiles: [
       { icon: '◷', label: 'Students', view: 'students', desc: 'Student records', gate: () => can.viewStudents() },
-      { icon: '☑', label: 'Audits', view: 'audits', desc: 'School audits & corrective actions', gate: () => can.viewAudits() },
       { icon: '📚', label: 'Documents', view: 'docs', desc: 'Files & resources' },
       { icon: '⚙', label: 'Admin & settings', view: 'admin', desc: 'Schools, users, configuration', gate: () => can.manageInstructors() },
       { icon: '人', label: 'My profile', view: 'me', desc: 'Account & sign out' },
@@ -1458,7 +1457,6 @@ function navModel() {
 function navDataViewFor(v) {
   if (v === 'teach' || v === 'more') return v;
   if (v === 'topics') return 'teach'; // topic library lives under Plans → Teach
-  if (v === 'audits') return 'more';  // audits hub lives under More
   if (v === 'calendar') return 'feed'; // Events now lives on Home
   for (const t of navModel()) {
     if (t.type === 'view' && t.view === v) return t.dataView;
@@ -1503,10 +1501,13 @@ function setView(v) {
   state.view = v;
   const activeTab = navDataViewFor(v);
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === activeTab));
-  // Stock is the only role-gated top-level tab now (Admin/Incidents/Students moved into hubs).
+  // Shop + Audits are the role-gated top-level tabs (Admin/Incidents/Students live in hubs).
   const shopTab = document.querySelector('[data-view="shop"]');
   if (shopTab) shopTab.style.display = can.seeShop() ? '' : 'none';
   if (typeof updateShopNavBadge === 'function') updateShopNavBadge();
+  const auditTab = document.querySelector('[data-view="audits"]');
+  if (auditTab) auditTab.style.display = can.viewAudits() ? '' : 'none';
+  if (typeof updateAuditNavBadge === 'function') updateAuditNavBadge();
   refreshAuthUI();
   syncNavHeight(); // nav row-count can change with which tabs are visible
 
@@ -8077,6 +8078,7 @@ function renderFeed() {
     main.innerHTML = html;
     return;
   }
+  html += `<div id="auditHomeCard"></div>`; // corrective actions assigned to me (filled async)
   if (visiblePosts.length === 0) {
     html += `<div style="text-align:center;padding:28px 0;color:var(--grey-500);">
       <div style="font-size:32px;margin-bottom:10px;">👋</div>
@@ -8109,6 +8111,7 @@ function renderFeed() {
 
   main.innerHTML = html;
   updateFeedBadge();
+  ensureAuditSignals();
 }
 
 function renderFeedPost(post) {
@@ -14485,7 +14488,65 @@ function auditPersonName(id) {
   return (state.auditData && state.auditData.peopleById && state.auditData.peopleById[id]) || 'Staff';
 }
 
-// ---- Pure scoring (flat percentage: scored / available × 100) ----
+// ---- Question types + type-aware scoring engine ----
+// Backward compatible: an item with no `type` is treated as a 'range' (the original
+// 0..max_score behaviour), so existing templates + audit snapshots keep working.
+const AUDIT_TYPES = [
+  { key: 'range',      label: 'Score range (0–N)',          scored: true  },
+  { key: 'choice',     label: 'Multiple choice (dropdown)', scored: true  },
+  { key: 'radio',      label: 'Radio (two options)',        scored: true  },
+  { key: 'checkbox',   label: 'Select boxes (multi)',       scored: true  },
+  { key: 'short_text', label: 'Short text',                 scored: false },
+  { key: 'long_text',  label: 'Long text',                  scored: false },
+  { key: 'number',     label: 'Number',                     scored: false },
+  { key: 'photo',      label: 'Photo',                      scored: false },
+];
+function itemType(it) { return (it && it.type) || 'range'; }
+function itemTypeLabel(it) { const t = itemType(it); const m = AUDIT_TYPES.find(x => x.key === t); return m ? m.label : t; }
+function itemIsScoredType(it) { const t = itemType(it); return t === 'range' || t === 'choice' || t === 'radio' || t === 'checkbox'; }
+function itemCanSourceCondition(it) { const t = itemType(it); return t === 'range' || t === 'choice' || t === 'radio' || t === 'checkbox' || t === 'number'; }
+
+function itemMaxScore(it) {
+  const t = itemType(it);
+  if (t === 'range') return Number(it.max_score) || 0;
+  if (t === 'choice' || t === 'radio') return (it.options || []).reduce((m, o) => Math.max(m, Number(o.score) || 0), 0);
+  if (t === 'checkbox') return (it.options || []).reduce((s, o) => s + Math.max(0, Number(o.score) || 0), 0);
+  return 0;
+}
+function itemGotScore(it, r) {
+  const t = itemType(it); r = r || {};
+  if (t === 'range') return isScored(r) ? (Number(r.score) || 0) : 0;
+  if (t === 'choice' || t === 'radio') { const o = (it.options || []).find(x => x.id === r.optionId); return o ? (Number(o.score) || 0) : 0; }
+  if (t === 'checkbox') return (it.options || []).filter(o => (r.optionIds || []).indexOf(o.id) >= 0).reduce((s, o) => s + (Number(o.score) || 0), 0);
+  return 0;
+}
+function itemAnswered(it, r) {
+  const t = itemType(it); if (!r) return false;
+  if (t === 'range') return isScored(r);
+  if (t === 'choice' || t === 'radio') return !!r.optionId;
+  if (t === 'checkbox') return Array.isArray(r.optionIds);
+  if (t === 'short_text' || t === 'long_text') return !!(r.text && r.text.trim());
+  if (t === 'number') return r.number !== undefined && r.number !== null && r.number !== '';
+  if (t === 'photo') return !!r.photo;
+  return false;
+}
+function _condNumeric(r) { if (!r) return NaN; if (r.score !== undefined && r.score !== '' && r.score !== null) return Number(r.score); if (r.number !== undefined && r.number !== '' && r.number !== null) return Number(r.number); return NaN; }
+function itemVisible(it, responses) {
+  const c = it && it.visible_if;
+  if (!c || !c.itemId || !c.op) return true;
+  const r = (responses || {})[c.itemId];
+  if (!r) return false;
+  switch (c.op) {
+    case 'option_eq': return r.optionId === c.value;
+    case 'option_in': return Array.isArray(r.optionIds) && r.optionIds.indexOf(c.value) >= 0;
+    case 'gte': return _condNumeric(r) >= Number(c.value);
+    case 'lte': return _condNumeric(r) <= Number(c.value);
+    case 'eq':  return _condNumeric(r) === Number(c.value);
+    default: return true;
+  }
+}
+
+// ---- Pure scoring (flat percentage: scored / available × 100; hidden + non-scored excluded) ----
 function auditItemsFromSnapshot(snapshot) {
   const items = [];
   (snapshot || []).forEach(sec => (sec.items || []).forEach(it => items.push(Object.assign({ sectionId: sec.id, sectionTitle: sec.title }, it))));
@@ -14495,8 +14556,10 @@ function isScored(r) { return r && r.score !== null && r.score !== undefined && 
 function computeSectionScore(section, responses) {
   let got = 0, max = 0; responses = responses || {};
   (section.items || []).forEach(it => {
-    max += Number(it.max_score) || 0;
-    const r = responses[it.id]; if (isScored(r)) got += Number(r.score) || 0;
+    if (!itemIsScoredType(it)) return;
+    if (!itemVisible(it, responses)) return;
+    max += itemMaxScore(it);
+    got += itemGotScore(it, responses[it.id]);
   });
   return { got, max, pct: max ? (got / max) * 100 : 0 };
 }
@@ -14505,10 +14568,14 @@ function computeAuditScore(snapshot, responses) {
   (snapshot || []).forEach(sec => { const s = computeSectionScore(sec, responses); got += s.got; max += s.max; });
   return { got, max, pct: max ? (got / max) * 100 : 0 };
 }
+// Can the audit be completed? Every VISIBLE SCORED item must be answered; non-scored
+// items (text / number / photo) and hidden items are optional. A genuinely empty
+// template (no items at all) cannot be completed.
 function allItemsScored(snapshot, responses) {
-  const items = auditItemsFromSnapshot(snapshot);
-  if (!items.length) return false;
-  return items.every(it => isScored((responses || {})[it.id]));
+  const all = auditItemsFromSnapshot(snapshot);
+  if (!all.length) return false;
+  const scored = all.filter(it => itemIsScoredType(it) && itemVisible(it, responses));
+  return scored.every(it => itemAnswered(it, (responses || {})[it.id]));
 }
 function scoreColor(pct) { return pct >= 80 ? '#2e7d32' : pct >= 60 ? '#d48a1a' : '#d62828'; }
 function scoreBg(pct) { return pct >= 80 ? '#e8f5e9' : pct >= 60 ? '#fff7ed' : '#fdeaea'; }
@@ -14589,6 +14656,58 @@ async function loadAuditData() {
   state.auditData = { templates: templates || [], audits: audits || [], actions: actions || [], peopleById };
 }
 function reloadAudits() { state.auditData = null; if (state.view === 'audits') renderAudits(); }
+
+// ---- Assignee signals (separate cache so it never clobbers the Audits view's data) ----
+// Surfaces corrective actions assigned to the current user as dated tiles on Home,
+// regardless of whether they have full audit access (they can always read own-school actions).
+function ensureAuditSignals() {
+  if (!state.user) return;
+  if (state.auditSignals) { paintAuditHomeCard(); updateAuditNavBadge(); return; }
+  DB.audits.listActions().then(list => {
+    const mine = (list || []).filter(a => a.assigned_to === state.user.id && a.status !== 'completed');
+    state.auditSignals = { actions: mine };
+    paintAuditHomeCard(); updateAuditNavBadge();
+  }).catch(() => { state.auditSignals = { actions: [] }; paintAuditHomeCard(); updateAuditNavBadge(); });
+}
+function myOpenActions() { return (state.auditSignals && state.auditSignals.actions) || []; }
+function _sortActionsByDue(list) {
+  return list.slice().sort((a, b) => {
+    const ao = actionOverdue(a) ? 0 : 1, bo = actionOverdue(b) ? 0 : 1;
+    if (ao !== bo) return ao - bo;
+    return String(a.due_date || '9999').localeCompare(String(b.due_date || '9999'));
+  });
+}
+function paintAuditHomeCard() {
+  const host = document.getElementById('auditHomeCard'); if (!host) return;
+  const actions = myOpenActions();
+  if (!actions.length) { host.innerHTML = ''; return; }
+  const sorted = _sortActionsByDue(actions);
+  const overdueCount = sorted.filter(actionOverdue).length;
+  let h = `<div style="border:1px solid var(--grey-200);border-radius:var(--r-md);padding:10px 12px;margin-bottom:12px;background:var(--white);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <div style="font-weight:700;font-size:13px;">☑ Your corrective actions${overdueCount ? ` <span style="color:#c62828;">· ${overdueCount} overdue</span>` : ''}</div>
+      <button class="btn btn-ghost" style="font-size:11px;padding:2px 8px;" onclick="gotoMyActions()">View all</button></div>`;
+  sorted.slice(0, 4).forEach(a => {
+    const od = actionOverdue(a);
+    const due = a.due_date ? `${od ? 'Overdue · ' : ''}Due ${auditDate(a.due_date)}` : 'No due date';
+    h += `<div onclick="gotoMyActions()" style="display:flex;justify-content:space-between;gap:8px;align-items:center;padding:7px 8px;border-radius:8px;border:1px solid ${od ? '#f3c4c0' : 'var(--grey-100)'};background:${od ? '#fdeced' : 'var(--off-white,#fafafa)'};margin-bottom:5px;cursor:pointer;">
+      <div style="min-width:0;"><div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(a.description || 'Action')}</div>
+        <div style="font-size:11px;color:${od ? '#c62828' : 'var(--grey-500)'};font-weight:${od ? '700' : '400'};margin-top:1px;">${escapeHtml(auditSchoolName(a.school_id))} · ${due}</div></div>
+      ${statusPill(a.status)}</div>`;
+  });
+  if (sorted.length > 4) h += `<div style="font-size:11px;color:var(--grey-500);text-align:center;margin-top:2px;">+${sorted.length - 4} more</div>`;
+  host.innerHTML = h + `</div>`;
+}
+function updateAuditNavBadge() {
+  const badge = document.getElementById('navAuditsBadge'); if (!badge) return;
+  const n = myOpenActions().filter(actionOverdue).length;
+  if (n > 0) { badge.textContent = String(n); badge.style.display = ''; } else { badge.style.display = 'none'; }
+}
+function gotoMyActions() {
+  state.actionFilters = state.actionFilters || { school: 'all', status: 'all', priority: 'all', overdue: false };
+  state.actionFilters.mine = true; state.auditView = 'actions';
+  setView('audits');
+}
 function gotoAudit(sub) { state.auditView = sub; renderAudits(); }
 
 function auditHeader(title, backTo) {
@@ -14743,11 +14862,44 @@ async function beginAudit() {
 }
 
 // ---- Conductor ----
+// ---- Mobile detection + client-side image compression (no storage bucket; matches avatars) ----
+function isMobileDevice() { try { return /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '') || (window.matchMedia && window.matchMedia('(pointer: coarse)').matches); } catch (e) { return false; } }
+function compressImage(file, maxDim, quality) {
+  return new Promise((resolve, reject) => {
+    if (!file) return reject(new Error('no file'));
+    const fr = new FileReader();
+    if (!/^image\//.test(file.type || '')) { fr.onload = () => resolve(fr.result); fr.onerror = reject; fr.readAsDataURL(file); return; }
+    fr.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        let w = img.width || 0, h = img.height || 0;
+        const scale = Math.min(1, (maxDim || 1280) / Math.max(w, h || 1));
+        w = Math.max(1, Math.round(w * scale)); h = Math.max(1, Math.round(h * scale));
+        let c; try { c = document.createElement('canvas'); c.width = w; c.height = h; } catch (e) { return resolve(fr.result); }
+        const ctx = c.getContext && c.getContext('2d');
+        if (!ctx) return resolve(fr.result);
+        ctx.drawImage(img, 0, 0, w, h);
+        try { resolve(c.toDataURL('image/jpeg', quality || 0.7)); } catch (e) { resolve(fr.result); }
+      };
+      img.onerror = () => resolve(fr.result);
+      img.src = fr.result;
+    };
+    fr.onerror = reject; fr.readAsDataURL(file);
+  });
+}
+function auditToggle(id) { const e = document.getElementById(id); if (e) e.style.display = (e.style.display === 'none' ? '' : 'none'); }
+function auditFileButton(label, onchangeCall, accept, capture, readOnly) {
+  if (readOnly) return '';
+  return `<label class="btn btn-ghost" style="font-size:12px;padding:6px 12px;display:inline-block;cursor:pointer;margin-top:2px;">${escapeHtml(label)}<input type="file" accept="${accept}" ${capture ? 'capture="environment"' : ''} style="display:none;" onchange="${onchangeCall}"></label>`;
+}
+
+// ---- Conductor ----
 function renderAuditConductor(main) {
   const a = state.currentAudit;
   if (!a) { state.auditView = 'list'; return renderAudits(); }
   const snap = a.template_snapshot || [];
-  const overall = computeAuditScore(snap, a.responses || {});
+  const resp = a.responses || {};
+  const overall = computeAuditScore(snap, resp);
   const readOnly = a.status === 'completed';
   let html = auditHeader(readOnly ? 'Audit (completed)' : 'Conduct audit', 'list');
   html += `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px;background:${scoreBg(overall.pct)};border:1px solid var(--grey-200);border-radius:var(--r-md);padding:10px 12px;">
@@ -14756,27 +14908,14 @@ function renderAuditConductor(main) {
     ${scoreRing(overall.pct)}</div>`;
   if (!snap.length) html += `<div class="empty"><p>This audit's template has no items.</p></div>`;
   snap.forEach((sec, si) => {
-    const ss = computeSectionScore(sec, a.responses || {});
+    const allItems = sec.items || [];
+    const visItems = allItems.filter(it => itemVisible(it, resp));
+    if (allItems.length && !visItems.length) return; // whole section hidden by conditions
+    const ss = computeSectionScore(sec, resp);
     html += `<div class="ir-section"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
       <div class="ir-section-title">${escapeHtml(sec.title || 'Section ' + (si + 1))}</div>
-      <div style="font-size:12px;font-weight:800;color:${scoreColor(ss.pct)};">${fmtPct(ss.pct)}</div></div>`;
-    (sec.items || []).forEach(it => {
-      const r = (a.responses || {})[it.id] || {};
-      const maxv = Number(it.max_score) || 5;
-      html += `<div style="padding:9px 0;border-bottom:1px solid var(--grey-100);">
-        <div style="font-size:13px;margin-bottom:7px;">${escapeHtml(it.label)}</div>
-        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:7px;">`;
-      for (let v = 0; v <= maxv; v++) {
-        const on = isScored(r) && Number(r.score) === v;
-        html += `<button onclick="setAuditScore('${it.id}',${v})" ${readOnly ? 'disabled' : ''}
-          style="min-width:36px;height:36px;border-radius:8px;border:1px solid ${on ? '#d62828' : 'var(--grey-300)'};background:${on ? '#d62828' : 'var(--white)'};color:${on ? '#fff' : 'var(--ink)'};font-weight:700;font-size:14px;${readOnly ? 'opacity:.55;' : 'cursor:pointer;'}">${v}</button>`;
-      }
-      html += `</div>
-        <textarea placeholder="Notes (optional)" rows="1" ${readOnly ? 'readonly' : ''} oninput="setAuditNote('${it.id}',this.value)"
-          style="width:100%;font-size:12px;padding:7px 9px;border:1px solid var(--grey-200);border-radius:6px;box-sizing:border-box;resize:vertical;">${escapeHtml(r.notes || '')}</textarea>`;
-      if (!readOnly && can.addAudits()) html += `<button class="btn btn-ghost" style="font-size:11px;padding:3px 9px;margin-top:5px;" onclick="openActionModal('${a.id}','${a.school_id}','${it.id}')">+ Add action</button>`;
-      html += `</div>`;
-    });
+      ${ss.max > 0 ? `<div style="font-size:12px;font-weight:800;color:${scoreColor(ss.pct)};">${fmtPct(ss.pct)}</div>` : ''}</div>`;
+    visItems.forEach(it => { html += renderConductorItem(a, it, readOnly); });
     html += `</div>`;
   });
   if (!readOnly) {
@@ -14789,20 +14928,172 @@ function renderAuditConductor(main) {
   main.innerHTML = html;
 }
 
+function renderConductorItem(a, it, readOnly) {
+  const r = (a.responses || {})[it.id] || {};
+  let h = `<div style="padding:9px 0;border-bottom:1px solid var(--grey-100);">`;
+  h += `<div style="font-size:13px;margin-bottom:7px;">${escapeHtml(it.label || 'Question')}${itemIsScoredType(it) ? '' : ` <span style="font-size:10px;color:var(--grey-400);">· not scored</span>`}</div>`;
+  if (it.reference_image) {
+    const rid = 'ref_' + it.id;
+    h += `<div style="margin-bottom:8px;"><button class="btn btn-ghost" style="font-size:11px;padding:2px 8px;" onclick="auditToggle('${rid}')">📷 What “good” looks like</button>
+      <img id="${rid}" src="${it.reference_image}" alt="good example" style="display:none;max-width:100%;max-height:220px;border-radius:8px;margin-top:6px;border:1px solid var(--grey-200);"></div>`;
+  }
+  h += auditAnswerInput(a, it, r, readOnly);
+  if (itemIsScoredType(it)) {
+    h += `<textarea placeholder="Notes (optional)" rows="1" ${readOnly ? 'readonly' : ''} oninput="setAuditNote('${it.id}',this.value)" style="width:100%;font-size:12px;padding:7px 9px;border:1px solid var(--grey-200);border-radius:6px;box-sizing:border-box;resize:vertical;margin-top:7px;">${escapeHtml(r.notes || '')}</textarea>`;
+  }
+  if (it.allow_upload) {
+    h += `<div style="margin-top:7px;">`;
+    if (r.upload) {
+      const isImg = /^data:image\//.test(r.upload);
+      h += isImg
+        ? `<img src="${r.upload}" style="max-width:100%;max-height:200px;border-radius:8px;border:1px solid var(--grey-200);">`
+        : `<div style="font-size:12px;color:var(--grey-600);">📎 ${escapeHtml(r.uploadName || 'attachment')}</div>`;
+      if (!readOnly) h += `<div><button class="btn btn-ghost" style="font-size:11px;padding:2px 8px;margin-top:4px;color:#c62828;" onclick="clearAuditUpload('${it.id}')">Remove attachment</button></div>`;
+    } else {
+      h += auditFileButton('📎 Attach photo/file', `setAuditUpload('${it.id}',this)`, '*/*', isMobileDevice(), readOnly);
+    }
+    h += `</div>`;
+  }
+  if (!readOnly && can.addAudits()) h += `<button class="btn btn-ghost" style="font-size:11px;padding:3px 9px;margin-top:6px;" onclick="openActionModal('${a.id}','${a.school_id}','${it.id}')">+ Add action</button>`;
+  h += `</div>`;
+  return h;
+}
+
+function auditAnswerInput(a, it, r, readOnly) {
+  const t = itemType(it);
+  if (t === 'range') {
+    const maxv = Number(it.max_score) || 5;
+    let h = `<div style="display:flex;flex-wrap:wrap;gap:6px;">`;
+    for (let v = 0; v <= maxv; v++) {
+      const on = isScored(r) && Number(r.score) === v;
+      h += `<button onclick="setAuditScore('${it.id}',${v})" ${readOnly ? 'disabled' : ''} style="min-width:36px;height:36px;border-radius:8px;border:1px solid ${on ? '#d62828' : 'var(--grey-300)'};background:${on ? '#d62828' : 'var(--white)'};color:${on ? '#fff' : 'var(--ink)'};font-weight:700;font-size:14px;${readOnly ? 'opacity:.55;' : 'cursor:pointer;'}">${v}</button>`;
+    }
+    return h + `</div>`;
+  }
+  if (t === 'choice') {
+    let h = `<select ${readOnly ? 'disabled' : ''} onchange="setAuditChoice('${it.id}',this.value)" style="width:100%;padding:9px 11px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:14px;background:var(--white);">
+      <option value="">— Select —</option>`;
+    (it.options || []).forEach(o => { h += `<option value="${escapeHtml(o.id)}" ${r.optionId === o.id ? 'selected' : ''}>${escapeHtml(o.label)}</option>`; });
+    return h + `</select>`;
+  }
+  if (t === 'radio') {
+    let h = `<div style="display:flex;gap:8px;flex-wrap:wrap;">`;
+    (it.options || []).slice(0, 2).forEach(o => {
+      const on = r.optionId === o.id;
+      h += `<button onclick="setAuditChoice('${it.id}','${escapeHtml(o.id)}')" ${readOnly ? 'disabled' : ''} style="flex:1;min-width:120px;padding:10px;border-radius:8px;border:1px solid ${on ? '#d62828' : 'var(--grey-300)'};background:${on ? '#d62828' : 'var(--white)'};color:${on ? '#fff' : 'var(--ink)'};font-weight:600;font-size:13px;${readOnly ? 'opacity:.55;' : 'cursor:pointer;'}">${escapeHtml(o.label)}</button>`;
+    });
+    return h + `</div>`;
+  }
+  if (t === 'checkbox') {
+    let h = `<div style="display:flex;flex-direction:column;gap:6px;">`;
+    (it.options || []).forEach(o => {
+      const on = Array.isArray(r.optionIds) && r.optionIds.indexOf(o.id) >= 0;
+      h += `<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:${readOnly ? 'default' : 'pointer'};">
+        <input type="checkbox" ${on ? 'checked' : ''} ${readOnly ? 'disabled' : ''} onchange="toggleAuditCheck('${it.id}','${escapeHtml(o.id)}',this.checked)"> ${escapeHtml(o.label)}</label>`;
+    });
+    return h + `</div>`;
+  }
+  if (t === 'short_text') {
+    return `<input type="text" ${readOnly ? 'readonly' : ''} value="${escapeHtml(r.text || '')}" oninput="setAuditText('${it.id}',this.value)" placeholder="Type an answer" style="width:100%;padding:9px 11px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:14px;box-sizing:border-box;">`;
+  }
+  if (t === 'long_text') {
+    return `<textarea ${readOnly ? 'readonly' : ''} rows="3" oninput="setAuditText('${it.id}',this.value)" placeholder="Type an answer" style="width:100%;padding:9px 11px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:14px;box-sizing:border-box;resize:vertical;">${escapeHtml(r.text || '')}</textarea>`;
+  }
+  if (t === 'number') {
+    return `<input type="number" ${readOnly ? 'readonly' : ''} value="${r.number === undefined || r.number === null ? '' : escapeHtml(String(r.number))}" oninput="setAuditNumber('${it.id}',this.value,false)" onchange="setAuditNumber('${it.id}',this.value,true)" placeholder="0" style="width:140px;padding:9px 11px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:14px;box-sizing:border-box;">`;
+  }
+  if (t === 'photo') {
+    if (r.photo) {
+      let h = `<img src="${r.photo}" alt="audit photo" style="max-width:100%;max-height:260px;border-radius:8px;border:1px solid var(--grey-200);">`;
+      if (!readOnly) h += `<div><button class="btn btn-ghost" style="font-size:11px;padding:2px 8px;margin-top:4px;color:#c62828;" onclick="clearAuditPhoto('${it.id}')">Remove photo</button></div>`;
+      return h;
+    }
+    const cap = it.capture_only || isMobileDevice();
+    return auditFileButton(cap ? '📷 Take photo' : '📷 Add photo', `setAuditPhoto('${it.id}',this)`, 'image/*', cap, readOnly);
+  }
+  return '';
+}
+
+// ---- Answer setters ----
+function _audGet(itemId) { const a = state.currentAudit; a.responses = a.responses || {}; return a.responses[itemId] || (a.responses[itemId] = {}); }
 function setAuditScore(itemId, score) {
   const a = state.currentAudit; if (!a || a.status === 'completed') return;
-  a.responses = a.responses || {};
-  const cur = a.responses[itemId] || {};
-  a.responses[itemId] = { score: Number(score), notes: cur.notes || '' };
-  scheduleAuditSave();
-  renderAudits();
+  const r = _audGet(itemId); r.score = Number(score);
+  scheduleAuditSave(); renderAudits();
 }
 function setAuditNote(itemId, notes) {
   const a = state.currentAudit; if (!a || a.status === 'completed') return;
-  a.responses = a.responses || {};
-  const cur = a.responses[itemId] || {};
-  a.responses[itemId] = { score: cur.score, notes };
+  _audGet(itemId).notes = notes;
   scheduleAuditSave();
+}
+function setAuditChoice(itemId, optionId) {
+  const a = state.currentAudit; if (!a || a.status === 'completed') return;
+  _audGet(itemId).optionId = optionId || '';
+  scheduleAuditSave(); renderAudits();
+}
+function toggleAuditCheck(itemId, optionId, on) {
+  const a = state.currentAudit; if (!a || a.status === 'completed') return;
+  const r = _audGet(itemId); r.optionIds = Array.isArray(r.optionIds) ? r.optionIds.slice() : [];
+  const i = r.optionIds.indexOf(optionId);
+  if (on && i < 0) r.optionIds.push(optionId);
+  if (!on && i >= 0) r.optionIds.splice(i, 1);
+  scheduleAuditSave(); renderAudits();
+}
+function setAuditText(itemId, text) {
+  const a = state.currentAudit; if (!a || a.status === 'completed') return;
+  _audGet(itemId).text = text;
+  scheduleAuditSave(); // no re-render → keep input focus
+}
+function setAuditNumber(itemId, val, rerender) {
+  const a = state.currentAudit; if (!a || a.status === 'completed') return;
+  _audGet(itemId).number = (val === '' ? '' : Number(val));
+  scheduleAuditSave();
+  if (rerender) renderAudits(); // on blur: dependent (conditional) questions may change
+}
+async function setAuditPhoto(itemId, input) {
+  const a = state.currentAudit; if (!a || a.status === 'completed') return;
+  const f = input && input.files && input.files[0]; if (!f) return;
+  try { const data = await compressImage(f, 1280, 0.7); const r = _audGet(itemId); r.photo = data; r.photoName = f.name || 'photo.jpg'; scheduleAuditSave(); renderAudits(); }
+  catch (e) { alert('Could not read that image.'); }
+}
+function clearAuditPhoto(itemId) {
+  const a = state.currentAudit; if (!a || a.status === 'completed') return;
+  const r = _audGet(itemId); delete r.photo; delete r.photoName; scheduleAuditSave(); renderAudits();
+}
+async function setAuditUpload(itemId, input) {
+  const a = state.currentAudit; if (!a || a.status === 'completed') return;
+  const f = input && input.files && input.files[0]; if (!f) return;
+  try { const data = await compressImage(f, 1600, 0.72); const r = _audGet(itemId); r.upload = data; r.uploadName = f.name || 'attachment'; scheduleAuditSave(); renderAudits(); }
+  catch (e) { alert('Could not read that file.'); }
+}
+function clearAuditUpload(itemId) {
+  const a = state.currentAudit; if (!a || a.status === 'completed') return;
+  const r = _audGet(itemId); delete r.upload; delete r.uploadName; scheduleAuditSave(); renderAudits();
+}
+
+// Human-readable answer for the read-only summary (the score badge is rendered separately).
+function auditAnswerSummary(it, r) {
+  r = r || {}; const t = itemType(it); let out = '';
+  const dash = `<div style="font-size:12px;color:var(--grey-400);margin-top:2px;">—</div>`;
+  if (t === 'choice' || t === 'radio') {
+    const o = (it.options || []).find(x => x.id === r.optionId);
+    out = o ? `<div style="font-size:12px;color:#444;margin-top:2px;">${escapeHtml(o.label)}</div>` : dash;
+  } else if (t === 'checkbox') {
+    const labels = (it.options || []).filter(o => (r.optionIds || []).indexOf(o.id) >= 0).map(o => o.label);
+    out = `<div style="font-size:12px;color:#444;margin-top:2px;">${labels.length ? escapeHtml(labels.join(', ')) : '—'}</div>`;
+  } else if (t === 'short_text' || t === 'long_text') {
+    out = (r.text && r.text.trim()) ? `<div style="font-size:12px;color:#444;margin-top:2px;white-space:pre-wrap;">${escapeHtml(r.text)}</div>` : dash;
+  } else if (t === 'number') {
+    out = (r.number !== undefined && r.number !== null && r.number !== '') ? `<div style="font-size:12px;color:#444;margin-top:2px;">${escapeHtml(String(r.number))}</div>` : dash;
+  } else if (t === 'photo') {
+    out = r.photo ? `<img src="${r.photo}" alt="photo" style="max-width:160px;max-height:160px;border-radius:6px;border:1px solid var(--grey-200);margin-top:4px;">` : `<div style="font-size:12px;color:var(--grey-400);margin-top:2px;">No photo</div>`;
+  }
+  if (it.allow_upload && r.upload) {
+    out += /^data:image\//.test(r.upload)
+      ? `<img src="${r.upload}" alt="attachment" style="max-width:160px;max-height:160px;border-radius:6px;border:1px solid var(--grey-200);margin-top:4px;display:block;">`
+      : `<div style="font-size:11px;color:var(--grey-600);margin-top:3px;">📎 ${escapeHtml(r.uploadName || 'attachment')}</div>`;
+  }
+  return out;
 }
 function scheduleAuditSave() {
   clearTimeout(state._auditSaveTimer);
@@ -14869,14 +15160,21 @@ function renderAuditDetail(main) {
   html += `<div class="section-sub">Section breakdown</div>`;
   snap.forEach(sec => {
     const ss = computeSectionScore(sec, a.responses || {});
+    const visItems = (sec.items || []).filter(it => itemVisible(it, a.responses || {}));
+    if ((sec.items || []).length && !visItems.length) return;
     html += `<div class="ir-section"><div style="display:flex;justify-content:space-between;align-items:center;">
       <div class="ir-section-title">${escapeHtml(sec.title || 'Section')}</div>
-      <div style="font-size:12px;font-weight:800;color:${scoreColor(ss.pct)};">${fmtPct(ss.pct)} <span style="color:var(--grey-400);font-weight:400;">(${ss.got}/${ss.max})</span></div></div>`;
-    (sec.items || []).forEach(it => {
+      ${ss.max > 0 ? `<div style="font-size:12px;font-weight:800;color:${scoreColor(ss.pct)};">${fmtPct(ss.pct)} <span style="color:var(--grey-400);font-weight:400;">(${ss.got}/${ss.max})</span></div>` : ''}</div>`;
+    visItems.forEach(it => {
       const r = (a.responses || {})[it.id] || {};
-      html += `<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--grey-100);">
-        <div style="font-size:12px;min-width:0;">${escapeHtml(it.label)}${r.notes ? `<div style="color:var(--grey-500);font-style:italic;margin-top:2px;">${escapeHtml(r.notes)}</div>` : ''}</div>
-        <div style="font-size:12px;font-weight:700;white-space:nowrap;color:${isScored(r) ? scoreColor((Number(r.score) / (Number(it.max_score) || 1)) * 100) : 'var(--grey-400)'};">${isScored(r) ? (Number(r.score) + '/' + (Number(it.max_score) || 0)) : '—'}</div></div>`;
+      html += `<div style="padding:7px 0;border-bottom:1px solid var(--grey-100);">
+        <div style="display:flex;justify-content:space-between;gap:8px;">
+          <div style="font-size:12px;min-width:0;font-weight:600;">${escapeHtml(it.label)}</div>
+          ${itemIsScoredType(it) ? `<div style="font-size:12px;font-weight:700;white-space:nowrap;color:${scoreColor(itemMaxScore(it) ? (itemGotScore(it, r) / itemMaxScore(it)) * 100 : 0)};">${itemAnswered(it, r) ? (itemGotScore(it, r) + '/' + itemMaxScore(it)) : '—'}</div>` : ''}
+        </div>
+        ${auditAnswerSummary(it, r)}
+        ${r.notes ? `<div style="font-size:11px;color:var(--grey-500);font-style:italic;margin-top:2px;">${escapeHtml(r.notes)}</div>` : ''}
+      </div>`;
     });
     html += `</div>`;
   });
@@ -14917,6 +15215,7 @@ function renderAuditActions(main) {
   if (f.status !== 'all') rows = rows.filter(a => a.status === f.status);
   if (f.priority !== 'all') rows = rows.filter(a => a.priority === f.priority);
   if (f.overdue) rows = rows.filter(actionOverdue);
+  if (f.mine && state.user) rows = rows.filter(a => a.assigned_to === state.user.id);
   rows.sort((a, b) => {
     const ao = actionOverdue(a) ? 0 : 1, bo = actionOverdue(b) ? 0 : 1;
     if (ao !== bo) return ao - bo;
@@ -14936,6 +15235,8 @@ function renderAuditActions(main) {
     ${['all', 'low', 'medium', 'high', 'critical'].map(s => `<option value="${s}" ${f.priority === s ? 'selected' : ''}>${s === 'all' ? 'Any priority' : s}</option>`).join('')}</select>`;
   html += `<label style="display:flex;align-items:center;gap:5px;font-size:12px;padding:8px 10px;border:1px solid var(--grey-200);border-radius:var(--r-sm);background:var(--white);cursor:pointer;">
     <input type="checkbox" ${f.overdue ? 'checked' : ''} onchange="setActionFilter('overdue',this.checked)"> Overdue only</label>`;
+  html += `<label style="display:flex;align-items:center;gap:5px;font-size:12px;padding:8px 10px;border:1px solid var(--grey-200);border-radius:var(--r-sm);background:var(--white);cursor:pointer;">
+    <input type="checkbox" ${f.mine ? 'checked' : ''} onchange="setActionFilter('mine',this.checked)"> Assigned to me</label>`;
   html += `</div>`;
   html += rows.length ? rows.map(a => actionRow(a, schools.length > 1)).join('') : `<div style="font-size:13px;color:var(--grey-500);padding:8px 0;">No actions match these filters.</div>`;
   main.innerHTML = html;
@@ -15045,16 +15346,8 @@ function renderTemplateEditor(main) {
         <button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="tplMoveSection(${si},1)" ${si === (t.sections.length - 1) ? 'disabled' : ''}>↓</button>
         <button class="btn btn-ghost" style="${actionMiniBtn()};color:#c62828;" onclick="tplRemoveSection(${si})">✕</button>
       </div>`;
-    (sec.items || []).forEach((it, ii) => {
-      html += `<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
-        <input value="${escapeHtml(it.label || '')}" oninput="tplItemField(${si},${ii},'label',this.value)" placeholder="Item ${ii + 1}" style="${auditInputStyle()};flex:1;font-size:12px;">
-        <input type="number" min="1" max="10" value="${Number(it.max_score) || 5}" oninput="tplItemField(${si},${ii},'max_score',this.value)" title="Max score" style="${auditInputStyle()};width:56px;font-size:12px;text-align:center;padding-left:6px;padding-right:6px;">
-        <button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="tplMoveItem(${si},${ii},-1)" ${ii === 0 ? 'disabled' : ''}>↑</button>
-        <button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="tplMoveItem(${si},${ii},1)" ${ii === (sec.items.length - 1) ? 'disabled' : ''}>↓</button>
-        <button class="btn btn-ghost" style="${actionMiniBtn()};color:#c62828;" onclick="tplRemoveItem(${si},${ii})">✕</button>
-      </div>`;
-    });
-    html += `<button class="btn btn-ghost" style="${actionMiniBtn()};margin-top:4px;" onclick="tplAddItem(${si})">+ Add item</button></div>`;
+    (sec.items || []).forEach((it, ii) => { html += tplItemCard(t, si, ii, it); });
+    html += `<button class="btn btn-ghost" style="${actionMiniBtn()};margin-top:4px;" onclick="tplAddItem(${si})">+ Add question</button></div>`;
   });
   html += `<button class="btn btn-black" style="width:100%;margin-bottom:12px;" onclick="tplAddSection()">+ Add section</button>`;
   html += `<div style="display:flex;gap:8px;">
@@ -15076,6 +15369,115 @@ function tplItemField(si, ii, f, v) {
   const t = state.editingTemplate; if (!t || !t.sections[si] || !t.sections[si].items[ii]) return;
   t.sections[si].items[ii][f] = (f === 'max_score' ? Math.max(1, Math.min(10, parseInt(v, 10) || 1)) : v);
 }
+// ---- Per-question config card (type + scoring config + upload + reference + conditional) ----
+function tplItemCard(t, si, ii, it) {
+  const type = itemType(it);
+  const last = (t.sections[si].items.length - 1);
+  let h = `<div style="border:1px solid var(--grey-200);border-radius:var(--r-md);padding:10px;margin-bottom:8px;background:var(--off-white,#fafafa);">`;
+  h += `<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+    <input value="${escapeHtml(it.label || '')}" oninput="tplItemField(${si},${ii},'label',this.value)" placeholder="Question ${ii + 1}" style="${auditInputStyle()};flex:1;font-size:13px;">
+    <button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="tplMoveItem(${si},${ii},-1)" ${ii === 0 ? 'disabled' : ''}>↑</button>
+    <button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="tplMoveItem(${si},${ii},1)" ${ii === last ? 'disabled' : ''}>↓</button>
+    <button class="btn btn-ghost" style="${actionMiniBtn()};color:#c62828;" onclick="tplRemoveItem(${si},${ii})">✕</button></div>`;
+  h += `<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap;">
+    <span style="font-size:11px;color:var(--grey-500);">Type</span>
+    <select onchange="setItemType(${si},${ii},this.value)" style="${auditInputStyle()};flex:1;min-width:160px;font-size:12px;padding:6px 8px;">
+      ${AUDIT_TYPES.map(x => `<option value="${x.key}" ${type === x.key ? 'selected' : ''}>${escapeHtml(x.label)}</option>`).join('')}</select></div>`;
+  if (type === 'range') {
+    h += `<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;"><span style="font-size:11px;color:var(--grey-500);">Max score</span>
+      <input type="number" min="1" max="10" value="${Number(it.max_score) || 5}" oninput="tplItemField(${si},${ii},'max_score',this.value)" style="${auditInputStyle()};width:64px;font-size:12px;text-align:center;"></div>`;
+  } else if (type === 'choice' || type === 'radio' || type === 'checkbox') {
+    h += tplOptionsEditor(si, ii, it, type);
+  } else if (type === 'photo') {
+    h += `<label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:6px;cursor:pointer;"><input type="checkbox" ${it.capture_only ? 'checked' : ''} onchange="tplItemBool(${si},${ii},'capture_only',this.checked)"> Camera only (no file picker on desktop)</label>`;
+  }
+  h += `<label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:6px;cursor:pointer;"><input type="checkbox" ${it.allow_upload ? 'checked' : ''} onchange="tplItemBool(${si},${ii},'allow_upload',this.checked)"> Allow a photo/file attachment on the answer</label>`;
+  h += `<div style="margin-bottom:6px;">`;
+  if (it.reference_image) {
+    h += `<div style="font-size:11px;color:var(--grey-500);margin-bottom:3px;">“Good” example</div>
+      <img src="${it.reference_image}" alt="example" style="max-width:100%;max-height:140px;border-radius:6px;border:1px solid var(--grey-200);">
+      <div><button class="btn btn-ghost" style="${actionMiniBtn()};color:#c62828;" onclick="tplClearReference(${si},${ii})">Remove example</button></div>`;
+  } else {
+    h += auditFileButton('🖼 Add a “what good looks like” image', `tplSetReference(${si},${ii},this)`, 'image/*', false, false);
+  }
+  h += `</div>`;
+  h += tplConditionEditor(t, si, ii, it);
+  return h + `</div>`;
+}
+function tplOptionsEditor(si, ii, it, type) {
+  const opts = it.options || [];
+  let h = `<div style="margin-bottom:6px;"><div style="font-size:11px;color:var(--grey-500);margin-bottom:3px;">Options${type === 'radio' ? ' (exactly two)' : ''} — label + score</div>`;
+  opts.forEach((o, oi) => {
+    h += `<div style="display:flex;gap:5px;align-items:center;margin-bottom:4px;">
+      <input value="${escapeHtml(o.label || '')}" oninput="tplOptField(${si},${ii},${oi},'label',this.value)" placeholder="Option ${oi + 1}" style="${auditInputStyle()};flex:1;font-size:12px;padding:6px 8px;">
+      <input type="number" value="${Number(o.score) || 0}" oninput="tplOptField(${si},${ii},${oi},'score',this.value)" title="Score" style="${auditInputStyle()};width:58px;font-size:12px;text-align:center;padding:6px;">
+      <button class="btn btn-ghost" style="${actionMiniBtn()};color:#c62828;" onclick="tplRemoveOption(${si},${ii},${oi})" ${type === 'radio' && opts.length <= 2 ? 'disabled' : ''}>✕</button></div>`;
+  });
+  if (!(type === 'radio' && opts.length >= 2)) h += `<button class="btn btn-ghost" style="${actionMiniBtn()};margin-top:2px;" onclick="tplAddOption(${si},${ii})">+ Add option</button>`;
+  return h + `</div>`;
+}
+function _tplCondCandidates(t, si, ii) {
+  const out = [];
+  for (let s = 0; s <= si; s++) { const items = t.sections[s].items || []; const lim = (s === si) ? ii : items.length; for (let i = 0; i < lim; i++) { const c = items[i]; if (itemCanSourceCondition(c)) out.push(c); } }
+  return out;
+}
+function _tplDefaultCond(src) {
+  const ty = itemType(src);
+  if (ty === 'choice' || ty === 'radio') return { itemId: src.id, op: 'option_eq', value: (src.options && src.options[0] && src.options[0].id) || '' };
+  if (ty === 'checkbox') return { itemId: src.id, op: 'option_in', value: (src.options && src.options[0] && src.options[0].id) || '' };
+  return { itemId: src.id, op: 'gte', value: 1 };
+}
+function tplConditionEditor(t, si, ii, it) {
+  const candidates = _tplCondCandidates(t, si, ii).map(c => ({ id: c.id, label: c.label || 'Question', type: itemType(c), options: c.options || [] }));
+  const c = it.visible_if || null;
+  let h = `<div style="border-top:1px dashed var(--grey-200);padding-top:6px;margin-top:4px;">
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:${candidates.length ? 'pointer' : 'default'};"><input type="checkbox" ${c ? 'checked' : ''} ${candidates.length ? '' : 'disabled'} onchange="tplToggleCondition(${si},${ii},this.checked)"> Only show this question if…</label>`;
+  if (!candidates.length) return h + `<div style="font-size:10px;color:var(--grey-400);margin-top:3px;">(needs an earlier choice / number / scored question)</div></div>`;
+  if (c) {
+    const src = candidates.find(x => x.id === c.itemId) || candidates[candidates.length - 1];
+    h += `<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:5px;align-items:center;">
+      <select onchange="tplCondSource(${si},${ii},this.value)" style="${auditInputStyle()};flex:1;min-width:120px;font-size:12px;padding:6px 8px;">
+        ${candidates.map(x => `<option value="${escapeHtml(x.id)}" ${c.itemId === x.id ? 'selected' : ''}>${escapeHtml(x.label)}</option>`).join('')}</select>`;
+    if (src.type === 'choice' || src.type === 'radio') {
+      h += `<span style="font-size:12px;">is</span><select onchange="tplCondValue(${si},${ii},'option_eq',this.value)" style="${auditInputStyle()};flex:1;min-width:100px;font-size:12px;padding:6px 8px;">
+        ${(src.options || []).map(o => `<option value="${escapeHtml(o.id)}" ${c.op === 'option_eq' && c.value === o.id ? 'selected' : ''}>${escapeHtml(o.label || 'Option')}</option>`).join('')}</select>`;
+    } else if (src.type === 'checkbox') {
+      h += `<span style="font-size:12px;">includes</span><select onchange="tplCondValue(${si},${ii},'option_in',this.value)" style="${auditInputStyle()};flex:1;min-width:100px;font-size:12px;padding:6px 8px;">
+        ${(src.options || []).map(o => `<option value="${escapeHtml(o.id)}" ${c.op === 'option_in' && c.value === o.id ? 'selected' : ''}>${escapeHtml(o.label || 'Option')}</option>`).join('')}</select>`;
+    } else {
+      const op = (c.op === 'gte' || c.op === 'lte' || c.op === 'eq') ? c.op : 'gte';
+      h += `<select onchange="tplCondOp(${si},${ii},this.value)" style="${auditInputStyle()};width:60px;font-size:12px;padding:6px;">
+        <option value="gte" ${op === 'gte' ? 'selected' : ''}>≥</option><option value="lte" ${op === 'lte' ? 'selected' : ''}>≤</option><option value="eq" ${op === 'eq' ? 'selected' : ''}>=</option></select>
+        <input type="number" value="${c.value === undefined || c.value === '' ? '' : escapeHtml(String(c.value))}" oninput="tplCondNum(${si},${ii},this.value)" style="${auditInputStyle()};width:64px;font-size:12px;text-align:center;padding:6px;">`;
+    }
+    h += `</div>`;
+  }
+  return h + `</div>`;
+}
+function tplItemBool(si, ii, f, v) { const t = state.editingTemplate; if (t && t.sections[si] && t.sections[si].items[ii]) t.sections[si].items[ii][f] = !!v; }
+function setItemType(si, ii, type) {
+  const t = state.editingTemplate; if (!t || !t.sections[si] || !t.sections[si].items[ii]) return;
+  const it = t.sections[si].items[ii]; it.type = type;
+  if (type === 'range' && !it.max_score) it.max_score = 5;
+  if (type === 'choice' || type === 'checkbox') { if (!it.options || !it.options.length) it.options = [{ id: auditUid(), label: '', score: 1 }, { id: auditUid(), label: '', score: 0 }]; }
+  if (type === 'radio') { it.options = (it.options || []).slice(0, 2); while (it.options.length < 2) it.options.push({ id: auditUid(), label: '', score: it.options.length === 0 ? 1 : 0 }); }
+  renderAudits();
+}
+function tplAddOption(si, ii) { const t = state.editingTemplate; const it = t && t.sections[si] && t.sections[si].items[ii]; if (!it) return; it.options = it.options || []; if (itemType(it) === 'radio' && it.options.length >= 2) return; it.options.push({ id: auditUid(), label: '', score: 0 }); renderAudits(); }
+function tplRemoveOption(si, ii, oi) { const t = state.editingTemplate; const it = t && t.sections[si] && t.sections[si].items[ii]; if (!it || !it.options) return; if (itemType(it) === 'radio' && it.options.length <= 2) return; it.options.splice(oi, 1); renderAudits(); }
+function tplOptField(si, ii, oi, f, v) { const t = state.editingTemplate; const it = t && t.sections[si] && t.sections[si].items[ii]; if (!it || !it.options || !it.options[oi]) return; it.options[oi][f] = (f === 'score' ? (v === '' || v === '-' ? 0 : Number(v)) : v); }
+async function tplSetReference(si, ii, input) { const t = state.editingTemplate; const it = t && t.sections[si] && t.sections[si].items[ii]; if (!it) return; const f = input && input.files && input.files[0]; if (!f) return; try { const data = await compressImage(f, 1280, 0.7); it.reference_image = data; it.reference_name = f.name || 'example.jpg'; renderAudits(); } catch (e) { alert('Could not read that image.'); } }
+function tplClearReference(si, ii) { const t = state.editingTemplate; const it = t && t.sections[si] && t.sections[si].items[ii]; if (!it) return; delete it.reference_image; delete it.reference_name; renderAudits(); }
+function tplToggleCondition(si, ii, on) {
+  const t = state.editingTemplate; const it = t && t.sections[si] && t.sections[si].items[ii]; if (!it) return;
+  if (!on) { delete it.visible_if; renderAudits(); return; }
+  const cand = _tplCondCandidates(t, si, ii); if (!cand.length) { renderAudits(); return; }
+  it.visible_if = _tplDefaultCond(cand[cand.length - 1]); renderAudits();
+}
+function tplCondSource(si, ii, srcId) { const t = state.editingTemplate; const it = t && t.sections[si] && t.sections[si].items[ii]; if (!it) return; const src = _tplCondCandidates(t, si, ii).find(x => x.id === srcId); if (!src) return; it.visible_if = _tplDefaultCond(src); renderAudits(); }
+function tplCondValue(si, ii, op, value) { const t = state.editingTemplate; const it = t && t.sections[si] && t.sections[si].items[ii]; if (!it || !it.visible_if) return; it.visible_if.op = op; it.visible_if.value = value; }
+function tplCondOp(si, ii, op) { const t = state.editingTemplate; const it = t && t.sections[si] && t.sections[si].items[ii]; if (!it || !it.visible_if) return; it.visible_if.op = op; }
+function tplCondNum(si, ii, v) { const t = state.editingTemplate; const it = t && t.sections[si] && t.sections[si].items[ii]; if (!it || !it.visible_if) return; it.visible_if.value = (v === '' ? '' : Number(v)); }
 function tplAddSection() { const t = state.editingTemplate; if (!t) return; t.sections = t.sections || []; t.sections.push({ id: auditUid(), title: '', order: t.sections.length + 1, items: [] }); renderAudits(); }
 function tplRemoveSection(si) { const t = state.editingTemplate; if (!t) return; if (!confirm('Remove this section and its items?')) return; t.sections.splice(si, 1); renderAudits(); }
 function tplMoveSection(si, dir) { const t = state.editingTemplate; if (!t) return; const j = si + dir; if (j < 0 || j >= t.sections.length) return; const s = t.sections, tmp = s[si]; s[si] = s[j]; s[j] = tmp; renderAudits(); }
@@ -15089,7 +15491,17 @@ function validateTemplate(t) {
   (t.sections || []).forEach((s, i) => {
     if (!s.title || !s.title.trim()) e.push('Section ' + (i + 1) + ' needs a title');
     if (!s.items || !s.items.length) e.push('Section ' + (i + 1) + ' needs at least one item');
-    (s.items || []).forEach((it, j) => { if (!it.label || !it.label.trim()) e.push('Section ' + (i + 1) + ', item ' + (j + 1) + ' needs a label'); });
+    (s.items || []).forEach((it, j) => {
+      const where = 'Section ' + (i + 1) + ', question ' + (j + 1);
+      if (!it.label || !it.label.trim()) e.push(where + ' needs a label');
+      const ty = itemType(it);
+      if (ty === 'choice' || ty === 'checkbox' || ty === 'radio') {
+        const opts = it.options || [];
+        if (ty === 'radio' && opts.length !== 2) e.push(where + ' (radio) needs exactly two options');
+        else if (opts.length < 1) e.push(where + ' needs at least one option');
+        if (opts.some(o => !o.label || !o.label.trim())) e.push(where + ' has an option with no label');
+      }
+    });
   });
   if (t.scope === 'school' && !t.school_id) e.push('Pick a school for a school-scoped template');
   return e;
@@ -15098,7 +15510,17 @@ async function saveTemplate() {
   const t = state.editingTemplate; if (!t) return;
   const errs = validateTemplate(t);
   if (errs.length) { alert('Fix these first:\n• ' + errs.join('\n• ')); return; }
-  (t.sections || []).forEach((s, i) => { s.order = i + 1; (s.items || []).forEach((it, j) => { it.order = j + 1; it.max_score = Math.max(1, Math.min(10, parseInt(it.max_score, 10) || 1)); }); });
+  (t.sections || []).forEach((s, i) => {
+    s.order = i + 1;
+    (s.items || []).forEach((it, j) => {
+      it.order = j + 1;
+      const ty = itemType(it);
+      if (ty === 'range') it.max_score = Math.max(1, Math.min(10, parseInt(it.max_score, 10) || 1));
+      if (ty === 'choice' || ty === 'radio' || ty === 'checkbox') {
+        it.options = (it.options || []).map(o => ({ id: o.id || auditUid(), label: o.label || '', score: Number(o.score) || 0 }));
+      }
+    });
+  });
   const row = {
     title: t.title.trim(), description: (t.description || '').trim(), scope: t.scope,
     school_id: t.scope === 'global' ? null : t.school_id, sections: t.sections, is_active: t.is_active !== false,
@@ -15203,19 +15625,19 @@ async function saveAuditAction() {
   if (d.editId) res = await DB.audits.updateAction(d.editId, row);
   else { row.audit_id = d.auditId; row.school_id = d.schoolId; row.item_id = d.itemId || null; row.created_by = state.user && state.user.id; res = await DB.audits.createAction(row); }
   if (res.error) { alert('Could not save the action: ' + res.error); return; }
-  closeModal('modalAuditAction'); state.auditData = null; renderAudits();
+  closeModal('modalAuditAction'); state.auditData = null; state.auditSignals = null; renderAudits();
 }
 async function deleteAuditAction() {
   const d = state._actionDraft || {}; if (!d.editId) return;
   if (!confirm('Delete this action?')) return;
   const res = await DB.audits.deleteAction(d.editId);
   if (res.error) { alert('Could not delete (only open actions can be deleted): ' + res.error); return; }
-  closeModal('modalAuditAction'); state.auditData = null; renderAudits();
+  closeModal('modalAuditAction'); state.auditData = null; state.auditSignals = null; renderAudits();
 }
 async function transitionAction(id, status) {
   const patch = { status };
   if (status === 'completed') patch.completed_at = new Date().toISOString();
   const res = await DB.audits.updateAction(id, patch);
   if (res.error) { alert('Could not update: ' + res.error); return; }
-  state.auditData = null; renderAudits();
+  state.auditData = null; state.auditSignals = null; renderAudits();
 }

@@ -1060,6 +1060,10 @@
       <span class="nav-icon">📦</span><span>Shop</span>
       <span id="navShopBadge" style="display:none;position:absolute;top:2px;right:8px;min-width:15px;height:15px;line-height:15px;padding:0 4px;border-radius:8px;background:var(--red,#D22C12);color:#fff;font-size:9px;font-weight:700;text-align:center;">0</span>
     </button>
+    <button class="nav-btn" data-view="audits" onclick="setView('audits')" id="navAudits" style="display:none;position:relative;">
+      <span class="nav-icon">☑</span><span>Audits</span>
+      <span id="navAuditsBadge" style="display:none;position:absolute;top:2px;right:8px;min-width:15px;height:15px;line-height:15px;padding:0 4px;border-radius:8px;background:var(--red,#D22C12);color:#fff;font-size:9px;font-weight:700;text-align:center;">0</span>
+    </button>
     <button class="nav-btn" data-view="more" onclick="setView('more')">
       <span class="nav-icon">⋯</span><span>More</span>
     </button>
@@ -2997,14 +3001,14 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '85';
+  window.KRMAS_APP_VERSION = '86';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
 </script>
-<script src="data.js?v=85"></script>
-<script src="db.js?v=85"></script>
-<script src="app.js?v=85"></script>
+<script src="data.js?v=86"></script>
+<script src="db.js?v=86"></script>
+<script src="app.js?v=86"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
