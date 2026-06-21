@@ -5936,6 +5936,8 @@ function openNewGradingSession() {
   document.getElementById('gsDeleteBtn').style.display = 'none';
   document.getElementById('gsSyllabus').value = 'ln';
   document.getElementById('gsDate').value = isoDate(new Date());
+  document.getElementById('gsStart').value = '17:00';
+  document.getElementById('gsEnd').value = '18:30';
   document.getElementById('gsLocation').value = (school?.name || '') + ' Dojo';
   openModal('modalGradingSession');
 }
@@ -5948,6 +5950,8 @@ function openEditGradingSession(id) {
   document.getElementById('gsDeleteBtn').style.display = 'block';
   document.getElementById('gsSyllabus').value = s.syllabus || 'ln';
   document.getElementById('gsDate').value = s.date || '';
+  document.getElementById('gsStart').value = s.start || '17:00';
+  document.getElementById('gsEnd').value = s.end || '18:30';
   document.getElementById('gsLocation').value = s.location || '';
   openModal('modalGradingSession');
 }
@@ -5956,18 +5960,82 @@ async function saveGradingSession() {
   const syllabus = document.getElementById('gsSyllabus').value;
   const date     = document.getElementById('gsDate').value;
   const location = document.getElementById('gsLocation').value.trim();
+  let start      = (document.getElementById('gsStart').value || '').trim();
+  let end        = (document.getElementById('gsEnd').value || '').trim();
   if (!date) { alert('Enter a date.'); return; }
+  start = start || '17:00'; end = end || '18:30';
+  if (end <= start) { alert('The grading ends at or before it starts \u2014 check the times.'); return; }
   let id = state.editingGradingSessionId;
+  const oldDate = id ? ((state.grading[id] && state.grading[id].date) || null) : null;
   if (id) {
-    state.grading[id] = { ...state.grading[id], syllabus, date, location };
+    state.grading[id] = { ...state.grading[id], syllabus, date, location, start, end };
   } else {
     id = 'GS-' + Date.now().toString(36).toUpperCase();
-    state.grading[id] = { id, syllabus, date, location, candidates: [] };
+    state.grading[id] = { id, syllabus, date, location, start, end, candidates: [] };
     state.gradingSessionId = id; // auto-open new session
   }
   await saveGrading();
+  await syncRosterFromGradingSession(id, oldDate); // put the grading on the roster (+ calendar)
   closeModal('modalGradingSession');
   renderGrading();
+}
+
+// Mirror a grading session onto the school roster as a grading-day override, and keep the
+// linked calendar event in step. The grading session owns its slot (a stable per-session id),
+// so any EXTRA classes an admin adds to that grading day on the roster survive later edits.
+// Works on normally-closed days: rosterForDay "opens" a closed day for grading slots. This is
+// a convenience layer over the grading save and never blocks it.
+async function syncRosterFromGradingSession(sessionId, oldDate) {
+  try {
+    const sid = state.schoolId;
+    if (!canEditSchool(sid)) return;
+    const session = state.grading[sessionId];
+    if (!session || !session.date) return;
+    const newDate = session.date;
+    const slotId = 'GSLOT-' + sessionId;
+    const start = session.start || '17:00';
+    const end = session.end || '18:30';
+    const sylLabel = (typeof GRADING_SYLLABI !== 'undefined' && GRADING_SYLLABI[session.syllabus] && GRADING_SYLLABI[session.syllabus].label) || session.syllabus || 'Grading';
+    const label = 'Grading \u2014 ' + sylLabel;
+    const o = ensureOverrideStores(sid);
+
+    if (oldDate && oldDate !== newDate) await detachGradingSlot(sid, sessionId, oldDate);
+
+    let ovr = o.overrides[newDate];
+    if (!ovr) {
+      ovr = { kind: 'grading', label, replaceNormal: true,
+              slots: [{ id: slotId, start, end, type: defaultClassType(), label: null, areaId: null }],
+              gradingId: sessionId, eventId: null };
+      o.overrides[newDate] = ovr;
+    } else {
+      if (!Array.isArray(ovr.slots)) ovr.slots = [];
+      const slot = ovr.slots.find(s => s.id === slotId);
+      if (slot) { slot.start = start; slot.end = end; }
+      else ovr.slots.push({ id: slotId, start, end, type: defaultClassType(), label: null, areaId: null });
+      ovr.gradingId = sessionId;
+      if (ovr.kind !== 'special') { ovr.kind = 'grading'; if (!ovr.label) ovr.label = label; }
+    }
+    ovr.eventId = await syncEventFromSource(sid, 'grading', { eventId: ovr.eventId || null, title: ovr.label || label, from: newDate, to: newDate });
+
+    await saveCustomSchools(sid);
+    if (state.view === 'roster') renderDay();
+  } catch (e) { /* roster mirror is a convenience, never a blocker */ }
+}
+
+// Remove a grading session's slot from a day's override. If that empties the override, delete
+// it (and its calendar event); otherwise just unlink the session. Caller persists + re-renders.
+async function detachGradingSlot(sid, sessionId, iso) {
+  const o = ensureOverrideStores(sid);
+  const ovr = o.overrides[iso];
+  if (!ovr) return;
+  const slotId = 'GSLOT-' + sessionId;
+  if (Array.isArray(ovr.slots)) ovr.slots = ovr.slots.filter(s => s.id !== slotId);
+  if (!ovr.slots || !ovr.slots.length) {
+    delete o.overrides[iso];
+    if (ovr.eventId) await syncRemoveEvent(sid, ovr.eventId);
+  } else if (ovr.gradingId === sessionId) {
+    ovr.gradingId = null;
+  }
 }
 
 async function deleteGradingSession() {
@@ -5976,9 +6044,15 @@ async function deleteGradingSession() {
   const s = state.grading[id];
   const label = s ? (GRADING_SYLLABI[s.syllabus]?.label || s.syllabus) + ' · ' + (s.date || '') : id;
   if (!confirm('Delete "' + label + '" and all its candidates? Cannot be undone.')) return;
+  const dt = s && s.date;
   delete state.grading[id];
   if (state.gradingSessionId === id) state.gradingSessionId = null;
   await saveGrading();
+  // Pull the matching grading-day slot back off the roster (and the event if it empties).
+  try {
+    const sid = state.schoolId;
+    if (dt && canEditSchool(sid)) { await detachGradingSlot(sid, id, dt); await saveCustomSchools(sid); if (state.view === 'roster') renderDay(); }
+  } catch (e) {}
   closeModal('modalGradingSession');
   renderGrading();
 }
@@ -10524,13 +10598,6 @@ function downloadDocument(docId) {
 // preview inline everywhere; desktop keeps the inline iframe preview that works well.
 let _pdfViewerObjectUrl = null;
 
-function isMobileDevice() {
-  try {
-    if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches && !window.matchMedia('(pointer: fine)').matches) return true;
-  } catch (e) {}
-  return /Android|iPhone|iPad|iPod|Mobile|Silk|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent || '');
-}
-
 // Turn a base64/encoded data: URL into a Blob object URL (more robust than a giant
 // data: URL, and required for a new-tab open on mobile).
 function dataUrlToBlobUrl(dataUrl) {
@@ -13225,6 +13292,7 @@ async function shopSwitchSchool(sid) {
   if (state.stocktakeSession && state.stocktakeSession.schoolId !== sid) { state.stocktakeSession = null; state.stocktakeCounts = {}; state._stocktakeReview = false; }
   if (state.shopView === 'stocktake') { try { state.stocktakeSessions = await DB.loadStocktakeSessions(sid); } catch (e) {} }
   if (state.shopView === 'transfers' && can.manageShop()) { try { state.shopTransfers = await DB.loadTransfers(60); } catch (e) {} }
+  if (state.shopView === 'special') { try { state.specialOrders = await DB.specialOrders.list(sid); } catch (e) {} }
   renderShop();
 }
 // Retry after a failed catalogue/stock load.
