@@ -1054,7 +1054,7 @@
       <span class="nav-icon">▤</span><span>Roster</span>
     </button>
     <button class="nav-btn" data-view="teach" onclick="setView('teach')">
-      <span class="nav-icon">🥋</span><span>Teach</span>
+      <span class="nav-icon">📚</span><span>Classes</span>
     </button>
     <button class="nav-btn" data-view="shop" onclick="setView('shop')" id="navShop" style="display:none;position:relative;">
       <span class="nav-icon">📦</span><span>Shop</span>
@@ -2324,6 +2324,7 @@
         <div style="text-align:left;"><div style="font-weight:700;">Events report</div><div style="font-size:11px;color:var(--grey-400);font-weight:400;">All calendar events with types, dates, locations</div></div>
       </button>
     </div>
+    <div id="reportsSuperSection"></div>
     <button class="btn btn-ghost" style="width:100%;margin-top:10px;" onclick="closeModal('modalReports')">Close</button>
   </div>
 </div>
@@ -2464,6 +2465,16 @@
     <h2>🚫 Closures / holidays</h2>
     <div id="closuresBody" style="max-height:62vh;overflow-y:auto;"></div>
     <button class="btn btn-ghost" style="width:100%;margin-top:12px;" onclick="closeModal('modalClosures')">Done</button>
+  </div>
+</div>
+
+<!-- ===== Modal: Quick links (external URLs on Home) ===== -->
+<div class="modal-bg" id="modalQuickLinks">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2>🔗 Quick links</h2>
+    <div id="quickLinksBody" style="max-height:62vh;overflow-y:auto;"></div>
+    <button class="btn btn-ghost" style="width:100%;margin-top:12px;" onclick="closeModal('modalQuickLinks')">Done</button>
   </div>
 </div>
 
@@ -2821,14 +2832,14 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '77';
+  window.KRMAS_APP_VERSION = '79';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
 </script>
-<script src="data.js?v=77"></script>
-<script src="db.js?v=77"></script>
-<script src="app.js?v=77"></script>
+<script src="data.js?v=79"></script>
+<script src="db.js?v=79"></script>
+<script src="app.js?v=79"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

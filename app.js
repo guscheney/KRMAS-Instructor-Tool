@@ -97,6 +97,7 @@ const state = {
   editingEventId: null,
   lastLogins: {},        // instructorId → ISO timestamp of last login (this school)
   documents: [],         // uploaded PDFs (syllabuses, policies, etc.)
+  quickLinks: [],        // external URLs (label + url) surfaced on Home
   myDocuments: [],       // personal (instructor-scoped) documents for the current user
   personalDocsList: [],  // docs shown in the personal-docs modal (self or admin viewing another)
   personalDocsTarget: null, // instructor id whose personal docs are open
@@ -126,7 +127,7 @@ const DEFAULT_PERMS = {
   instructor: { feed:{view:1,add:1}, notices:{view:1}, calendar:{view:1}, documents:{view:1},
     compliance:{view:1}, students:{view:1,add:1,edit:1}, incidents:{view:1,add:1},
     grading:{view:1}, groups:{view:1}, roster:{view:1},
-    'lesson-plans':{view:1,edit:1}, 'roster-edits':{view:1,edit:1} },
+    'lesson-plans':{view:1,edit:1,delete:1}, 'roster-edits':{view:1,edit:1} },
   junior: { feed:{view:1,add:1}, notices:{view:1}, calendar:{view:1}, documents:{view:1},
     students:{add:1,edit:1}, incidents:{add:1}, groups:{view:1}, roster:{view:1},
     'lesson-plans':{view:1,edit:1}, 'roster-edits':{view:1,edit:1} },
@@ -141,7 +142,11 @@ function hasPerm(section, action) {
   const rc = state.roleConfig;
   if (rc && rc._loaded) {                         // live config is authoritative once loaded
     const p = rc.perms && rc.perms[role];
-    return !!(p && p[section] && p[section][action]);
+    if (p && p[section]) return !!p[section][action];   // section configured → authoritative
+    // Section absent from the saved config (e.g. a matrix row added in a later
+    // release) → fall back to the built-in defaults until a superadmin sets it.
+    const d = DEFAULT_PERMS[role];
+    return !!(d && d[section] && d[section][action]);
   }
   const def = DEFAULT_PERMS[role];                // pre-load fallback
   return !!(def && def[section] && def[section][action]);
@@ -152,8 +157,12 @@ function hasPerm(section, action) {
 // (their server-side gate is the structural floor / kv_min_role, not role_permissions).
 const can = {
   editRoster:        () => hasRole('admin'),
-  editPlans:         () => hasRole('junior'),
-  deletePlans:       () => hasRole('instructor'),
+  viewRoster:        () => hasPerm('roster','view'),
+  manageQuickLinks:  () => hasRole('admin'),  // admins (own school) + superadmins (any/network)
+  editPlans:         () => hasRole('junior'),       // general content edit (students/progressions)
+  viewPlans:         () => hasPerm('lesson-plans','view'),
+  editLessonPlans:   () => hasPerm('lesson-plans','edit'),
+  deletePlans:       () => hasPerm('lesson-plans','delete'),
   viewIncidents:     () => hasPerm('incidents','view'),
   fileIncidents:     () => hasPerm('incidents','add'),
   editIncidents:     () => hasPerm('incidents','edit'),
@@ -177,8 +186,8 @@ const can = {
   editGroups:        () => hasPerm('groups','edit'),
   deleteGroups:      () => hasPerm('groups','delete'),
   managePathway:     () => hasRole('admin'),
-  manageGrading:     () => hasRole('admin'),
-  viewGrading:       () => hasRole('instructor'),
+  manageGrading:     () => hasPerm('grading','edit'),
+  viewGrading:       () => hasPerm('grading','view'),
   manageStocktake:   () => hasRole('admin'),
   exportRoster:      () => hasRole('admin'),
   changePin:         () => hasRole('junior'),
@@ -293,6 +302,7 @@ function canEditPlan(dateKey) {
   const p = state.plans[dateKey];
   if (p && p.shared) return can.switchAnySchool();
   if (typeof dateKey === 'string' && dateKey.startsWith('grading-')) return can.manageGrading();
+  if (!can.editLessonPlans()) return false;       // lesson-plan editing now matrix-gated
   if (can.editRoster()) return true;
   // Rostered instructor for that class may edit their own plan
   const datePart = (dateKey || '').slice(0, 10);
@@ -737,6 +747,30 @@ function findGradingSessionForDate(iso) {
   for (const k in g) { if (g[k] && g[k].date === iso) return g[k].id || k; }
   return null;
 }
+// Shared grading-day builders — used by BOTH the manual override editor and the
+// calendar reverse-sync, so a grading day is built the same way however it's created.
+function gradingSessionForDate(iso) {
+  const gid = findGradingSessionForDate(iso);
+  if (!gid) return null;
+  const g = state.grading || {};
+  return g[gid] || Object.keys(g).map(k => g[k]).find(s => s && s.id === gid) || null;
+}
+function gradingDayLabel(iso, fallback) {
+  const s = gradingSessionForDate(iso);
+  if (s && s.syllabus) {
+    const lbl = (typeof GRADING_SYLLABI !== 'undefined' && GRADING_SYLLABI[s.syllabus] && GRADING_SYLLABI[s.syllabus].label) || s.syllabus;
+    return 'Grading \u2014 ' + lbl;
+  }
+  return fallback || 'Grading';
+}
+function buildGradingSlots(iso, sid) {
+  const dow = new Date(iso + 'T00:00:00').getDay();
+  const sched = (sid === state.schoolId) ? currentSchedule() : [];
+  const normal = sched.filter(c => c.day === dow);
+  let slots = normal.map(c => ({ id: newOvrId('GR'), start: c.start, end: c.end, type: c.type, label: c.label || null, areaId: c.areaId || null }));
+  if (!slots.length) slots = [{ id: newOvrId('GR'), start: '09:00', end: '12:00', type: defaultClassType(), label: null, areaId: null }];
+  return slots;
+}
 
 // ---------- Closures admin (single days + shutdown ranges) ----------
 function openClosuresAdmin() {
@@ -757,6 +791,7 @@ function renderClosuresAdmin() {
         <div style="font-weight:600;font-size:13px;">${escapeHtml(c.label || 'Closed')}</div>
         <div style="font-size:11px;color:var(--grey-400);">${single ? fmtIsoNice(c.from) : fmtIsoNice(c.from) + ' \u2192 ' + fmtIsoNice(c.to)}</div>
       </div>
+      ${c.eventId ? '<span title="Mirrored on the Events calendar" style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#16a34a;background:rgba(22,163,74,.12);padding:2px 6px;border-radius:999px;flex-shrink:0;white-space:nowrap;">\u{1F4C5} On calendar</span>' : ''}
       <button onclick="deleteClosure('${c.id}')" title="Delete" style="background:none;border:none;cursor:pointer;font-size:16px;color:var(--red);">\u00d7</button>
     </div>`;
   }).join('')) || `<div style="font-size:13px;color:var(--grey-400);padding:6px 0;">No closures yet.</div>`;
@@ -854,21 +889,23 @@ async function syncOverrideFromEvent(ev) {
   try {
     const o = ensureOverrideStores(ev.schoolId);
     const iso = ev.startDate;
-    const existing = o.overrides[iso];
-    if (existing && existing.eventId === ev.id) {
+    // If this event already drives an override on another date (the event was moved),
+    // relocate that override to the new date, preserving the user's class slots.
+    const oldKey = Object.keys(o.overrides).find(k => o.overrides[k] && o.overrides[k].eventId === ev.id);
+    if (oldKey && oldKey !== iso && !o.overrides[iso]) { o.overrides[iso] = o.overrides[oldKey]; delete o.overrides[oldKey]; }
+    const existing = (o.overrides[iso] && o.overrides[iso].eventId === ev.id) ? o.overrides[iso] : null;
+    if (existing) {
       existing.label = ev.title || (kind === 'grading' ? 'Grading' : 'Special');
       existing.kind = kind;
-    } else if (!existing) {
+    } else if (!o.overrides[iso]) {
       let slots;
       if (kind === 'grading') {
-        const dow = new Date(iso + 'T00:00:00').getDay();
-        const normal = (ev.schoolId === state.schoolId ? currentSchedule() : []).filter(c => c.day === dow);
-        slots = normal.map(c => ({ id: newOvrId('GR'), start: c.start, end: c.end, type: c.type, label: c.label || null, areaId: c.areaId || null }));
-        if (!slots.length) slots = [{ id: newOvrId('GR'), start: '09:00', end: '12:00', type: defaultClassType(), label: null, areaId: null }];
+        slots = buildGradingSlots(iso, ev.schoolId);
       } else {
         slots = [{ id: newOvrId('OS'), start: '17:00', end: '18:00', type: defaultClassType(), label: null, areaId: null }];
       }
-      o.overrides[iso] = { kind, label: ev.title || (kind === 'grading' ? 'Grading' : 'Special'), replaceNormal: kind === 'grading', slots, gradingId: kind === 'grading' ? (typeof findGradingSessionForDate === 'function' ? findGradingSessionForDate(iso) : null) : null, eventId: ev.id };
+      const label = ev.title || (kind === 'grading' ? gradingDayLabel(iso, 'Grading') : 'Special');
+      o.overrides[iso] = { kind, label, replaceNormal: kind === 'grading', slots, gradingId: kind === 'grading' ? findGradingSessionForDate(iso) : null, eventId: ev.id };
     }
     await saveCustomSchools(ev.schoolId);
     if (state.view === 'roster') renderDay();
@@ -1013,11 +1050,7 @@ function startGradingDay() {
 }
 function seedGradingFromClasses() {
   const d = state._ovrDraft; if (!d) return;
-  const date = new Date(state._ovrDate + 'T00:00:00');
-  const dow = date.getDay();
-  const normal = currentSchedule().filter(c => c.day === dow);
-  d.slots = normal.map(c => ({ id: newOvrId('GR'), start: c.start, end: c.end, type: c.type, label: c.label || null, areaId: c.areaId || null }));
-  if (!d.slots.length) d.slots = [{ id: newOvrId('GR'), start: '09:00', end: '12:00', type: defaultClassType(), label: null, areaId: null }];
+  d.slots = buildGradingSlots(state._ovrDate, state.schoolId);
   renderDayOverride();
 }
 function addOverrideSlot() {
@@ -1139,6 +1172,11 @@ function renderWeekMeta() {
 }
 
 function renderDay() {
+  if (!can.viewRoster()) {
+    hideDayHead();
+    document.getElementById('mainContent').innerHTML = `<div class="empty" style="padding-top:30px;"><h2>Roster</h2><p>You don't have permission to view the roster.</p></div>`;
+    return;
+  }
   const idx = state.selectedDay === 0 ? 6 : state.selectedDay - 1;
   const date = addDays(state.currentDate, idx);
   document.getElementById('dayName').textContent = DAY_NAMES[state.selectedDay];
@@ -1335,7 +1373,7 @@ function renderCardDetail(c) {
   const canVolunteer = needsCover && can.volunteerCover();
   const canCover = can.markNeedsCover();
   html += `<div class="detail-actions">
-    ${can.editPlans() ? `<button class="btn btn-black" onclick="event.stopPropagation(); openPlan('${c.dateKey}')">${c.plan ? 'Edit lesson plan' : 'Create lesson plan'}</button>` : ''}
+    ${can.editLessonPlans() ? `<button class="btn btn-black" onclick="event.stopPropagation(); openPlan('${c.dateKey}')">${c.plan ? 'Edit lesson plan' : 'Create lesson plan'}</button>` : ''}
     ${can.editRoster() ? `<button class="btn" onclick="event.stopPropagation(); openEdit('${c.dateKey}')">Edit roster</button>` : ''}
     ${canVolunteer
       ? `<button class="btn btn-primary" onclick="event.stopPropagation(); volunteerToCover('${c.dateKey}')">Volunteer to cover</button>`
@@ -1376,10 +1414,10 @@ function changeWeek(delta) {
 function navModel() {
   return [
     { dataView: 'feed', icon: '🏠', label: 'Home', type: 'view', view: 'feed' },
-    { dataView: 'roster', icon: '▤', label: 'Roster', type: 'view', view: 'roster' },
-    { dataView: 'teach', icon: '🥋', label: 'Teach', type: 'hub', tiles: [
+    { dataView: 'roster', icon: '▤', label: 'Roster', type: 'view', view: 'roster', gate: () => can.viewRoster() },
+    { dataView: 'teach', icon: '📚', label: 'Classes', type: 'hub', tiles: [
       { icon: '🥋', label: 'Grading', view: 'grading', desc: 'Belts & progression' },
-      { icon: '✎', label: 'Lesson plans', view: 'plans', desc: 'Plans & topic library' },
+      { icon: '✎', label: 'Lesson plans', view: 'plans', desc: 'Plans & topic library', gate: () => can.viewPlans() },
       { icon: '🛡', label: 'Cover requests', view: 'cover', desc: 'Find cover for a class', badge: () => (typeof countUrgentCover === 'function' ? countUrgentCover() : 0) },
       { icon: '⚠', label: 'Incident reports', view: 'incidents', desc: 'Log & review incidents', gate: () => can.viewIncidents() },
     ] },
@@ -1490,6 +1528,11 @@ function renderPlans() {
   hideDayHead();
   const main = document.getElementById('mainContent');
 
+  if (!can.viewPlans()) {
+    main.innerHTML = `<div class="empty" style="padding-top:30px;"><h2>Lesson plans</h2><p>You don't have permission to view lesson plans.</p></div>`;
+    return;
+  }
+
   let html = `<h1 class="section-head">Plans</h1>`;
   html += `<button class="btn" style="width:100%;margin-bottom:10px;" onclick="setView('topics')">◇ View topic library</button>`;
   html += `<input type="search" id="plansSearch" placeholder="Search plans by class, theme, instructor…"
@@ -1553,11 +1596,29 @@ function renderIncidents() {
     </div>`;
     return;
   }
+  // Trends & actions are for admins + superadmins only.
+  const showTrends = hasRole('admin');
+  if (!showTrends || !state.incidentView) state.incidentView = state.incidentView === 'trends' && showTrends ? 'trends' : 'reports';
 
   let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
     <h1 class="section-head" style="margin:0;">Incidents</h1>
     ${can.fileIncidents() ? `<button class="btn btn-warn" onclick="openIncident()" style="padding:8px 14px;">+ New report</button>` : ''}
   </div>`;
+
+  if (showTrends) {
+    html += `<div class="grading-tabs" style="margin-bottom:12px;">
+      <button class="grading-tab ${state.incidentView === 'reports' ? 'active' : ''}" onclick="setIncidentView('reports')">Reports</button>
+      <button class="grading-tab ${state.incidentView === 'trends' ? 'active' : ''}" onclick="setIncidentView('trends')">Trends &amp; actions</button>
+    </div>`;
+  }
+
+  if (state.incidentView === 'trends' && showTrends) {
+    html += `<div id="incidentsTrends"></div>`;
+    main.innerHTML = html;
+    renderIncidentTrends();
+    return;
+  }
+
   html += `<input type="search" id="incidentSearch" placeholder="Search by name, type, severity, location…"
     value="${escapeHtml(state.incidentSearch || '')}" oninput="state.incidentSearch=this.value; renderIncidentsResults();"
     style="width:100%;padding:9px 12px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;margin-bottom:12px;box-sizing:border-box;">`;
@@ -1565,6 +1626,8 @@ function renderIncidents() {
   main.innerHTML = html;
   renderIncidentsResults();
 }
+
+function setIncidentView(v) { state.incidentView = v; renderIncidents(); }
 
 function renderIncidentsResults() {
   const box = document.getElementById('incidentsResults');
@@ -1653,6 +1716,123 @@ function renderIncidentAnalytics(incidents) {
     </div>` : ''}
     <div style="font-size: 11px; color: var(--grey-500); margin-top: 10px; text-align: center; font-style: italic;">${total} total · last 12 months</div>
   </div>`;
+}
+
+// ---------- Incidents: Trends & actions (admin + superadmin) ----------
+function renderIncidentTrends() {
+  const box = document.getElementById('incidentsTrends');
+  if (!box) return;
+  const all = Object.entries(state.incidents || {}).map(([id, v]) => ({ id, ...v }));
+  const schoolName = KRMAS_SCHOOLS.find(s => s.id === state.schoolId)?.name || '';
+
+  // ── Monthly series, last 12 months, stacked by severity ──
+  const now = new Date();
+  const months = [];
+  const mIndex = {};
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const key = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    mIndex[key] = months.length;
+    months.push({ key, label: d.toLocaleDateString('en-AU', { month: 'short' }), low: 0, medium: 0, high: 0, total: 0 });
+  }
+  for (const inc of all) {
+    if (!inc.date) continue;
+    const m = months[mIndex[inc.date.slice(0, 7)]];
+    if (!m) continue;
+    m.total++;
+    if (inc.severity === 'high') m.high++; else if (inc.severity === 'medium') m.medium++; else m.low++;
+  }
+  const maxTotal = Math.max(1, ...months.map(m => m.total));
+  const seg = (n, tot, h, col) => n ? `<div style="height:${Math.max(2, Math.round((n / tot) * h))}px;background:${col};"></div>` : '';
+  const bars = months.map(m => {
+    const h = m.total === 0 ? 0 : Math.round((m.total / maxTotal) * 96) + 6;
+    return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0;">
+      <div style="font-size:9px;font-weight:700;color:var(--grey-500);height:12px;">${m.total || ''}</div>
+      <div title="${m.label}: ${m.total} (${m.high} high, ${m.medium} med, ${m.low} low)" style="width:62%;display:flex;flex-direction:column-reverse;height:${h}px;border-radius:3px 3px 0 0;overflow:hidden;">
+        ${seg(m.low, m.total, h, 'var(--ok)')}${seg(m.medium, m.total, h, 'var(--warn)')}${seg(m.high, m.total, h, 'var(--red)')}
+      </div>
+      <div style="font-size:9px;color:var(--grey-400);">${m.label}</div>
+    </div>`;
+  }).join('');
+
+  const last3 = months.slice(9).reduce((s, m) => s + m.total, 0);
+  const prev3 = months.slice(6, 9).reduce((s, m) => s + m.total, 0);
+  const trend = last3 > prev3 ? { t: '▲ Up vs previous quarter', c: 'var(--red)' }
+    : last3 < prev3 ? { t: '▼ Down vs previous quarter', c: 'var(--ok)' }
+      : { t: '→ Steady vs previous quarter', c: 'var(--grey-500)' };
+  const total12 = months.reduce((s, m) => s + m.total, 0);
+
+  // ── Action items: escalated without a recorded action, or recent high-severity ──
+  const daysSince = iso => iso ? (Date.now() - new Date(iso + 'T00:00:00').getTime()) / 86400000 : 9999;
+  const needsAction = all.filter(i => (i.escalated && !(i.actions || '').trim()) || (i.severity === 'high' && daysSince(i.date) <= 30))
+    .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+  let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+      <span class="section-sub" style="margin:0;">Incidents per month — ${escapeHtml(schoolName)}</span>
+      ${all.length ? `<button class="btn btn-sm" onclick="exportIncidentsCsv()" style="padding:6px 10px;">⬇ CSV</button>` : ''}
+    </div>`;
+
+  if (total12 === 0) {
+    html += `<div style="font-size:13px;color:var(--grey-500);padding:8px 0 14px;">No incidents recorded in the last 12 months.</div>`;
+  } else {
+    html += `<div style="background:var(--white);border:1px solid var(--grey-200);border-radius:var(--r-md);padding:14px 12px 10px;margin-bottom:6px;box-shadow:var(--shadow);">
+      <div style="display:flex;align-items:flex-end;gap:3px;height:130px;">${bars}</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px;padding-top:8px;border-top:1px solid var(--grey-100);">
+        <span style="display:flex;gap:10px;font-size:10px;color:var(--grey-500);">
+          <span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--ok);"></span> Low</span>
+          <span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--warn);"></span> Med</span>
+          <span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--red);"></span> High</span>
+        </span>
+        <span style="font-size:11px;font-weight:700;color:${trend.c};">${trend.t}</span>
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--grey-500);margin-bottom:14px;text-align:center;font-style:italic;">${total12} in the last 12 months · ${last3} in the last quarter</div>`;
+  }
+
+  // Reuse the severity/type breakdown card
+  html += renderIncidentAnalytics(all);
+
+  // Action items
+  html += `<div class="section-sub">Needs action (${needsAction.length})</div>`;
+  if (needsAction.length === 0) {
+    html += `<div style="font-size:13px;color:var(--ok);font-weight:700;padding:6px 4px 14px;">✓ Nothing outstanding — no escalations awaiting action or recent high-severity incidents.</div>`;
+  } else {
+    for (const inc of needsAction) {
+      const reason = (inc.escalated && !(inc.actions || '').trim()) ? 'Escalated · no action recorded' : 'High severity · last 30 days';
+      const dateStr = inc.date ? formatDateShort(new Date(inc.date + 'T00:00:00')) : '—';
+      const clickable = can.editIncidents();
+      html += `<div class="ir-saved-item ${inc.severity || ''}" ${clickable ? `onclick="openIncident('${inc.id}')"` : ''} style="${clickable ? '' : 'cursor:default;'}">
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:700;">${escapeHtml(inc.personName || '—')} · ${escapeHtml((inc.type || 'incident').replace(/-/g, ' '))}</div>
+          <div class="meta">${dateStr} · ${(inc.severity || '').toUpperCase()} · ID ${escapeHtml(inc.id)}</div>
+          <div style="font-size:11px;color:var(--warn);font-weight:700;margin-top:3px;">⚠ ${reason}</div>
+        </div>
+        ${clickable ? `<div style="font-size:11px;color:var(--grey-400);flex-shrink:0;padding-left:8px;">Open ›</div>` : ''}
+      </div>`;
+    }
+  }
+  box.innerHTML = html;
+}
+
+function exportIncidentsCsv() {
+  if (!hasRole('admin')) { alert("You don't have permission to export incidents."); return; }
+  const all = Object.entries(state.incidents || {}).map(([id, v]) => ({ id, ...v }))
+    .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  const school = KRMAS_SCHOOLS.find(s => s.id === state.schoolId);
+  const cols = ['ID', 'Date', 'Time', 'Type', 'Severity', 'Person', 'Age', 'Role', 'Location', 'Class', 'First aid', 'Ambulance', 'Medical', 'Parent notified', 'Escalated', 'Escalated to', 'Actions', 'Reporter', 'Description', 'Created'];
+  const yn = b => b ? 'Yes' : 'No';
+  const lines = [
+    'KRMAS Instructor App — Incident Report',
+    'School: ' + (school?.name || state.schoolId),
+    'Generated: ' + new Date().toLocaleString('en-AU'),
+    '',
+    cols.join(','),
+  ];
+  for (const inc of all) {
+    const row = [inc.id, inc.date || '', inc.time || '', inc.type || '', inc.severity || '', inc.personName || '', inc.personAge || '', inc.personRole || '', inc.location || '', inc.classContext || '', yn(inc.firstAid), yn(inc.ambulance), yn(inc.medical), yn(inc.parentNotified), yn(inc.escalated), inc.escalatedTo || '', inc.actions || '', inc.reporter || '', inc.description || '', inc.createdAt || ''];
+    lines.push(row.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(','));
+  }
+  downloadBlob('KRMAS_Incidents_' + state.schoolId + '.csv', lines.join('\n'), 'text/csv');
 }
 
 function renderSavedPlan(p) {
@@ -2611,6 +2791,7 @@ async function loadCurrentSchoolData() {
   await reconcileStudents();
   state.lastLogins = (await DB.loadLastLogins(state.schoolId)) || {};
   state.documents = await DB.loadDocuments(state.schoolId);
+  state.quickLinks = await DB.loadQuickLinks(state.schoolId);
   state.onboardingChecklists = await DB.loadOnboardingChecklists(state.schoolId);
   state.onboardingTemplate = await DB.loadOnboardingTemplate(state.schoolId);
   state.classTypeOverrides = (await DB.loadClassTypeOverrides(state.schoolId)) || {};
@@ -5200,21 +5381,12 @@ function renderGrading() {
     main.innerHTML = `<div class="empty"><h2>Restricted</h2><p>Sign in as an instructor or admin to view grading.</p><button class="btn btn-primary" onclick="openLogin()">Sign in</button></div>`;
     return;
   }
-  const tabs = [
-    { id: 'sessions',  label: 'Sessions' },
-    { id: 'stocktake', label: 'Stocktake' },
-    { id: 'order',     label: 'Belt order' },
-  ];
-  let html = `<h1 class="section-head">Grading <span class="accent">manager</span></h1>
-    <div class="grading-tabs">
-      ${tabs.map(t => `<button class="grading-tab ${state.gradingView === t.id ? 'active' : ''}" onclick="setGradingView('${t.id}')">${t.label}</button>`).join('')}
-    </div>`;
-
-  if      (state.gradingView === 'sessions')  html += renderGradingSessions();
-  else if (state.gradingView === 'stocktake') html += renderGradingStocktake();
-  else if (state.gradingView === 'order')     html += renderGradingBeltOrder();
+  // Stocktake + Belt order retired from the grading manager (stock lives in Shop).
+  state.gradingView = 'sessions';
+  let html = `<h1 class="section-head">Grading <span class="accent">manager</span></h1>`;
+  html += renderGradingSessions();
   main.innerHTML = html;
-  if (state.gradingView === 'sessions') renderGradingSessionsResults();
+  renderGradingSessionsResults();
 }
 
 function setGradingView(v) { state.gradingView = v; renderGrading(); }
@@ -7548,36 +7720,28 @@ function renderFeed() {
     ${state.user ? `<button class="btn btn-primary" onclick="openPostComposer()" style="padding:8px 16px;">✎ Post</button>` : ''}
   </div>`;
 
-  html += renderHomeCalendar();
-
-  // Pinned notices at top of feed
+  // Pinned notices stay at the very top (urgent banners)
   const pinned = [...state.notices, ...state.networkNotices]
     .filter(n => n.pinned && (!n.expiresAt || n.expiresAt >= isoDate(new Date())))
-    .sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||''));
+    .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
   for (const n of pinned.slice(0, 2)) {
     const t = NOTICE_TYPES[n.type] || NOTICE_TYPES.info;
     html += `<div style="background:${t.bg};border:1px solid ${t.border};border-left:4px solid ${t.border};border-radius:var(--r-md);padding:10px 12px;margin-bottom:8px;display:flex;gap:8px;align-items:flex-start;" onclick="openNoticesBoard()">
       <span style="font-size:16px;">${t.icon}</span>
       <div style="flex:1;min-width:0;">
         <div style="font-weight:700;font-size:13px;color:${t.text};">${escapeHtml(n.title)}</div>
-        ${n.body ? `<div style="font-size:12px;color:${t.text};opacity:.85;margin-top:2px;">${escapeHtml(n.body.slice(0,100))}${n.body.length>100?'…':''}</div>` : ''}
+        ${n.body ? `<div style="font-size:12px;color:${t.text};opacity:.85;margin-top:2px;">${escapeHtml(n.body.slice(0, 100))}${n.body.length > 100 ? '…' : ''}</div>` : ''}
       </div>
       <span style="font-size:9px;background:${t.border};color:#fff;padding:1px 6px;border-radius:999px;font-weight:700;text-transform:uppercase;flex-shrink:0;">${t.label}</span>
     </div>`;
   }
 
-  // Upcoming events strip
-  html += renderUpcomingStrip();
-
-  // Documents strip
-  html += renderDocStrip();
-
+  // ── Posts (top) ──
   if (!state.user) {
     html += `<div class="empty"><h2>Sign in to see the feed</h2><p>Post updates, share class notes, and stay in touch with the team.</p><button class="btn btn-primary" onclick="openLogin()">Sign in</button></div>`;
     main.innerHTML = html;
     return;
   }
-
   if (visiblePosts.length === 0) {
     html += `<div style="text-align:center;padding:28px 0;color:var(--grey-500);">
       <div style="font-size:32px;margin-bottom:10px;">👋</div>
@@ -7592,14 +7756,21 @@ function renderFeed() {
       if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
       return (b.createdAt || '').localeCompare(a.createdAt || '');
     });
-    for (const post of sorted) {
-      html += renderFeedPost(post);
-    }
-
+    for (const post of sorted) html += renderFeedPost(post);
     if (state.feedHasMore && visiblePosts.length >= 50) {
       html += `<button class="btn" style="width:100%;margin-top:8px;" onclick="loadMoreFeed()">Load more</button>`;
     }
   }
+
+  // ── Calendar (below posts) ──
+  html += renderHomeCalendar();
+  html += renderUpcomingStrip();
+
+  // ── Documents (below calendar) ──
+  html += renderDocStrip();
+
+  // ── Quick links ──
+  html += renderQuickLinks();
 
   main.innerHTML = html;
   updateFeedBadge();
@@ -8304,9 +8475,16 @@ function groupRuleValueOptions(field, selected) {
       ? state.roleConfig.roles.map(r => [r.key, r.label])
       : [['superadmin','Superadmin'],['admin','Admin'],['instructor','Instructor'],['junior','Junior']]);
   } else if (field === 'state') {
-    opts = [...new Set(KRMAS_SCHOOLS.map(s => s.state).filter(Boolean))].sort().map(s => [s, s]);
+    // Non-superadmins may only reference their own school's state (no cross-school rules).
+    const ownState = (KRMAS_SCHOOLS.find(s => s.id === state.schoolId) || {}).state;
+    const states = can.switchAnySchool()
+      ? [...new Set(KRMAS_SCHOOLS.map(s => s.state).filter(Boolean))].sort()
+      : (ownState ? [ownState] : []);
+    opts = states.map(s => [s, s]);
   } else if (field === 'school') {
-    opts = KRMAS_SCHOOLS.map(s => [s.id, s.name]);
+    // Non-superadmins may only reference their own school.
+    const schools = can.switchAnySchool() ? KRMAS_SCHOOLS : KRMAS_SCHOOLS.filter(s => s.id === state.schoolId);
+    opts = schools.map(s => [s.id, s.name]);
   } else if (field === 'syllabus') {
     opts = Object.entries(GRADING_SYLLABI).map(([k, v]) => [k, v.label || v.name || k]);
   }
@@ -9107,13 +9285,30 @@ function renderUpcomingStrip() {
 }
 
 // ---------- Home embedded calendar (compact, whole widget opens the Events section) ----------
+// Tapping a specific day opens the full calendar focused on that day; tapping anywhere
+// else on the widget opens the calendar overview.
+function openCalendarOnDay(iso) {
+  state.calSelectedDate = iso;
+  const d = new Date(iso + 'T00:00:00');
+  if (!isNaN(d)) state.calMonth = new Date(d.getFullYear(), d.getMonth(), 1);
+  setView('calendar');
+}
 function renderHomeCalendar() {
-  const base = new Date(); // always show the current month on Home
-  const y = base.getFullYear(), m = base.getMonth();
-  const monthName = base.toLocaleDateString('en-AU', { month: 'long', year: 'numeric' });
   const today = isoDate(new Date());
   const events = state.calendarEvents || [];
   const types = state.eventTypes || [];
+  // Default to the current month; if it has no events but upcoming ones exist,
+  // show the month of the nearest upcoming event so the preview isn't blank.
+  let base = new Date();
+  const mFirst = isoDate(new Date(base.getFullYear(), base.getMonth(), 1));
+  const mLast = isoDate(new Date(base.getFullYear(), base.getMonth() + 1, 0));
+  const overlapsBase = ev => ev.startDate <= mLast && (ev.endDate || ev.startDate) >= mFirst;
+  if (events.length && !events.some(overlapsBase)) {
+    const up = events.filter(ev => (ev.endDate || ev.startDate) >= today).sort((a, b) => a.startDate.localeCompare(b.startDate))[0];
+    if (up) { const d = new Date(up.startDate + 'T00:00:00'); if (!isNaN(d)) base = new Date(d.getFullYear(), d.getMonth(), 1); }
+  }
+  const y = base.getFullYear(), m = base.getMonth();
+  const monthName = base.toLocaleDateString('en-AU', { month: 'long', year: 'numeric' });
   const colourFor = ev => (types.find(t => t.id === ev.typeId)?.colour) || 'var(--grey-400)';
   let html = `<div onclick="setView('calendar')" role="button" tabindex="0" aria-label="Open the Events calendar" style="cursor:pointer;background:var(--white);border:1px solid var(--grey-200);border-radius:var(--r-md);padding:10px 12px;margin-bottom:12px;box-shadow:var(--shadow);">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
@@ -9138,7 +9333,7 @@ function renderHomeCalendar() {
         evs.slice(0, 3).map(ev => `<span style="width:5px;height:5px;border-radius:50%;background:${colourFor(ev)};display:inline-block;"></span>`).join('') +
         `</div>`;
     }
-    html += `<div class="cal-cell${inMonth ? '' : ' other'}${isToday ? ' today' : ''}" style="min-height:34px;">
+    html += `<div class="cal-cell${inMonth ? '' : ' other'}${isToday ? ' today' : ''}" style="min-height:34px;cursor:pointer;" onclick="event.stopPropagation(); openCalendarOnDay('${iso}')">
       <span style="font-size:11px;">${d.getDate()}</span>${dots}</div>`;
   }
   html += `</div></div>`;
@@ -10871,6 +11066,9 @@ const MATRIX_SECTIONS = [
   { key:'documents',  label:'Documents',         actions:['view','add','edit','delete'] },
   { key:'compliance', label:'Compliance',        actions:['view','add','edit','delete'] },
   { key:'groups',     label:'Groups',            actions:['view','add','edit','delete'] },
+  { key:'grading',      label:'Grading',         actions:['view','edit'] },
+  { key:'lesson-plans', label:'Lesson plans',    actions:['view','edit','delete'] },
+  { key:'roster',       label:'Roster view',     actions:['view'] },
 ];
 const STRUCTURAL_DISPLAY = [
   'Timetable / classes',
@@ -10938,8 +11136,6 @@ function renderRolesMatrix() {
       <td colspan="4" style="text-align:center;font-size:11px;color:var(--grey-400);">Admins only</td></tr>`;
   }
   html += `</tbody></table>`;
-  html += `<div style="font-size:11px;color:var(--grey-400);margin-top:8px;line-height:1.4;">
-    Grading, lesson plans and roster view are still governed by rank and will join the matrix later.</div>`;
   body.innerHTML = html;
 }
 
@@ -10994,6 +11190,159 @@ function renderDocStrip() {
   html += `</div>`;
   return html;
 }
+
+// ====================================================================
+// Quick links — external URLs (label + url) surfaced on the Home tab.
+// Superadmins manage links for any school or the network; admins manage
+// links for their own school only. These are the app's own stored links.
+// ====================================================================
+function renderQuickLinks() {
+  const links = state.quickLinks || [];
+  const canEdit = can.manageQuickLinks();
+  if (links.length === 0 && !canEdit) return '';
+  let html = `<div style="background:var(--white);border:1px solid var(--grey-200);border-radius:var(--r-md);padding:10px 12px;margin-bottom:10px;box-shadow:var(--shadow);">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+      <span style="font-family:'Oswald',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--grey-500);">🔗 Quick links</span>
+      ${canEdit ? `<span onclick="openQuickLinksAdmin()" style="font-size:11px;font-weight:700;color:var(--red);cursor:pointer;">Manage ›</span>` : ''}
+    </div>`;
+  if (links.length === 0) {
+    html += `<div style="font-size:12px;color:var(--grey-400);padding:4px 0;">No links yet. Tap Manage to add one.</div>`;
+  } else {
+    for (const l of links) {
+      html += `<a href="${escapeHtml(l.url)}" target="_blank" rel="noopener noreferrer" style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--grey-100);text-decoration:none;color:inherit;">
+        <span style="font-size:14px;flex-shrink:0;">${l.schoolId === null ? '🌐' : '🔗'}</span>
+        <span style="flex:1;min-width:0;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(l.label)}</span>
+        <span style="font-size:11px;color:var(--grey-400);flex-shrink:0;">↗</span>
+      </a>`;
+    }
+  }
+  html += `</div>`;
+  return html;
+}
+
+function openQuickLinksAdmin() {
+  if (!requireRole('admin')) return;
+  state._qlDraft = null;
+  renderQuickLinksAdmin();
+  openModal('modalQuickLinks');
+}
+
+function qlCanEditLink(l) {
+  // Network links → superadmin only. School links → superadmin (any) or admin of that school.
+  if (l.schoolId === null) return can.switchAnySchool();
+  return can.switchAnySchool() || (hasRole('admin') && l.schoolId === state.schoolId);
+}
+
+function renderQuickLinksAdmin() {
+  const body = document.getElementById('quickLinksBody');
+  if (!body) return;
+  const links = state.quickLinks || [];
+  const isSuper = can.switchAnySchool();
+  const draft = state._qlDraft;
+
+  let html = `<div style="font-size:12px;color:var(--grey-500);margin-bottom:10px;line-height:1.5;">External links shown on the Home tab. ${isSuper ? 'As a superadmin you can add links for the whole network or a specific school.' : 'You can add links for your school.'}</div>`;
+
+  // Existing links
+  if (links.length === 0) {
+    html += `<div style="font-size:13px;color:var(--grey-400);padding:4px 0 10px;">No links yet.</div>`;
+  } else {
+    html += links.map(l => {
+      const editable = qlCanEditLink(l);
+      const scopeLabel = l.schoolId === null ? 'Network' : (KRMAS_SCHOOLS.find(s => s.id === l.schoolId)?.name || l.schoolId);
+      return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--grey-100);">
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(l.label)}</div>
+          <div style="font-size:11px;color:var(--grey-400);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(l.url)}</div>
+        </div>
+        <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--grey-500);background:var(--off-white);padding:2px 6px;border-radius:999px;flex-shrink:0;">${escapeHtml(scopeLabel)}</span>
+        ${editable ? `<button onclick="qlStartEdit('${l.id}')" title="Edit" style="background:none;border:none;cursor:pointer;font-size:14px;">✎</button>
+        <button onclick="qlDelete('${l.id}')" title="Delete" style="background:none;border:none;cursor:pointer;font-size:16px;color:var(--red);">×</button>` : ''}
+      </div>`;
+    }).join('');
+  }
+
+  // Add / edit form
+  const editing = draft && draft.id;
+  const schoolSel = isSuper
+    ? `<select id="qlScope" style="padding:7px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;">
+        <option value="__net__"${draft && draft.schoolId === null ? ' selected' : ''}>🌐 Network (all schools)</option>
+        ${KRMAS_SCHOOLS.map(s => `<option value="${s.id}"${draft && draft.schoolId === s.id ? ' selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}
+      </select>`
+    : '';
+
+  html += `<div style="margin-top:14px;padding-top:12px;border-top:2px solid var(--grey-200);">
+    <div class="section-sub" style="margin-bottom:6px;">${editing ? 'Edit link' : 'Add a link'}</div>
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <input id="qlLabel" placeholder="Label (e.g. Booking system)" value="${draft ? escapeHtml(draft.label || '') : ''}" style="padding:7px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;">
+      <input id="qlUrl" placeholder="https://…" value="${draft ? escapeHtml(draft.url || '') : ''}" style="padding:7px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;">
+      ${schoolSel}
+      <div style="display:flex;gap:6px;">
+        <button class="btn btn-primary btn-sm" onclick="qlSave()" style="flex:1;">${editing ? 'Save changes' : 'Add link'}</button>
+        ${editing ? `<button class="btn btn-sm" onclick="qlCancelEdit()">Cancel</button>` : ''}
+      </div>
+    </div>
+  </div>`;
+  body.innerHTML = html;
+}
+
+function qlStartEdit(id) {
+  const l = (state.quickLinks || []).find(x => x.id === id);
+  if (!l || !qlCanEditLink(l)) return;
+  state._qlDraft = { id: l.id, schoolId: l.schoolId, label: l.label, url: l.url, sortOrder: l.sortOrder || 0, createdAt: l.createdAt };
+  renderQuickLinksAdmin();
+}
+
+function qlCancelEdit() { state._qlDraft = null; renderQuickLinksAdmin(); }
+
+async function qlSave() {
+  const label = (document.getElementById('qlLabel')?.value || '').trim();
+  let url = (document.getElementById('qlUrl')?.value || '').trim();
+  if (!label || !url) { alert('Add both a label and a URL.'); return; }
+  if (!/^https?:\/\//i.test(url)) url = 'https://' + url; // be forgiving
+  const isSuper = can.switchAnySchool();
+  const draft = state._qlDraft;
+  // Resolve scope
+  let schoolId;
+  if (isSuper) {
+    const sel = document.getElementById('qlScope')?.value;
+    schoolId = (sel === '__net__') ? null : (sel || state.schoolId);
+  } else {
+    schoolId = state.schoolId; // admins: own school only
+  }
+  const link = {
+    id: (draft && draft.id) || newQuickLinkId(),
+    schoolId,
+    label, url,
+    sortOrder: (draft && draft.sortOrder) || (state.quickLinks || []).length,
+    createdBy: state.user?.name || null,
+    createdAt: (draft && draft.createdAt) || new Date().toISOString(),
+  };
+  // Guard: don't let a non-superadmin write outside their school
+  if (!isSuper && link.schoolId !== state.schoolId) { alert("You can only manage your own school's links."); return; }
+  const ok = await DB.saveQuickLink(link);
+  if (ok === false) { alert('Could not save the link.'); return; }
+  const arr = state.quickLinks || [];
+  const idx = arr.findIndex(x => x.id === link.id);
+  if (idx !== -1) arr[idx] = link; else arr.push(link);
+  state.quickLinks = arr;
+  state._qlDraft = null;
+  renderQuickLinksAdmin();
+  if (state.view === 'feed') renderFeed();
+}
+
+async function qlDelete(id) {
+  const l = (state.quickLinks || []).find(x => x.id === id);
+  if (!l || !qlCanEditLink(l)) return;
+  if (!confirm('Delete this link?')) return;
+  const ok = await DB.deleteQuickLink(id, l.schoolId);
+  if (ok === false) { alert('Could not delete the link.'); return; }
+  state.quickLinks = (state.quickLinks || []).filter(x => x.id !== id);
+  if (state._qlDraft && state._qlDraft.id === id) state._qlDraft = null;
+  renderQuickLinksAdmin();
+  if (state.view === 'feed') renderFeed();
+}
+
+function newQuickLinkId() { return 'QL-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase(); }
 
 // ====================================================================
 // Class Type Mapper — admin tool to override guessClassType per label
@@ -11784,12 +12133,13 @@ function renderDashboard() {
   const today = isoDate(new Date());
   const thirtyDays = calAddDays(today, 30);
 
-  // ── Network stats ──
-  const totalSchools = KRMAS_SCHOOLS.length;
+  // ── Stats (superadmins see the network; admins see only their own school) ──
+  const visibleSchools = isSuperAdmin ? KRMAS_SCHOOLS : KRMAS_SCHOOLS.filter(s => s.id === state.schoolId);
+  const totalSchools = visibleSchools.length;
   let totalInstructors = 0, totalActive = 0, totalOnLeave = 0;
   const schoolStats = [];
 
-  for (const school of KRMAS_SCHOOLS) {
+  for (const school of visibleSchools) {
     const custom = state.customSchools[school.id];
     const seed = SCHOOL_DATA_SEED[school.id];
     const instrs = custom?.instructors || seed?.instructors || [];
@@ -11840,8 +12190,8 @@ function renderDashboard() {
   // Summary cards row
   html += `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px;">
     <div style="text-align:center;padding:12px 8px;background:var(--off-white);border-radius:var(--r-sm);border:1px solid var(--grey-200);">
-      <div style="font-size:24px;font-weight:700;">${totalSchools}</div>
-      <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--grey-500);">Schools</div>
+      <div style="font-size:24px;font-weight:700;">${isSuperAdmin ? totalSchools : totalInstructors}</div>
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--grey-500);">${isSuperAdmin ? 'Schools' : 'Instructors'}</div>
     </div>
     <div style="text-align:center;padding:12px 8px;background:var(--off-white);border-radius:var(--r-sm);border:1px solid var(--grey-200);">
       <div style="font-size:24px;font-weight:700;">${totalActive}</div>
@@ -11925,7 +12275,67 @@ function renderDashboard() {
 
 function openReports() {
   if (!requireRole('admin')) return;
+  renderMultiSchoolReportSection();
   openModal('modalReports');
+}
+
+// Superadmin: pick any combination of schools for one combined compliance CSV.
+function renderMultiSchoolReportSection() {
+  const box = document.getElementById('reportsSuperSection');
+  if (!box) return;
+  if (!can.switchAnySchool()) { box.innerHTML = ''; return; }
+  box.innerHTML = `
+    <div style="margin-top:14px;padding-top:12px;border-top:2px solid var(--grey-200);">
+      <div class="section-sub" style="margin-bottom:4px;">Multi-school compliance (superadmin)</div>
+      <div style="font-size:11px;color:var(--grey-500);margin-bottom:8px;">Pick any combination of schools to include in one combined CSV.</div>
+      <div style="max-height:160px;overflow-y:auto;border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:6px 10px;margin-bottom:8px;">
+        ${KRMAS_SCHOOLS.map(s => `<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;cursor:pointer;">
+          <input type="checkbox" class="ms-report-school" value="${s.id}" ${s.id === state.schoolId ? 'checked' : ''} style="width:15px;height:15px;accent-color:var(--red);">
+          ${escapeHtml(s.name)}
+        </label>`).join('')}
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:6px;">
+        <button class="btn btn-sm" onclick="msReportToggleAll(true)" style="flex:1;">Select all</button>
+        <button class="btn btn-sm" onclick="msReportToggleAll(false)" style="flex:1;">Clear</button>
+      </div>
+      <button class="btn btn-primary" onclick="generateMultiSchoolCompliance()" style="width:100%;">⬇ Combined compliance CSV</button>
+    </div>`;
+}
+
+function msReportToggleAll(on) { document.querySelectorAll('.ms-report-school').forEach(c => { c.checked = on; }); }
+
+async function generateMultiSchoolCompliance() {
+  if (!can.switchAnySchool()) { alert('This report is for superadmins.'); return; }
+  const checked = Array.from(document.querySelectorAll('.ms-report-school:checked')).map(c => c.value);
+  if (checked.length === 0) { alert('Select at least one school.'); return; }
+  const today = isoDate(new Date());
+  const lines = [
+    'KRMAS Instructor App — Multi-School Compliance Report',
+    'Schools: ' + checked.map(id => KRMAS_SCHOOLS.find(s => s.id === id)?.name || id).join('; '),
+    'Generated: ' + new Date().toLocaleString('en-AU'),
+    '',
+    ['School', 'Instructor', 'Requirement', 'Status', 'Expiry'].join(','),
+  ];
+  for (const sid of checked) {
+    const schoolName = KRMAS_SCHOOLS.find(s => s.id === sid)?.name || sid;
+    let reqs = [], recs = [];
+    try { reqs = (await DB.loadComplianceRequirements(sid)) || []; } catch (e) {}
+    try { recs = (await DB.loadInstructorCompliance(sid)) || []; } catch (e) {}
+    const instrs = (state.customSchools[sid]?.instructors) || (typeof SCHOOL_DATA_SEED !== 'undefined' ? SCHOOL_DATA_SEED[sid]?.instructors : null) || [];
+    if (!reqs.length || !instrs.length) {
+      lines.push(['"' + schoolName.replace(/"/g, '""') + '"', '"(no compliance requirements or instructors on record)"', '', '', ''].join(','));
+      continue;
+    }
+    for (const instr of instrs) {
+      for (const req of reqs) {
+        const rec = recs.find(r => (r.instructorId || r.instructor_id) === instr.id && (r.requirementId || r.requirement_id) === req.id);
+        const st = getComplianceStatus(rec, req);
+        const expiry = rec?.expiryDate || rec?.expiry_date || '';
+        lines.push([schoolName, instr.name, req.name, st, expiry].map(c => '"' + String(c).replace(/"/g, '""') + '"').join(','));
+      }
+    }
+  }
+  downloadBlob('KRMAS_MultiSchool_Compliance_' + today + '.csv', lines.join('\n'), 'text/csv');
 }
 
 function generateComplianceReport() {

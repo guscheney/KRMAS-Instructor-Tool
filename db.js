@@ -1031,6 +1031,62 @@ const DB = (() => {
   // so file_data and every other column are left untouched (an upsert with a list-view
   // doc that lacked file_data would null the file). Governed by the docs_update RLS
   // policy server-side (network → superadmin; school → documents/edit + own school).
+  // ── Quick links (external URLs surfaced on Home) ──
+  function normaliseQuickLink(r) {
+    return { id: r.id, schoolId: r.school_id, label: r.label, url: r.url, sortOrder: r.sort_order || 0, createdBy: r.created_by || null, createdAt: r.created_at || null };
+  }
+  async function loadQuickLinks(schoolId) {
+    if (!isSB()) {
+      const school  = (await lGet('quicklinks:' + schoolId)) || [];
+      const network = (await lGet('quicklinks:network')) || [];
+      return [...network, ...school];
+    }
+    try {
+      const { data, error } = await sbClient()
+        .from('quick_links').select('*')
+        .or(`school_id.eq.${schoolId},school_id.is.null`)
+        .order('sort_order').order('label');
+      if (error) throw error;
+      return (data || []).map(normaliseQuickLink);
+    } catch (e) {
+      console.warn('[DB] loadQuickLinks fallback:', e.message);
+      const school  = (await lGet('quicklinks:' + schoolId)) || [];
+      const network = (await lGet('quicklinks:network')) || [];
+      return [...network, ...school];
+    }
+  }
+  async function saveQuickLink(link) {
+    if (!isSB()) {
+      const key = 'quicklinks:' + (link.schoolId || 'network');
+      const arr = (await lGet(key)) || [];
+      const idx = arr.findIndex(d => d.id === link.id);
+      if (idx !== -1) arr[idx] = link; else arr.push(link);
+      return lSet(key, arr);
+    }
+    try {
+      const row = { id: link.id, school_id: link.schoolId || null, label: link.label, url: link.url, sort_order: link.sortOrder || 0, created_by: link.createdBy || null, updated_at: new Date().toISOString() };
+      if (link.createdAt) row.created_at = link.createdAt;
+      const { error } = await sbClient().from('quick_links').upsert(row, { onConflict: 'id' });
+      if (error) throw error;
+      return true;
+    } catch (e) { console.warn('[DB] saveQuickLink:', e.message); return false; }
+  }
+  async function deleteQuickLink(id, schoolId) {
+    if (!isSB()) {
+      for (const key of ['quicklinks:' + (schoolId || 'network'), 'quicklinks:network']) {
+        const arr = (await lGet(key)) || [];
+        const filtered = arr.filter(d => d.id !== id);
+        if (filtered.length !== arr.length) await lSet(key, filtered);
+      }
+      return true;
+    }
+    try {
+      const { error } = await sbClient().from('quick_links').delete().eq('id', id);
+      if (error) throw error;
+      return true;
+    } catch (e) { console.warn('[DB] deleteQuickLink:', e.message); return false; }
+  }
+
   async function renameDocument(doc, newTitle) {
     if (!doc || !doc.id) return false;
     const title = (newTitle || '').trim();
@@ -1703,6 +1759,9 @@ const DB = (() => {
 
     // Documents
     loadDocuments, loadInstructorDocuments, saveDocument, deleteDocument, renameDocument, replaceDocumentFile,
+
+    // Quick links (external URLs surfaced on Home)
+    loadQuickLinks, saveQuickLink, deleteQuickLink,
 
     // Compliance
     loadComplianceRequirements, saveComplianceRequirement, deleteComplianceRequirement,
