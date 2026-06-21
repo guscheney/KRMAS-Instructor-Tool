@@ -302,15 +302,10 @@ function canEditPlan(dateKey) {
   const p = state.plans[dateKey];
   if (p && p.shared) return can.switchAnySchool();
   if (typeof dateKey === 'string' && dateKey.startsWith('grading-')) return can.manageGrading();
-  if (!can.editLessonPlans()) return false;       // lesson-plan editing now matrix-gated
-  if (can.editRoster()) return true;
-  // Rostered instructor for that class may edit their own plan
-  const datePart = (dateKey || '').slice(0, 10);
-  const date = new Date(datePart + 'T00:00:00');
-  if (isNaN(date)) return can.editRoster();
-  const c = rosterForDay(date).find(x => x.dateKey === dateKey);
-  if (!c) return can.editRoster();
-  return isMyClass(c);
+  // Regular per-class lesson plan: the "Lesson plans → edit" permission governs (matrix/defaults).
+  // We no longer additionally require the editor to be rostered on that specific class — server-side
+  // these live in kv_store gated by rank, so anyone the matrix grants the permission may author them.
+  return can.editLessonPlans();
 }
 
 // ---------- School data accessor ----------
@@ -3505,7 +3500,7 @@ function fillFromTopic() {
 async function savePlan(status) {
   const dateKey = state.planningKey;
   if (!dateKey) return;
-  if (!canEditPlan(dateKey)) { alert('You can only edit plans for classes you are rostered on.'); return; }
+  if (!canEditPlan(dateKey)) { alert("You don't have permission to edit lesson plans."); return; }
 
   const isGrading = dateKey.startsWith('grading-');
   let c = null;
