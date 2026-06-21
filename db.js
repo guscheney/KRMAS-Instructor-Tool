@@ -1657,6 +1657,106 @@ const DB = (() => {
       },
     },
 
+    // ===== School Audit module: templates, audits, corrective actions =====
+    // School scoping + write gating are enforced by RLS (17_audits.sql); these
+    // calls stay thin. auditor_id must equal the caller's auth uid (state.user.id).
+    audits: {
+      async listTemplates() {
+        const sb = sbClient(); if (!sb) return [];
+        const { data, error } = await sb.from('audit_templates')
+          .select('id,title,description,scope,school_id,sections,is_active,created_by,created_at,updated_at')
+          .order('title', { ascending: true });
+        if (error) { console.warn('[DB] listTemplates:', error.message); return []; }
+        return data || [];
+      },
+      async getTemplate(id) {
+        const sb = sbClient(); if (!sb) return null;
+        const { data, error } = await sb.from('audit_templates').select('*').eq('id', id).maybeSingle();
+        if (error) { console.warn('[DB] getTemplate:', error.message); return null; }
+        return data || null;
+      },
+      async saveTemplate(t) {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        try { const { data, error } = await sb.from('audit_templates').upsert(t, { onConflict: 'id' }).select().single(); if (error) throw error; return { data }; }
+        catch (e) { return { error: e.message }; }
+      },
+      async setTemplateActive(id, active) {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        try { const { error } = await sb.from('audit_templates').update({ is_active: !!active }).eq('id', id); if (error) throw error; return {}; }
+        catch (e) { return { error: e.message }; }
+      },
+      async deleteTemplate(id) {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        try { const { error } = await sb.from('audit_templates').delete().eq('id', id); if (error) throw error; return {}; }
+        catch (e) { return { error: e.message }; }
+      },
+
+      async listAudits() {
+        const sb = sbClient(); if (!sb) return [];
+        const { data, error } = await sb.from('audits')
+          .select('id,template_id,template_snapshot,school_id,auditor_id,status,responses,total_score,started_at,completed_at,created_at,updated_at')
+          .order('created_at', { ascending: false });
+        if (error) { console.warn('[DB] listAudits:', error.message); return []; }
+        return data || [];
+      },
+      async getAudit(id) {
+        const sb = sbClient(); if (!sb) return null;
+        const { data, error } = await sb.from('audits').select('*').eq('id', id).maybeSingle();
+        if (error) { console.warn('[DB] getAudit:', error.message); return null; }
+        return data || null;
+      },
+      async createAudit(row) {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        try { const { data, error } = await sb.from('audits').insert(row).select().single(); if (error) throw error; return { data }; }
+        catch (e) { return { error: e.message }; }
+      },
+      async saveAudit(id, patch) {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        try { const { error } = await sb.from('audits').update(patch).eq('id', id); if (error) throw error; return {}; }
+        catch (e) { return { error: e.message }; }
+      },
+      async deleteAudit(id) {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        try { const { error } = await sb.from('audits').delete().eq('id', id); if (error) throw error; return {}; }
+        catch (e) { return { error: e.message }; }
+      },
+
+      async listActions() {
+        const sb = sbClient(); if (!sb) return [];
+        const { data, error } = await sb.from('audit_actions')
+          .select('id,audit_id,school_id,item_id,description,assigned_to,priority,status,due_date,completed_at,evidence_notes,created_by,created_at,updated_at')
+          .order('created_at', { ascending: false });
+        if (error) { console.warn('[DB] listActions:', error.message); return []; }
+        return data || [];
+      },
+      async createAction(row) {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        try { const { data, error } = await sb.from('audit_actions').insert(row).select().single(); if (error) throw error; return { data }; }
+        catch (e) { return { error: e.message }; }
+      },
+      async updateAction(id, patch) {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        try { const { error } = await sb.from('audit_actions').update(patch).eq('id', id); if (error) throw error; return {}; }
+        catch (e) { return { error: e.message }; }
+      },
+      async deleteAction(id) {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        try { const { error } = await sb.from('audit_actions').delete().eq('id', id); if (error) throw error; return {}; }
+        catch (e) { return { error: e.message }; }
+      },
+
+      // Staff at a school, for the action-assignee dropdown. Best-effort (RLS-gated).
+      async schoolStaff(schoolId) {
+        const sb = sbClient(); if (!sb || !schoolId) return [];
+        const { data, error } = await sb.from('profiles')
+          .select('id,display_name,role,school_id,schools')
+          .or(`school_id.eq.${schoolId},schools.cs.{${schoolId}}`)
+          .order('display_name', { ascending: true });
+        if (error) { console.warn('[DB] schoolStaff:', error.message); return []; }
+        return data || [];
+      },
+    },
+
     // Login-user administration (profiles). Reads are RLS-gated and direct; create /
     // delete go through the service-role manage-users Edge Function.
     users: {

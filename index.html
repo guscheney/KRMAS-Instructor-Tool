@@ -1154,6 +1154,52 @@
   </div>
 </div>
 
+<!-- ===== Modal: Audit corrective action ===== -->
+<div class="modal-bg" id="modalAuditAction">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2 id="aaModalTitle">New action</h2>
+    <div class="form-row">
+      <label>What needs to be done</label>
+      <textarea id="aaDesc" rows="2" placeholder="Describe the corrective action"></textarea>
+    </div>
+    <div class="form-row">
+      <label>Assign to</label>
+      <select id="aaAssignee"><option value="">Unassigned</option></select>
+    </div>
+    <div class="form-row">
+      <label>Priority</label>
+      <select id="aaPriority">
+        <option value="low">Low</option>
+        <option value="medium" selected>Medium</option>
+        <option value="high">High</option>
+        <option value="critical">Critical</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>Due date</label>
+      <input id="aaDue" type="date">
+    </div>
+    <div class="form-row">
+      <label>Status</label>
+      <select id="aaStatus" onchange="toggleActionEvidence()">
+        <option value="open" selected>Open</option>
+        <option value="in_progress">In progress</option>
+        <option value="completed">Completed</option>
+      </select>
+    </div>
+    <div class="form-row" id="aaEvidenceWrap" style="display:none;">
+      <label>Completion notes</label>
+      <textarea id="aaEvidence" rows="2" placeholder="What was done to resolve it"></textarea>
+    </div>
+    <div class="detail-actions" style="margin-top:6px;">
+      <button class="btn btn-warn" id="aaDeleteBtn" style="display:none;" onclick="deleteAuditAction()">Delete</button>
+      <button class="btn btn-primary" style="flex:1;" onclick="saveAuditAction()">Save action</button>
+    </div>
+    <button class="btn btn-ghost" style="width:100%;margin-top:6px;" onclick="closeModal('modalAuditAction')">Cancel</button>
+  </div>
+</div>
+
 <!-- ===== Modal: School onboarding wizard ===== -->
 <div class="modal-bg" id="modalWizard">
   <div class="modal">
@@ -2951,14 +2997,14 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '84';
+  window.KRMAS_APP_VERSION = '85';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
 </script>
-<script src="data.js?v=84"></script>
-<script src="db.js?v=84"></script>
-<script src="app.js?v=84"></script>
+<script src="data.js?v=85"></script>
+<script src="db.js?v=85"></script>
+<script src="app.js?v=85"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

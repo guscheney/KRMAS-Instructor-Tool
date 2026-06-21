@@ -201,6 +201,13 @@ const can = {
   manageShop:        () => hasRole('superadmin') || !!(state.user && state.user.isShopAdmin),
   seeShop:           () => hasRole('superadmin') || hasRole('admin') || !!(state.user && state.user.isShopAdmin),
   editStock:         (sid) => hasRole('superadmin') || !!(state.user && state.user.isShopAdmin) || (hasRole('admin') && (state.userSchools || []).includes(sid)),
+  // Audits: action-level gating via the matrix (admins are auto-true in hasPerm; a
+  // superadmin can additionally grant instructors). Cross-school = superadmin; RLS enforces.
+  viewAudits:        () => hasPerm('audits','view'),
+  addAudits:         () => hasPerm('audits','add'),
+  editAudits:        () => hasPerm('audits','edit'),
+  deleteAudits:      () => hasPerm('audits','delete'),
+  auditAnySchool:    () => hasRole('superadmin'),
 };
 
 // A school admin may edit only their own school; a superadmin may edit any.
@@ -1440,6 +1447,7 @@ function navModel() {
     { dataView: 'shop', icon: '📦', label: 'Shop', type: 'view', view: 'shop', gate: () => can.seeShop() },
     { dataView: 'more', icon: '⋯', label: 'More', type: 'hub', tiles: [
       { icon: '◷', label: 'Students', view: 'students', desc: 'Student records', gate: () => can.viewStudents() },
+      { icon: '☑', label: 'Audits', view: 'audits', desc: 'School audits & corrective actions', gate: () => can.viewAudits() },
       { icon: '📚', label: 'Documents', view: 'docs', desc: 'Files & resources' },
       { icon: '⚙', label: 'Admin & settings', view: 'admin', desc: 'Schools, users, configuration', gate: () => can.manageInstructors() },
       { icon: '人', label: 'My profile', view: 'me', desc: 'Account & sign out' },
@@ -1450,6 +1458,7 @@ function navModel() {
 function navDataViewFor(v) {
   if (v === 'teach' || v === 'more') return v;
   if (v === 'topics') return 'teach'; // topic library lives under Plans → Teach
+  if (v === 'audits') return 'more';  // audits hub lives under More
   if (v === 'calendar') return 'feed'; // Events now lives on Home
   for (const t of navModel()) {
     if (t.type === 'view' && t.view === v) return t.dataView;
@@ -1511,6 +1520,8 @@ function setView(v) {
     renderIncidents();
   } else if (v === 'students') {
     renderStudents();
+  } else if (v === 'audits') {
+    renderAudits();
   } else if (v === 'topics') {
     renderTopicLibrary();
   } else if (v === 'feed') {
@@ -11394,6 +11405,7 @@ const MATRIX_SECTIONS = [
   { key:'grading',      label:'Grading',         actions:['view','edit'] },
   { key:'lesson-plans', label:'Lesson plans',    actions:['view','add','edit','delete'] },
   { key:'roster',       label:'Roster view',     actions:['view'] },
+  { key:'audits',       label:'Audits',          actions:['view','add','edit','delete'] },
 ];
 const STRUCTURAL_DISPLAY = [
   'Timetable / classes',
@@ -14436,4 +14448,774 @@ async function shopDeleteSizeSet(id) {
   if (!confirm('Delete this size set? Items using it will need a new one.')) return;
   try { await DB.deleteSizeSet(id); state.shop.sizeSets = state.shop.sizeSets.filter(z => z.id !== id); renderShop(); }
   catch (e) { alert('Could not delete: ' + (e.message || e)); }
+}
+
+// ============================================================================
+// ===== School Audit module (v85): templates, audits, corrective actions =====
+// One reactive view ('audits') with sub-views routed by state.auditView. School
+// scoping + write gating live in RLS (17_audits.sql); the UI is matrix-gated via
+// can.viewAudits/addAudits/editAudits/deleteAudits. Charts are inline SVG.
+// ============================================================================
+
+function auditUid() { return 'a' + Math.random().toString(36).slice(2, 10); }
+
+function auditSchoolName(id) {
+  if (!id) return '—';
+  const list = (typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS : []);
+  const s = list.find(x => x.id === id);
+  return s ? s.name : id;
+}
+function auditableSchools() {
+  if (can.auditAnySchool()) return (typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS : []).map(s => ({ id: s.id, name: s.name }));
+  const ids = (state.userSchools && state.userSchools.length) ? state.userSchools : [state.schoolId];
+  return ids.filter(Boolean).map(id => ({ id, name: auditSchoolName(id) }));
+}
+function auditDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso); if (isNaN(d)) return '—';
+  return d.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' });
+}
+function monthKey(iso) { const d = new Date(iso); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); }
+function monthLabel(key) {
+  const m = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const parts = String(key).split('-'); return (m[(parseInt(parts[1], 10) || 1) - 1]) + ' ' + String(parts[0]).slice(2);
+}
+function auditPersonName(id) {
+  if (!id) return 'Unassigned';
+  return (state.auditData && state.auditData.peopleById && state.auditData.peopleById[id]) || 'Staff';
+}
+
+// ---- Pure scoring (flat percentage: scored / available × 100) ----
+function auditItemsFromSnapshot(snapshot) {
+  const items = [];
+  (snapshot || []).forEach(sec => (sec.items || []).forEach(it => items.push(Object.assign({ sectionId: sec.id, sectionTitle: sec.title }, it))));
+  return items;
+}
+function isScored(r) { return r && r.score !== null && r.score !== undefined && r.score !== ''; }
+function computeSectionScore(section, responses) {
+  let got = 0, max = 0; responses = responses || {};
+  (section.items || []).forEach(it => {
+    max += Number(it.max_score) || 0;
+    const r = responses[it.id]; if (isScored(r)) got += Number(r.score) || 0;
+  });
+  return { got, max, pct: max ? (got / max) * 100 : 0 };
+}
+function computeAuditScore(snapshot, responses) {
+  let got = 0, max = 0;
+  (snapshot || []).forEach(sec => { const s = computeSectionScore(sec, responses); got += s.got; max += s.max; });
+  return { got, max, pct: max ? (got / max) * 100 : 0 };
+}
+function allItemsScored(snapshot, responses) {
+  const items = auditItemsFromSnapshot(snapshot);
+  if (!items.length) return false;
+  return items.every(it => isScored((responses || {})[it.id]));
+}
+function scoreColor(pct) { return pct >= 80 ? '#2e7d32' : pct >= 60 ? '#d48a1a' : '#d62828'; }
+function scoreBg(pct) { return pct >= 80 ? '#e8f5e9' : pct >= 60 ? '#fff7ed' : '#fdeaea'; }
+function fmtPct(pct) { return (Math.round((Number(pct) || 0) * 10) / 10).toFixed(1) + '%'; }
+
+// ---- Small UI atoms ----
+function scoreRing(pct) {
+  const p = Math.max(0, Math.min(100, Number(pct) || 0));
+  const r = 26, c = 2 * Math.PI * r, off = c * (1 - p / 100), col = scoreColor(p);
+  return `<svg width="66" height="66" viewBox="0 0 66 66" aria-hidden="true">
+    <circle cx="33" cy="33" r="${r}" fill="none" stroke="#eee" stroke-width="6"/>
+    <circle cx="33" cy="33" r="${r}" fill="none" stroke="${col}" stroke-width="6" stroke-linecap="round"
+      stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" transform="rotate(-90 33 33)"/>
+    <text x="33" y="37" text-anchor="middle" font-size="13" font-weight="800" fill="${col}">${Math.round(p)}%</text></svg>`;
+}
+function statusPill(s) {
+  const m = { draft: ['Draft', '#777', '#f0f0ee'], in_progress: ['In progress', '#b9710f', '#fff7ed'], completed: ['Completed', '#2e7d32', '#e8f5e9'], open: ['Open', '#c62828', '#fdeaea'] };
+  const x = m[s] || [s, '#777', '#eee'];
+  return `<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:700;color:${x[1]};background:${x[2]};">${escapeHtml(x[0])}</span>`;
+}
+function priorityPill(p) {
+  const m = { low: ['Low', '#2e7d32', '#e8f5e9'], medium: ['Medium', '#b9710f', '#fff7ed'], high: ['High', '#c62828', '#fdeaea'], critical: ['Critical', '#fff', '#b71c1c'] };
+  const x = m[p] || [p, '#777', '#eee'];
+  return `<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:700;color:${x[1]};background:${x[2]};">${escapeHtml(x[0])}</span>`;
+}
+function statCard(value, label, color) {
+  return `<div style="background:var(--white);border:1px solid var(--grey-200);border-radius:var(--r-md);padding:12px 10px;text-align:center;">
+    <div style="font-size:21px;font-weight:800;line-height:1.1;color:${color || 'var(--ink)'};">${value}</div>
+    <div style="font-size:10px;color:var(--grey-500);text-transform:uppercase;letter-spacing:.04em;margin-top:3px;">${escapeHtml(label)}</div></div>`;
+}
+function auditTemplateTitle(a) {
+  const t = (state.auditData && state.auditData.templates || []).find(x => x.id === a.template_id);
+  return t ? t.title : 'Audit';
+}
+function actionOverdue(a) {
+  if (!a.due_date || a.status === 'completed') return false;
+  const d = new Date(a.due_date + 'T23:59:59'); const today = new Date();
+  return d < today;
+}
+
+// ---- Inline SVG charts ----
+function auditTrendSvg(points, w, h) {
+  if (!points || points.length < 2) return `<div style="font-size:12px;color:var(--grey-500);padding:8px 0;">Not enough completed audits yet to chart a trend.</div>`;
+  const pad = 30, iw = w - pad * 2, ih = h - pad * 2, n = points.length;
+  const x = i => pad + (n === 1 ? iw / 2 : (iw * i) / (n - 1));
+  const y = v => pad + ih - (ih * Math.max(0, Math.min(100, v))) / 100;
+  const path = points.map((p, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ',' + y(p.value).toFixed(1)).join(' ');
+  const dots = points.map((p, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p.value).toFixed(1)}" r="3.2" fill="#d62828"/>`).join('');
+  const vlabels = points.map((p, i) => `<text x="${x(i).toFixed(1)}" y="${y(p.value).toFixed(1) - 7}" font-size="9" text-anchor="middle" fill="#555">${Math.round(p.value)}</text>`).join('');
+  const xlabels = points.map((p, i) => `<text x="${x(i).toFixed(1)}" y="${h - 9}" font-size="9" text-anchor="middle" fill="#999">${escapeHtml(p.label)}</text>`).join('');
+  const grid = [0, 50, 100].map(v => `<line x1="${pad}" y1="${y(v)}" x2="${w - pad}" y2="${y(v)}" stroke="#eee"/><text x="${pad - 5}" y="${y(v) + 3}" font-size="8" text-anchor="end" fill="#bbb">${v}</text>`).join('');
+  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;">${grid}<path d="${path}" fill="none" stroke="#d62828" stroke-width="2"/>${dots}${vlabels}${xlabels}</svg>`;
+}
+function auditBarsSvg(rows, w) {
+  if (!rows || !rows.length) return `<div style="font-size:12px;color:var(--grey-500);padding:8px 0;">No completed audits to compare yet.</div>`;
+  const barH = 22, gap = 9, pad = 6, labelW = 96, valW = 48, trackW = w - labelW - valW;
+  const h = rows.length * (barH + gap) - gap + pad * 2;
+  let y = pad, out = '';
+  rows.forEach(r => {
+    const pct = Math.max(0, Math.min(100, r.value)), col = scoreColor(pct);
+    out += `<text x="0" y="${y + barH / 2 + 4}" font-size="10" fill="#333">${escapeHtml(r.label.length > 16 ? r.label.slice(0, 15) + '…' : r.label)}</text>`;
+    out += `<rect x="${labelW}" y="${y}" width="${trackW}" height="${barH}" rx="4" fill="#f0f0ee"/>`;
+    out += `<rect x="${labelW}" y="${y}" width="${(trackW * pct / 100).toFixed(1)}" height="${barH}" rx="4" fill="${col}"/>`;
+    out += `<text x="${labelW + trackW + 6}" y="${y + barH / 2 + 4}" font-size="10" font-weight="700" fill="${col}">${fmtPct(r.value)}</text>`;
+    y += barH + gap;
+  });
+  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;">${out}</svg>`;
+}
+
+// ---- Router + data load ----
+async function loadAuditData() {
+  const [templates, audits, actions, people] = await Promise.all([
+    DB.audits.listTemplates(), DB.audits.listAudits(), DB.audits.listActions(),
+    (DB.users && DB.users.list ? Promise.resolve(DB.users.list()).catch(() => []) : Promise.resolve([])),
+  ]);
+  const peopleById = {};
+  (people || []).forEach(p => { peopleById[p.id] = p.display_name || p.name || p.email || String(p.id || '').slice(0, 8); });
+  state.auditData = { templates: templates || [], audits: audits || [], actions: actions || [], peopleById };
+}
+function reloadAudits() { state.auditData = null; if (state.view === 'audits') renderAudits(); }
+function gotoAudit(sub) { state.auditView = sub; renderAudits(); }
+
+function auditHeader(title, backTo) {
+  const back = backTo ? `<button class="btn btn-ghost" style="padding:4px 8px;font-size:12px;margin-bottom:8px;" onclick="gotoAudit('${backTo}')">‹ Back</button>` : '';
+  return `${back}<h1 class="section-head">${escapeHtml(title)}</h1>`;
+}
+
+function renderAudits() {
+  hideDayHead();
+  const main = document.getElementById('mainContent');
+  if (!main) return;
+  if (!can.viewAudits()) {
+    main.innerHTML = `<div class="empty" style="padding-top:30px;"><h2>Audits</h2><p>You don't have permission to view audits.</p></div>`;
+    return;
+  }
+  if (!state.auditView) state.auditView = 'hub';
+  if (!state.auditData) {
+    main.innerHTML = `<h1 class="section-head">Audits</h1><div class="empty" style="padding-top:20px;">Loading audits…</div>`;
+    loadAuditData().then(() => { if (state.view === 'audits') renderAudits(); })
+      .catch(() => { if (state.view === 'audits') { state.auditData = { templates: [], audits: [], actions: [], peopleById: {} }; renderAudits(); } });
+    return;
+  }
+  const v = state.auditView;
+  if (v === 'list') renderAuditList(main);
+  else if (v === 'new') renderAuditStart(main);
+  else if (v === 'conduct') renderAuditConductor(main);
+  else if (v === 'detail') renderAuditDetail(main);
+  else if (v === 'actions') renderAuditActions(main);
+  else if (v === 'templates') renderTemplateManager(main);
+  else if (v === 'editor') renderTemplateEditor(main);
+  else if (v === 'dashboard') renderAuditDashboard(main);
+  else renderAuditHub(main);
+}
+
+// ---- Hub ----
+function renderAuditHub(main) {
+  const D = state.auditData, audits = D.audits || [], actions = D.actions || [];
+  const mk = monthKey(new Date().toISOString());
+  const thisMonth = audits.filter(a => a.completed_at && monthKey(a.completed_at) === mk);
+  const avg = thisMonth.length ? thisMonth.reduce((s, a) => s + (Number(a.total_score) || 0), 0) / thisMonth.length : null;
+  const openActions = actions.filter(a => a.status !== 'completed').length;
+  const recent = audits.slice(0, 5);
+  let html = `<h1 class="section-head">Audits</h1>`;
+  html += `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px;">
+    ${statCard(thisMonth.length, 'This month')}
+    ${statCard(avg == null ? '—' : fmtPct(avg), 'Avg score', avg == null ? null : scoreColor(avg))}
+    ${statCard(openActions, 'Open actions', openActions ? '#c62828' : null)}</div>`;
+  html += `<div style="display:flex;gap:8px;margin-bottom:10px;">`;
+  if (can.addAudits()) html += `<button class="btn btn-primary" style="flex:1;" onclick="gotoAudit('new')">+ Start new audit</button>`;
+  html += `<button class="btn btn-black" onclick="gotoAudit('dashboard')">Dashboard</button></div>`;
+  html += `<div style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap;">
+    <button class="btn btn-ghost" style="flex:1;min-width:90px;" onclick="gotoAudit('list')">All audits</button>
+    <button class="btn btn-ghost" style="flex:1;min-width:90px;" onclick="gotoAudit('actions')">Actions${openActions ? ` (${openActions})` : ''}</button>
+    ${can.addAudits() ? `<button class="btn btn-ghost" style="flex:1;min-width:90px;" onclick="gotoAudit('templates')">Templates</button>` : ''}</div>`;
+  html += `<div class="section-sub">Recent audits</div>`;
+  html += recent.length ? recent.map(auditListRow).join('') : `<div style="font-size:13px;color:var(--grey-500);padding:6px 0;">No audits yet. Start one to begin.</div>`;
+  main.innerHTML = html;
+}
+
+function auditListRow(a) {
+  const dt = a.completed_at || a.started_at || a.created_at;
+  const badge = a.total_score == null
+    ? `<span style="font-size:12px;color:var(--grey-400);">—</span>`
+    : `<span style="font-weight:800;color:${scoreColor(a.total_score)};">${fmtPct(a.total_score)}</span>`;
+  return `<div onclick="openAuditDetail('${a.id}')" style="display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--white);border:1px solid var(--grey-200);border-radius:var(--r-md);padding:10px 12px;margin-bottom:8px;cursor:pointer;">
+    <div style="min-width:0;">
+      <div style="font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(auditSchoolName(a.school_id))} <span style="color:var(--grey-400);font-weight:400;">· ${escapeHtml(auditTemplateTitle(a))}</span></div>
+      <div style="font-size:11px;color:var(--grey-500);margin-top:2px;">${auditDate(dt)} · ${statusPill(a.status)}</div>
+    </div>
+    <div style="text-align:right;white-space:nowrap;">${badge}</div></div>`;
+}
+
+// ---- Audit list (filters + sort) ----
+function renderAuditList(main) {
+  const f = state.auditFilters = state.auditFilters || { school: 'all', status: 'all', sort: 'date' };
+  let rows = (state.auditData.audits || []).slice();
+  if (f.school !== 'all') rows = rows.filter(a => a.school_id === f.school);
+  if (f.status !== 'all') rows = rows.filter(a => a.status === f.status);
+  if (f.sort === 'score') rows.sort((a, b) => (Number(b.total_score) || -1) - (Number(a.total_score) || -1));
+  else if (f.sort === 'school') rows.sort((a, b) => auditSchoolName(a.school_id).localeCompare(auditSchoolName(b.school_id)));
+  else rows.sort((a, b) => String(b.completed_at || b.created_at || '').localeCompare(String(a.completed_at || a.created_at || '')));
+  const schools = auditableSchools();
+  let html = auditHeader('All audits', 'hub');
+  html += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">`;
+  if (schools.length > 1) {
+    html += `<select onchange="setAuditFilter('school',this.value)" style="${auditSelectStyle()}"><option value="all">All schools</option>`;
+    schools.forEach(s => { html += `<option value="${escapeHtml(s.id)}" ${f.school === s.id ? 'selected' : ''}>${escapeHtml(s.name)}</option>`; });
+    html += `</select>`;
+  }
+  html += `<select onchange="setAuditFilter('status',this.value)" style="${auditSelectStyle()}">
+    ${['all','draft','in_progress','completed'].map(s => `<option value="${s}" ${f.status === s ? 'selected' : ''}>${s === 'all' ? 'Any status' : s.replace('_', ' ')}</option>`).join('')}</select>`;
+  html += `<select onchange="setAuditFilter('sort',this.value)" style="${auditSelectStyle()}">
+    <option value="date" ${f.sort === 'date' ? 'selected' : ''}>Newest</option>
+    <option value="score" ${f.sort === 'score' ? 'selected' : ''}>By score</option>
+    <option value="school" ${f.sort === 'school' ? 'selected' : ''}>By school</option></select>`;
+  html += `</div>`;
+  html += rows.length ? rows.map(auditListRow).join('') : `<div style="font-size:13px;color:var(--grey-500);padding:8px 0;">No audits match these filters.</div>`;
+  main.innerHTML = html;
+}
+function auditSelectStyle() { return 'flex:1;min-width:120px;padding:8px 10px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;background:var(--white);'; }
+function setAuditFilter(k, v) { state.auditFilters = state.auditFilters || {}; state.auditFilters[k] = v; renderAudits(); }
+
+// ---- Start audit ----
+function renderAuditStart(main) {
+  if (!can.addAudits()) { main.innerHTML = auditHeader('Start audit', 'hub') + `<div class="empty"><p>You don't have permission to start audits.</p></div>`; return; }
+  const schools = auditableSchools();
+  const selSchool = state._newAuditSchool || (schools[0] && schools[0].id) || state.schoolId || '';
+  const templates = (state.auditData.templates || []).filter(t => t.is_active !== false)
+    .filter(t => t.scope === 'global' || t.school_id === selSchool);
+  let html = auditHeader('Start a new audit', 'hub');
+  html += `<div class="ir-section">`;
+  html += `<label class="section-sub" style="display:block;margin-bottom:4px;">School</label>`;
+  if (schools.length > 1) {
+    html += `<select id="auditNewSchool" onchange="state._newAuditSchool=this.value; renderAudits();" style="${auditSelectStyle()};width:100%;margin-bottom:12px;">`;
+    schools.forEach(s => { html += `<option value="${escapeHtml(s.id)}" ${selSchool === s.id ? 'selected' : ''}>${escapeHtml(s.name)}</option>`; });
+    html += `</select>`;
+  } else {
+    html += `<input id="auditNewSchool" type="hidden" value="${escapeHtml(selSchool)}">
+      <div style="font-weight:600;margin-bottom:12px;">${escapeHtml(auditSchoolName(selSchool))}</div>`;
+  }
+  html += `<label class="section-sub" style="display:block;margin-bottom:4px;">Template</label>`;
+  if (!templates.length) {
+    html += `<div style="font-size:13px;color:var(--grey-500);padding:6px 0;">No active templates for this school. ${can.addAudits() ? `<button class="btn btn-ghost" style="padding:2px 8px;font-size:12px;" onclick="gotoAudit('templates')">Manage templates</button>` : ''}</div>`;
+  } else {
+    html += `<select id="auditNewTemplate" style="${auditSelectStyle()};width:100%;margin-bottom:14px;">`;
+    templates.forEach(t => {
+      const n = (t.sections || []).reduce((s, sec) => s + (sec.items || []).length, 0);
+      html += `<option value="${escapeHtml(t.id)}">${escapeHtml(t.title)} — ${n} item${n === 1 ? '' : 's'}${t.scope === 'global' ? ' · global' : ''}</option>`;
+    });
+    html += `</select>`;
+    html += `<button class="btn btn-primary" style="width:100%;" onclick="beginAudit()">Begin audit</button>`;
+  }
+  html += `</div>`;
+  main.innerHTML = html;
+}
+
+async function beginAudit() {
+  const schoolEl = document.getElementById('auditNewSchool'), tplEl = document.getElementById('auditNewTemplate');
+  const schoolId = schoolEl ? schoolEl.value : state.schoolId;
+  const templateId = tplEl ? tplEl.value : '';
+  if (!schoolId) { alert('Pick a school first.'); return; }
+  if (!templateId) { alert('Pick a template first.'); return; }
+  const tpl = (state.auditData.templates || []).find(t => t.id === templateId);
+  if (!tpl) { alert('That template is no longer available.'); return; }
+  const row = {
+    template_id: templateId, template_snapshot: tpl.sections || [], school_id: schoolId,
+    auditor_id: state.user && state.user.id, status: 'draft', responses: {}, started_at: new Date().toISOString(),
+  };
+  const res = await DB.audits.createAudit(row);
+  if (res.error) { alert('Could not start the audit: ' + res.error); return; }
+  state.currentAudit = res.data; state.auditData = null; state.auditView = 'conduct'; renderAudits();
+}
+
+// ---- Conductor ----
+function renderAuditConductor(main) {
+  const a = state.currentAudit;
+  if (!a) { state.auditView = 'list'; return renderAudits(); }
+  const snap = a.template_snapshot || [];
+  const overall = computeAuditScore(snap, a.responses || {});
+  const readOnly = a.status === 'completed';
+  let html = auditHeader(readOnly ? 'Audit (completed)' : 'Conduct audit', 'list');
+  html += `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px;background:${scoreBg(overall.pct)};border:1px solid var(--grey-200);border-radius:var(--r-md);padding:10px 12px;">
+    <div style="min-width:0;"><div style="font-weight:700;">${escapeHtml(auditSchoolName(a.school_id))}</div>
+      <div style="font-size:12px;color:var(--grey-600);margin-top:2px;">${escapeHtml(auditTemplateTitle(a))} · ${statusPill(a.status)}</div></div>
+    ${scoreRing(overall.pct)}</div>`;
+  if (!snap.length) html += `<div class="empty"><p>This audit's template has no items.</p></div>`;
+  snap.forEach((sec, si) => {
+    const ss = computeSectionScore(sec, a.responses || {});
+    html += `<div class="ir-section"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+      <div class="ir-section-title">${escapeHtml(sec.title || 'Section ' + (si + 1))}</div>
+      <div style="font-size:12px;font-weight:800;color:${scoreColor(ss.pct)};">${fmtPct(ss.pct)}</div></div>`;
+    (sec.items || []).forEach(it => {
+      const r = (a.responses || {})[it.id] || {};
+      const maxv = Number(it.max_score) || 5;
+      html += `<div style="padding:9px 0;border-bottom:1px solid var(--grey-100);">
+        <div style="font-size:13px;margin-bottom:7px;">${escapeHtml(it.label)}</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:7px;">`;
+      for (let v = 0; v <= maxv; v++) {
+        const on = isScored(r) && Number(r.score) === v;
+        html += `<button onclick="setAuditScore('${it.id}',${v})" ${readOnly ? 'disabled' : ''}
+          style="min-width:36px;height:36px;border-radius:8px;border:1px solid ${on ? '#d62828' : 'var(--grey-300)'};background:${on ? '#d62828' : 'var(--white)'};color:${on ? '#fff' : 'var(--ink)'};font-weight:700;font-size:14px;${readOnly ? 'opacity:.55;' : 'cursor:pointer;'}">${v}</button>`;
+      }
+      html += `</div>
+        <textarea placeholder="Notes (optional)" rows="1" ${readOnly ? 'readonly' : ''} oninput="setAuditNote('${it.id}',this.value)"
+          style="width:100%;font-size:12px;padding:7px 9px;border:1px solid var(--grey-200);border-radius:6px;box-sizing:border-box;resize:vertical;">${escapeHtml(r.notes || '')}</textarea>`;
+      if (!readOnly && can.addAudits()) html += `<button class="btn btn-ghost" style="font-size:11px;padding:3px 9px;margin-top:5px;" onclick="openActionModal('${a.id}','${a.school_id}','${it.id}')">+ Add action</button>`;
+      html += `</div>`;
+    });
+    html += `</div>`;
+  });
+  if (!readOnly) {
+    html += `<div style="position:sticky;bottom:0;background:var(--white);padding:12px 0;border-top:1px solid var(--grey-200);display:flex;gap:8px;margin-top:6px;">
+      <button class="btn btn-ghost" onclick="saveAuditDraftNow()">Save draft</button>
+      <button class="btn btn-primary" style="flex:1;" onclick="completeAudit()">Complete audit</button></div>`;
+  } else {
+    html += `<button class="btn btn-black" style="width:100%;margin-top:12px;" onclick="openAuditDetail('${a.id}')">View summary</button>`;
+  }
+  main.innerHTML = html;
+}
+
+function setAuditScore(itemId, score) {
+  const a = state.currentAudit; if (!a || a.status === 'completed') return;
+  a.responses = a.responses || {};
+  const cur = a.responses[itemId] || {};
+  a.responses[itemId] = { score: Number(score), notes: cur.notes || '' };
+  scheduleAuditSave();
+  renderAudits();
+}
+function setAuditNote(itemId, notes) {
+  const a = state.currentAudit; if (!a || a.status === 'completed') return;
+  a.responses = a.responses || {};
+  const cur = a.responses[itemId] || {};
+  a.responses[itemId] = { score: cur.score, notes };
+  scheduleAuditSave();
+}
+function scheduleAuditSave() {
+  clearTimeout(state._auditSaveTimer);
+  state._auditSaveTimer = setTimeout(() => { saveAuditProgress(); }, 600);
+}
+async function saveAuditProgress() {
+  const a = state.currentAudit; if (!a || !a.id || a.status === 'completed') return;
+  const sc = computeAuditScore(a.template_snapshot || [], a.responses || {});
+  const patch = { responses: a.responses || {}, total_score: Math.round(sc.pct * 100) / 100 };
+  if (a.status === 'draft') { patch.status = 'in_progress'; a.status = 'in_progress'; if (!a.started_at) patch.started_at = new Date().toISOString(); }
+  await DB.audits.saveAudit(a.id, patch);
+}
+async function saveAuditDraftNow() {
+  clearTimeout(state._auditSaveTimer);
+  await saveAuditProgress();
+  state.auditData = null; state.auditView = 'list'; renderAudits();
+}
+async function completeAudit() {
+  const a = state.currentAudit; if (!a) return;
+  if (!allItemsScored(a.template_snapshot || [], a.responses || {})) { alert('Score every item before completing the audit.'); return; }
+  if (!confirm('This will finalise the audit. Continue?')) return;
+  const sc = computeAuditScore(a.template_snapshot || [], a.responses || {});
+  const patch = { status: 'completed', completed_at: new Date().toISOString(), total_score: Math.round(sc.pct * 100) / 100, responses: a.responses || {} };
+  const res = await DB.audits.saveAudit(a.id, patch);
+  if (res.error) { alert('Could not complete the audit: ' + res.error); return; }
+  Object.assign(a, patch);
+  state.currentAuditId = a.id; state.auditData = null; state.auditView = 'detail'; renderAudits();
+}
+async function openAuditConductor(id) {
+  let a = (state.auditData && state.auditData.audits || []).find(x => x.id === id);
+  if (!a) a = await DB.audits.getAudit(id);
+  if (!a) { alert('Audit not found.'); return; }
+  state.currentAudit = a; state.auditView = 'conduct'; renderAudits();
+}
+
+// ---- Audit detail (read-only summary) ----
+function openAuditDetail(id) {
+  state.currentAuditId = id;
+  const a = (state.auditData && state.auditData.audits || []).find(x => x.id === id);
+  if (a) state.currentAudit = a;
+  state.auditView = 'detail'; renderAudits();
+}
+function renderAuditDetail(main) {
+  const id = state.currentAuditId || (state.currentAudit && state.currentAudit.id);
+  const a = (state.auditData.audits || []).find(x => x.id === id) || state.currentAudit;
+  if (!a) { state.auditView = 'list'; return renderAudits(); }
+  const snap = a.template_snapshot || [];
+  const overall = computeAuditScore(snap, a.responses || {});
+  const isAuditor = a.auditor_id === (state.user && state.user.id);
+  const canResume = (a.status === 'draft' || a.status === 'in_progress') && isAuditor;
+  const myActions = (state.auditData.actions || []).filter(x => x.audit_id === a.id);
+  let html = auditHeader('Audit summary', 'list');
+  html += `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:14px;background:${scoreBg(overall.pct)};border:1px solid var(--grey-200);border-radius:var(--r-md);padding:12px;">
+    <div style="min-width:0;"><div style="font-weight:700;font-size:15px;">${escapeHtml(auditSchoolName(a.school_id))}</div>
+      <div style="font-size:12px;color:var(--grey-600);margin-top:3px;">${escapeHtml(auditTemplateTitle(a))}</div>
+      <div style="font-size:12px;color:var(--grey-600);margin-top:2px;">${escapeHtml(auditPersonName(a.auditor_id))} · ${auditDate(a.completed_at || a.started_at || a.created_at)}</div>
+      <div style="margin-top:6px;">${statusPill(a.status)}</div></div>
+    ${scoreRing(overall.pct)}</div>`;
+  html += `<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">`;
+  if (canResume) html += `<button class="btn btn-primary" style="flex:1;min-width:120px;" onclick="openAuditConductor('${a.id}')">Resume audit</button>`;
+  if (can.addAudits()) html += `<button class="btn btn-black" style="flex:1;min-width:120px;" onclick="openActionModal('${a.id}','${a.school_id}','')">+ Add action</button>`;
+  if (a.status === 'draft' && isAuditor) html += `<button class="btn btn-warn" onclick="deleteDraftAudit('${a.id}')">Delete draft</button>`;
+  html += `</div>`;
+  html += `<div class="section-sub">Section breakdown</div>`;
+  snap.forEach(sec => {
+    const ss = computeSectionScore(sec, a.responses || {});
+    html += `<div class="ir-section"><div style="display:flex;justify-content:space-between;align-items:center;">
+      <div class="ir-section-title">${escapeHtml(sec.title || 'Section')}</div>
+      <div style="font-size:12px;font-weight:800;color:${scoreColor(ss.pct)};">${fmtPct(ss.pct)} <span style="color:var(--grey-400);font-weight:400;">(${ss.got}/${ss.max})</span></div></div>`;
+    (sec.items || []).forEach(it => {
+      const r = (a.responses || {})[it.id] || {};
+      html += `<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--grey-100);">
+        <div style="font-size:12px;min-width:0;">${escapeHtml(it.label)}${r.notes ? `<div style="color:var(--grey-500);font-style:italic;margin-top:2px;">${escapeHtml(r.notes)}</div>` : ''}</div>
+        <div style="font-size:12px;font-weight:700;white-space:nowrap;color:${isScored(r) ? scoreColor((Number(r.score) / (Number(it.max_score) || 1)) * 100) : 'var(--grey-400)'};">${isScored(r) ? (Number(r.score) + '/' + (Number(it.max_score) || 0)) : '—'}</div></div>`;
+    });
+    html += `</div>`;
+  });
+  html += `<div class="section-sub" style="margin-top:14px;">Corrective actions (${myActions.length})</div>`;
+  html += myActions.length ? myActions.map(x => actionRow(x, false)).join('') : `<div style="font-size:13px;color:var(--grey-500);padding:6px 0;">No actions raised for this audit.</div>`;
+  main.innerHTML = html;
+}
+function deleteDraftAudit(id) {
+  if (!confirm('Delete this draft audit? This cannot be undone.')) return;
+  DB.audits.deleteAudit(id).then(res => {
+    if (res.error) { alert('Could not delete: ' + res.error); return; }
+    state.currentAudit = null; state.currentAuditId = null; state.auditData = null; state.auditView = 'list'; renderAudits();
+  });
+}
+
+// ---- Action row + management ----
+function actionMiniBtn() { return 'font-size:11px;padding:3px 10px;'; }
+function actionRow(a, showSchool) {
+  const overdue = actionOverdue(a);
+  const due = a.due_date ? `<span style="color:${overdue ? '#c62828' : 'var(--grey-500)'};font-weight:${overdue ? '700' : '400'};">Due ${auditDate(a.due_date)}${overdue ? ' · overdue' : ''}</span>` : '';
+  let trans = '';
+  if (a.status === 'open') trans = `<button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="transitionAction('${a.id}','in_progress')">Start</button>`;
+  else if (a.status === 'in_progress') trans = `<button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="openActionEdit('${a.id}')">Complete…</button>`;
+  return `<div style="background:var(--white);border:1px solid var(--grey-200);border-radius:var(--r-md);padding:10px 12px;margin-bottom:8px;">
+    <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;">
+      <div style="font-size:13px;min-width:0;">${escapeHtml(a.description)}</div>
+      <div style="white-space:nowrap;">${priorityPill(a.priority)}</div></div>
+    <div style="font-size:11px;color:var(--grey-500);margin-top:5px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+      ${showSchool ? `<span>${escapeHtml(auditSchoolName(a.school_id))}</span>` : ''}
+      <span>${escapeHtml(auditPersonName(a.assigned_to))}</span>${due}${statusPill(a.status)}</div>
+    <div style="display:flex;gap:6px;margin-top:8px;">${trans}
+      <button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="openActionEdit('${a.id}')">Edit</button></div></div>`;
+}
+function renderAuditActions(main) {
+  const f = state.actionFilters = state.actionFilters || { school: 'all', status: 'all', priority: 'all', overdue: false };
+  let rows = (state.auditData.actions || []).slice();
+  if (f.school !== 'all') rows = rows.filter(a => a.school_id === f.school);
+  if (f.status !== 'all') rows = rows.filter(a => a.status === f.status);
+  if (f.priority !== 'all') rows = rows.filter(a => a.priority === f.priority);
+  if (f.overdue) rows = rows.filter(actionOverdue);
+  rows.sort((a, b) => {
+    const ao = actionOverdue(a) ? 0 : 1, bo = actionOverdue(b) ? 0 : 1;
+    if (ao !== bo) return ao - bo;
+    return String(a.due_date || '9999').localeCompare(String(b.due_date || '9999'));
+  });
+  const schools = auditableSchools();
+  let html = auditHeader('Corrective actions', 'hub');
+  html += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">`;
+  if (schools.length > 1) {
+    html += `<select onchange="setActionFilter('school',this.value)" style="${auditSelectStyle()}"><option value="all">All schools</option>`;
+    schools.forEach(s => { html += `<option value="${escapeHtml(s.id)}" ${f.school === s.id ? 'selected' : ''}>${escapeHtml(s.name)}</option>`; });
+    html += `</select>`;
+  }
+  html += `<select onchange="setActionFilter('status',this.value)" style="${auditSelectStyle()}">
+    ${['all', 'open', 'in_progress', 'completed'].map(s => `<option value="${s}" ${f.status === s ? 'selected' : ''}>${s === 'all' ? 'Any status' : s.replace('_', ' ')}</option>`).join('')}</select>`;
+  html += `<select onchange="setActionFilter('priority',this.value)" style="${auditSelectStyle()}">
+    ${['all', 'low', 'medium', 'high', 'critical'].map(s => `<option value="${s}" ${f.priority === s ? 'selected' : ''}>${s === 'all' ? 'Any priority' : s}</option>`).join('')}</select>`;
+  html += `<label style="display:flex;align-items:center;gap:5px;font-size:12px;padding:8px 10px;border:1px solid var(--grey-200);border-radius:var(--r-sm);background:var(--white);cursor:pointer;">
+    <input type="checkbox" ${f.overdue ? 'checked' : ''} onchange="setActionFilter('overdue',this.checked)"> Overdue only</label>`;
+  html += `</div>`;
+  html += rows.length ? rows.map(a => actionRow(a, schools.length > 1)).join('') : `<div style="font-size:13px;color:var(--grey-500);padding:8px 0;">No actions match these filters.</div>`;
+  main.innerHTML = html;
+}
+function setActionFilter(k, v) { state.actionFilters = state.actionFilters || {}; state.actionFilters[k] = v; renderAudits(); }
+
+// ---- Template manager ----
+function canManageTemplate(t) {
+  if (can.auditAnySchool()) return true;
+  if (!can.addAudits()) return false;
+  const mine = (state.userSchools && state.userSchools.length) ? state.userSchools : [state.schoolId];
+  return t.scope === 'school' && mine.includes(t.school_id);
+}
+function renderTemplateManager(main) {
+  const templates = (state.auditData.templates || []).slice().sort((a, b) => String(a.title).localeCompare(String(b.title)));
+  let html = auditHeader('Audit templates', 'hub');
+  if (can.addAudits()) html += `<button class="btn btn-primary" style="width:100%;margin-bottom:12px;" onclick="openTemplateEditor(null)">+ New template</button>`;
+  if (!templates.length) { main.innerHTML = html + `<div style="font-size:13px;color:var(--grey-500);padding:8px 0;">No templates yet.</div>`; return; }
+  templates.forEach(t => {
+    const n = (t.sections || []).reduce((s, sec) => s + (sec.items || []).length, 0);
+    const manage = canManageTemplate(t);
+    const scopeBadge = t.scope === 'global'
+      ? `<span style="font-size:10px;padding:1px 7px;border-radius:8px;background:#eef;color:#3949ab;font-weight:700;">Global</span>`
+      : `<span style="font-size:10px;padding:1px 7px;border-radius:8px;background:#f0f0ee;color:#555;font-weight:700;">${escapeHtml(auditSchoolName(t.school_id))}</span>`;
+    html += `<div style="background:var(--white);border:1px solid var(--grey-200);border-radius:var(--r-md);padding:11px 12px;margin-bottom:8px;${t.is_active === false ? 'opacity:.6;' : ''}">
+      <div style="min-width:0;"><div style="font-weight:600;font-size:13px;">${escapeHtml(t.title)}</div>
+        <div style="font-size:11px;color:var(--grey-500);margin-top:3px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${scopeBadge}<span>${n} item${n === 1 ? '' : 's'}</span>${t.is_active === false ? '<span>· inactive</span>' : ''}</div></div>
+      <div style="display:flex;gap:6px;margin-top:9px;flex-wrap:wrap;">
+        ${manage ? `<button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="openTemplateEditor('${t.id}')">Edit</button>` : ''}
+        ${manage ? `<button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="toggleTemplateActive('${t.id}')">${t.is_active === false ? 'Activate' : 'Deactivate'}</button>` : ''}
+        ${can.addAudits() ? `<button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="duplicateTemplate('${t.id}')">Duplicate</button>` : ''}
+        ${manage ? `<button class="btn btn-ghost" style="${actionMiniBtn()};color:#c62828;" onclick="removeTemplate('${t.id}')">Delete</button>` : ''}
+      </div></div>`;
+  });
+  main.innerHTML = html;
+}
+async function toggleTemplateActive(id) {
+  const t = (state.auditData.templates || []).find(x => x.id === id); if (!t) return;
+  const res = await DB.audits.setTemplateActive(id, t.is_active === false);
+  if (res.error) { alert('Could not update: ' + res.error); return; }
+  state.auditData = null; renderAudits();
+}
+async function removeTemplate(id) {
+  if (!confirm('Delete this template? Existing audits keep their own snapshot and are unaffected.')) return;
+  const res = await DB.audits.deleteTemplate(id);
+  if (res.error) { alert('Could not delete. Templates already used by an audit can be deactivated instead.\n\n' + res.error); return; }
+  state.auditData = null; renderAudits();
+}
+function duplicateTemplate(id) {
+  const t = (state.auditData.templates || []).find(x => x.id === id); if (!t) return;
+  const sections = JSON.parse(JSON.stringify(t.sections || []));
+  sections.forEach(sec => { sec.id = auditUid(); (sec.items || []).forEach(it => { it.id = auditUid(); }); });
+  const sa = can.auditAnySchool();
+  state.editingTemplate = {
+    id: null, title: t.title + ' (copy)', description: t.description || '',
+    scope: sa ? t.scope : 'school',
+    school_id: sa ? (t.scope === 'global' ? null : t.school_id) : ((state.userSchools && state.userSchools[0]) || state.schoolId),
+    sections, is_active: true,
+  };
+  state.auditView = 'editor'; renderAudits();
+}
+
+// ---- Template editor ----
+function newTemplateDraft() {
+  const sa = can.auditAnySchool();
+  return { id: null, title: '', description: '', scope: sa ? 'global' : 'school',
+    school_id: sa ? null : ((state.userSchools && state.userSchools[0]) || state.schoolId), sections: [], is_active: true };
+}
+function openTemplateEditor(id) {
+  if (!id) state.editingTemplate = newTemplateDraft();
+  else {
+    const t = (state.auditData.templates || []).find(x => x.id === id);
+    if (!t) { alert('Template not found.'); return; }
+    state.editingTemplate = JSON.parse(JSON.stringify(t));
+  }
+  state.auditView = 'editor'; renderAudits();
+}
+function auditInputStyle() { return 'width:100%;padding:9px 11px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:14px;box-sizing:border-box;background:var(--white);'; }
+function renderTemplateEditor(main) {
+  const t = state.editingTemplate; if (!t) { state.auditView = 'templates'; return renderAudits(); }
+  const sa = can.auditAnySchool();
+  let html = auditHeader(t.id ? 'Edit template' : 'New template', 'templates');
+  html += `<div class="ir-section">`;
+  html += `<label class="section-sub" style="display:block;margin-bottom:3px;">Title</label>
+    <input value="${escapeHtml(t.title || '')}" oninput="tplField('title',this.value)" placeholder="e.g. Monthly Safety Audit" style="${auditInputStyle()}">`;
+  html += `<label class="section-sub" style="display:block;margin:10px 0 3px;">Description (optional)</label>
+    <textarea rows="2" oninput="tplField('description',this.value)" placeholder="Context or instructions" style="${auditInputStyle()};resize:vertical;">${escapeHtml(t.description || '')}</textarea>`;
+  html += `<label class="section-sub" style="display:block;margin:10px 0 3px;">Scope</label>`;
+  if (sa) {
+    html += `<select onchange="setTplScope(this.value)" style="${auditInputStyle()}">
+      <option value="global" ${t.scope === 'global' ? 'selected' : ''}>Global — all schools</option>
+      <option value="school" ${t.scope === 'school' ? 'selected' : ''}>Single school</option></select>`;
+    if (t.scope === 'school') {
+      html += `<select onchange="setTplSchool(this.value)" style="${auditInputStyle()};margin-top:8px;">`;
+      auditableSchools().forEach(s => { html += `<option value="${escapeHtml(s.id)}" ${t.school_id === s.id ? 'selected' : ''}>${escapeHtml(s.name)}</option>`; });
+      html += `</select>`;
+    }
+  } else {
+    html += `<div style="font-size:13px;font-weight:600;">${escapeHtml(auditSchoolName(t.school_id))} <span style="font-weight:400;color:var(--grey-500);">(your school)</span></div>`;
+  }
+  html += `</div>`;
+  (t.sections || []).forEach((sec, si) => {
+    html += `<div class="ir-section">
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;">
+        <input value="${escapeHtml(sec.title || '')}" oninput="tplSectionField(${si},'title',this.value)" placeholder="Section ${si + 1} title" style="${auditInputStyle()};flex:1;font-weight:600;">
+        <button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="tplMoveSection(${si},-1)" ${si === 0 ? 'disabled' : ''}>↑</button>
+        <button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="tplMoveSection(${si},1)" ${si === (t.sections.length - 1) ? 'disabled' : ''}>↓</button>
+        <button class="btn btn-ghost" style="${actionMiniBtn()};color:#c62828;" onclick="tplRemoveSection(${si})">✕</button>
+      </div>`;
+    (sec.items || []).forEach((it, ii) => {
+      html += `<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+        <input value="${escapeHtml(it.label || '')}" oninput="tplItemField(${si},${ii},'label',this.value)" placeholder="Item ${ii + 1}" style="${auditInputStyle()};flex:1;font-size:12px;">
+        <input type="number" min="1" max="10" value="${Number(it.max_score) || 5}" oninput="tplItemField(${si},${ii},'max_score',this.value)" title="Max score" style="${auditInputStyle()};width:56px;font-size:12px;text-align:center;padding-left:6px;padding-right:6px;">
+        <button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="tplMoveItem(${si},${ii},-1)" ${ii === 0 ? 'disabled' : ''}>↑</button>
+        <button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="tplMoveItem(${si},${ii},1)" ${ii === (sec.items.length - 1) ? 'disabled' : ''}>↓</button>
+        <button class="btn btn-ghost" style="${actionMiniBtn()};color:#c62828;" onclick="tplRemoveItem(${si},${ii})">✕</button>
+      </div>`;
+    });
+    html += `<button class="btn btn-ghost" style="${actionMiniBtn()};margin-top:4px;" onclick="tplAddItem(${si})">+ Add item</button></div>`;
+  });
+  html += `<button class="btn btn-black" style="width:100%;margin-bottom:12px;" onclick="tplAddSection()">+ Add section</button>`;
+  html += `<div style="display:flex;gap:8px;">
+    <button class="btn btn-ghost" onclick="gotoAudit('templates')">Cancel</button>
+    <button class="btn btn-primary" style="flex:1;" onclick="saveTemplate()">Save template</button></div>`;
+  main.innerHTML = html;
+}
+function tplField(f, v) { if (state.editingTemplate) state.editingTemplate[f] = v; }
+function setTplScope(v) {
+  const t = state.editingTemplate; if (!t) return;
+  t.scope = v;
+  if (v === 'global') t.school_id = null;
+  else if (!t.school_id) t.school_id = (auditableSchools()[0] || {}).id || state.schoolId;
+  renderAudits();
+}
+function setTplSchool(v) { if (state.editingTemplate) state.editingTemplate.school_id = v; }
+function tplSectionField(si, f, v) { const t = state.editingTemplate; if (t && t.sections[si]) t.sections[si][f] = v; }
+function tplItemField(si, ii, f, v) {
+  const t = state.editingTemplate; if (!t || !t.sections[si] || !t.sections[si].items[ii]) return;
+  t.sections[si].items[ii][f] = (f === 'max_score' ? Math.max(1, Math.min(10, parseInt(v, 10) || 1)) : v);
+}
+function tplAddSection() { const t = state.editingTemplate; if (!t) return; t.sections = t.sections || []; t.sections.push({ id: auditUid(), title: '', order: t.sections.length + 1, items: [] }); renderAudits(); }
+function tplRemoveSection(si) { const t = state.editingTemplate; if (!t) return; if (!confirm('Remove this section and its items?')) return; t.sections.splice(si, 1); renderAudits(); }
+function tplMoveSection(si, dir) { const t = state.editingTemplate; if (!t) return; const j = si + dir; if (j < 0 || j >= t.sections.length) return; const s = t.sections, tmp = s[si]; s[si] = s[j]; s[j] = tmp; renderAudits(); }
+function tplAddItem(si) { const t = state.editingTemplate; if (!t || !t.sections[si]) return; t.sections[si].items = t.sections[si].items || []; t.sections[si].items.push({ id: auditUid(), label: '', max_score: 5, order: t.sections[si].items.length + 1 }); renderAudits(); }
+function tplRemoveItem(si, ii) { const t = state.editingTemplate; if (!t || !t.sections[si]) return; t.sections[si].items.splice(ii, 1); renderAudits(); }
+function tplMoveItem(si, ii, dir) { const t = state.editingTemplate; if (!t || !t.sections[si]) return; const items = t.sections[si].items, j = ii + dir; if (j < 0 || j >= items.length) return; const tmp = items[ii]; items[ii] = items[j]; items[j] = tmp; renderAudits(); }
+function validateTemplate(t) {
+  const e = [];
+  if (!t.title || !t.title.trim()) e.push('Add a title');
+  if (!t.sections || !t.sections.length) e.push('Add at least one section');
+  (t.sections || []).forEach((s, i) => {
+    if (!s.title || !s.title.trim()) e.push('Section ' + (i + 1) + ' needs a title');
+    if (!s.items || !s.items.length) e.push('Section ' + (i + 1) + ' needs at least one item');
+    (s.items || []).forEach((it, j) => { if (!it.label || !it.label.trim()) e.push('Section ' + (i + 1) + ', item ' + (j + 1) + ' needs a label'); });
+  });
+  if (t.scope === 'school' && !t.school_id) e.push('Pick a school for a school-scoped template');
+  return e;
+}
+async function saveTemplate() {
+  const t = state.editingTemplate; if (!t) return;
+  const errs = validateTemplate(t);
+  if (errs.length) { alert('Fix these first:\n• ' + errs.join('\n• ')); return; }
+  (t.sections || []).forEach((s, i) => { s.order = i + 1; (s.items || []).forEach((it, j) => { it.order = j + 1; it.max_score = Math.max(1, Math.min(10, parseInt(it.max_score, 10) || 1)); }); });
+  const row = {
+    title: t.title.trim(), description: (t.description || '').trim(), scope: t.scope,
+    school_id: t.scope === 'global' ? null : t.school_id, sections: t.sections, is_active: t.is_active !== false,
+  };
+  if (t.id) row.id = t.id; else row.created_by = state.user && state.user.id;
+  const res = await DB.audits.saveTemplate(row);
+  if (res.error) { alert('Could not save template: ' + res.error); return; }
+  state.editingTemplate = null; state.auditData = null; state.auditView = 'templates'; renderAudits();
+}
+
+// ---- Dashboard ----
+function renderAuditDashboard(main) {
+  const D = state.auditData, audits = D.audits || [], actions = D.actions || [];
+  const completed = audits.filter(a => a.status === 'completed' && a.completed_at);
+  const base = new Date(), months = [];
+  for (let i = 5; i >= 0; i--) months.push(monthKey(new Date(base.getFullYear(), base.getMonth() - i, 1).toISOString()));
+  const points = months.map(mk => {
+    const inM = completed.filter(a => monthKey(a.completed_at) === mk);
+    return inM.length ? { label: monthLabel(mk), value: inM.reduce((s, a) => s + (Number(a.total_score) || 0), 0) / inM.length, has: true } : { has: false };
+  }).filter(p => p.has);
+  const bySchool = {};
+  completed.forEach(a => { const cur = bySchool[a.school_id]; if (!cur || String(a.completed_at) > String(cur.completed_at)) bySchool[a.school_id] = a; });
+  const bars = Object.keys(bySchool).map(sid => ({ label: auditSchoolName(sid), value: Number(bySchool[sid].total_score) || 0 })).sort((a, b) => b.value - a.value);
+  const mk = monthKey(new Date().toISOString());
+  const openN = actions.filter(a => a.status !== 'completed').length;
+  const overdueN = actions.filter(actionOverdue).length;
+  const doneMonth = actions.filter(a => a.status === 'completed' && a.completed_at && monthKey(a.completed_at) === mk).length;
+  const totalDone = actions.filter(a => a.status === 'completed').length;
+  const rate = actions.length ? Math.round((totalDone / actions.length) * 100) : 0;
+  const recent = audits.slice(0, 10);
+  let html = auditHeader('Audit dashboard', 'hub');
+  if (!can.auditAnySchool()) html += `<div style="font-size:12px;color:var(--grey-500);margin-bottom:10px;">Showing ${escapeHtml(auditSchoolName((auditableSchools()[0] || {}).id))}.</div>`;
+  html += `<div class="ir-section"><div class="ir-section-title" style="margin-bottom:8px;">Average score — last 6 months</div>${auditTrendSvg(points, 320, 150)}</div>`;
+  html += `<div class="ir-section"><div class="ir-section-title" style="margin-bottom:8px;">Latest score by school</div>${auditBarsSvg(bars, 320)}</div>`;
+  html += `<div class="section-sub">Actions</div>`;
+  html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;">
+    ${statCard(openN, 'Open', openN ? '#c62828' : null)}
+    ${statCard(overdueN, 'Overdue', overdueN ? '#c62828' : null)}
+    ${statCard(doneMonth, 'Done this month', '#2e7d32')}
+    ${statCard(rate + '%', 'Completion rate')}</div>`;
+  html += `<div class="section-sub">Recent audits</div>`;
+  if (!recent.length) html += `<div style="font-size:13px;color:var(--grey-500);padding:6px 0;">No audits yet.</div>`;
+  else {
+    html += `<div style="background:var(--white);border:1px solid var(--grey-200);border-radius:var(--r-md);overflow:hidden;">`;
+    recent.forEach((a, i) => {
+      html += `<div onclick="openAuditDetail('${a.id}')" style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px 12px;cursor:pointer;${i ? 'border-top:1px solid var(--grey-100);' : ''}">
+        <div style="min-width:0;"><div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(auditSchoolName(a.school_id))}</div>
+          <div style="font-size:10px;color:var(--grey-500);">${auditDate(a.completed_at || a.created_at)} · ${escapeHtml(auditTemplateTitle(a))}</div></div>
+        <div style="font-size:12px;font-weight:800;white-space:nowrap;color:${a.total_score == null ? 'var(--grey-400)' : scoreColor(a.total_score)};">${a.total_score == null ? '—' : fmtPct(a.total_score)}</div></div>`;
+    });
+    html += `</div>`;
+  }
+  main.innerHTML = html;
+}
+
+// ---- Action create/edit modal handlers ----
+function auditSetVal(id, v) { const el = document.getElementById(id); if (el) el.value = v; }
+function auditGetVal(id) { const el = document.getElementById(id); return el ? el.value : ''; }
+function toggleActionEvidence() { const wrap = document.getElementById('aaEvidenceWrap'); if (wrap) wrap.style.display = (auditGetVal('aaStatus') === 'completed') ? '' : 'none'; }
+async function populateAssignee(schoolId, selectedId) {
+  const sel = document.getElementById('aaAssignee'); if (!sel) return;
+  sel.innerHTML = '<option value="">Unassigned</option>';
+  state._auditStaff = state._auditStaff || {};
+  let staff = state._auditStaff[schoolId];
+  if (!staff) { staff = await DB.audits.schoolStaff(schoolId); state._auditStaff[schoolId] = staff; }
+  (staff || []).forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p.id; opt.textContent = (p.display_name || p.id) + (p.role ? ' (' + p.role + ')' : '');
+    if (p.id === selectedId) opt.selected = true;
+    sel.appendChild(opt);
+  });
+}
+async function openActionModal(auditId, schoolId, itemId) {
+  state._actionDraft = { auditId, schoolId, itemId: itemId || '', editId: '' };
+  auditSetVal('aaDesc', ''); auditSetVal('aaPriority', 'medium'); auditSetVal('aaDue', ''); auditSetVal('aaStatus', 'open'); auditSetVal('aaEvidence', '');
+  const ttl = document.getElementById('aaModalTitle'); if (ttl) ttl.textContent = 'New action';
+  const del = document.getElementById('aaDeleteBtn'); if (del) del.style.display = 'none';
+  toggleActionEvidence(); openModal('modalAuditAction');
+  await populateAssignee(schoolId, '');
+}
+async function openActionEdit(actionId) {
+  const a = (state.auditData && state.auditData.actions || []).find(x => x.id === actionId); if (!a) return;
+  state._actionDraft = { auditId: a.audit_id, schoolId: a.school_id, itemId: a.item_id || '', editId: a.id };
+  auditSetVal('aaDesc', a.description || ''); auditSetVal('aaPriority', a.priority || 'medium');
+  auditSetVal('aaDue', a.due_date || ''); auditSetVal('aaStatus', a.status || 'open'); auditSetVal('aaEvidence', a.evidence_notes || '');
+  const ttl = document.getElementById('aaModalTitle'); if (ttl) ttl.textContent = 'Edit action';
+  const del = document.getElementById('aaDeleteBtn'); if (del) del.style.display = (a.status === 'open') ? '' : 'none';
+  toggleActionEvidence(); openModal('modalAuditAction');
+  await populateAssignee(a.school_id, a.assigned_to || '');
+}
+async function saveAuditAction() {
+  const d = state._actionDraft || {};
+  const desc = auditGetVal('aaDesc').trim();
+  if (!desc) { alert('Describe what needs to be done.'); return; }
+  const status = auditGetVal('aaStatus');
+  const row = {
+    description: desc, assigned_to: auditGetVal('aaAssignee') || null, priority: auditGetVal('aaPriority'),
+    status, due_date: auditGetVal('aaDue') || null, evidence_notes: auditGetVal('aaEvidence') || null,
+    completed_at: status === 'completed' ? new Date().toISOString() : null,
+  };
+  let res;
+  if (d.editId) res = await DB.audits.updateAction(d.editId, row);
+  else { row.audit_id = d.auditId; row.school_id = d.schoolId; row.item_id = d.itemId || null; row.created_by = state.user && state.user.id; res = await DB.audits.createAction(row); }
+  if (res.error) { alert('Could not save the action: ' + res.error); return; }
+  closeModal('modalAuditAction'); state.auditData = null; renderAudits();
+}
+async function deleteAuditAction() {
+  const d = state._actionDraft || {}; if (!d.editId) return;
+  if (!confirm('Delete this action?')) return;
+  const res = await DB.audits.deleteAction(d.editId);
+  if (res.error) { alert('Could not delete (only open actions can be deleted): ' + res.error); return; }
+  closeModal('modalAuditAction'); state.auditData = null; renderAudits();
+}
+async function transitionAction(id, status) {
+  const patch = { status };
+  if (status === 'completed') patch.completed_at = new Date().toISOString();
+  const res = await DB.audits.updateAction(id, patch);
+  if (res.error) { alert('Could not update: ' + res.error); return; }
+  state.auditData = null; renderAudits();
 }
