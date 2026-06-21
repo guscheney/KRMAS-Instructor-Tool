@@ -15195,9 +15195,12 @@ function actionMiniBtn() { return 'font-size:11px;padding:3px 10px;'; }
 function actionRow(a, showSchool) {
   const overdue = actionOverdue(a);
   const due = a.due_date ? `<span style="color:${overdue ? '#c62828' : 'var(--grey-500)'};font-weight:${overdue ? '700' : '400'};">Due ${auditDate(a.due_date)}${overdue ? ' · overdue' : ''}</span>` : '';
+  const work = canWorkAction(a);
   let trans = '';
-  if (a.status === 'open') trans = `<button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="transitionAction('${a.id}','in_progress')">Start</button>`;
-  else if (a.status === 'in_progress') trans = `<button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="openActionEdit('${a.id}')">Complete…</button>`;
+  if (work) {
+    if (a.status === 'open') trans = `<button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="transitionAction('${a.id}','in_progress')">Start</button>`;
+    else if (a.status === 'in_progress') trans = `<button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="openActionEdit('${a.id}')">Complete…</button>`;
+  }
   return `<div style="background:var(--white);border:1px solid var(--grey-200);border-radius:var(--r-md);padding:10px 12px;margin-bottom:8px;">
     <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;">
       <div style="font-size:13px;min-width:0;">${escapeHtml(a.description)}</div>
@@ -15205,8 +15208,8 @@ function actionRow(a, showSchool) {
     <div style="font-size:11px;color:var(--grey-500);margin-top:5px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
       ${showSchool ? `<span>${escapeHtml(auditSchoolName(a.school_id))}</span>` : ''}
       <span>${escapeHtml(auditPersonName(a.assigned_to))}</span>${due}${statusPill(a.status)}</div>
-    <div style="display:flex;gap:6px;margin-top:8px;">${trans}
-      <button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="openActionEdit('${a.id}')">Edit</button></div></div>`;
+    ${work ? `<div style="display:flex;gap:6px;margin-top:8px;">${trans}
+      <button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="openActionEdit('${a.id}')">Edit</button></div>` : ''}</div>`;
 }
 function renderAuditActions(main) {
   const f = state.actionFilters = state.actionFilters || { school: 'all', status: 'all', priority: 'all', overdue: false };
@@ -15249,6 +15252,21 @@ function canManageTemplate(t) {
   if (!can.addAudits()) return false;
   const mine = (state.userSchools && state.userSchools.length) ? state.userSchools : [state.schoolId];
   return t.scope === 'school' && mine.includes(t.school_id);
+}
+// Action permissions: a "manager" (super admin, or an audit-capable admin of the action's
+// school) may do anything; the person it's assigned to may only WORK it (status + evidence).
+function canManageAction(a) {
+  if (!a) return false;
+  if (can.auditAnySchool()) return true;
+  if (!can.addAudits()) return false;
+  const mine = (state.userSchools && state.userSchools.length) ? state.userSchools : [state.schoolId];
+  return mine.includes(a.school_id);
+}
+function isMyAction(a) { return !!(a && state.user && a.assigned_to === state.user.id); }
+function canWorkAction(a) { return canManageAction(a) || isMyAction(a); }
+function setActionModalScope(restricted) {
+  ['aaDesc', 'aaAssignee', 'aaPriority', 'aaDue'].forEach(id => { const el = document.getElementById(id); if (el) el.disabled = !!restricted; });
+  const note = document.getElementById('aaScopeNote'); if (note) note.style.display = restricted ? '' : 'none';
 }
 function renderTemplateManager(main) {
   const templates = (state.auditData.templates || []).slice().sort((a, b) => String(a.title).localeCompare(String(b.title)));
@@ -15594,28 +15612,39 @@ async function populateAssignee(schoolId, selectedId) {
   });
 }
 async function openActionModal(auditId, schoolId, itemId) {
-  state._actionDraft = { auditId, schoolId, itemId: itemId || '', editId: '' };
+  state._actionDraft = { auditId, schoolId, itemId: itemId || '', editId: '', restricted: false };
   auditSetVal('aaDesc', ''); auditSetVal('aaPriority', 'medium'); auditSetVal('aaDue', ''); auditSetVal('aaStatus', 'open'); auditSetVal('aaEvidence', '');
   const ttl = document.getElementById('aaModalTitle'); if (ttl) ttl.textContent = 'New action';
   const del = document.getElementById('aaDeleteBtn'); if (del) del.style.display = 'none';
+  setActionModalScope(false);
   toggleActionEvidence(); openModal('modalAuditAction');
   await populateAssignee(schoolId, '');
 }
 async function openActionEdit(actionId) {
   const a = (state.auditData && state.auditData.actions || []).find(x => x.id === actionId); if (!a) return;
-  state._actionDraft = { auditId: a.audit_id, schoolId: a.school_id, itemId: a.item_id || '', editId: a.id };
+  const restricted = !canManageAction(a); // assignees (and any non-manager) may change status + evidence only
+  state._actionDraft = { auditId: a.audit_id, schoolId: a.school_id, itemId: a.item_id || '', editId: a.id, restricted };
   auditSetVal('aaDesc', a.description || ''); auditSetVal('aaPriority', a.priority || 'medium');
   auditSetVal('aaDue', a.due_date || ''); auditSetVal('aaStatus', a.status || 'open'); auditSetVal('aaEvidence', a.evidence_notes || '');
-  const ttl = document.getElementById('aaModalTitle'); if (ttl) ttl.textContent = 'Edit action';
-  const del = document.getElementById('aaDeleteBtn'); if (del) del.style.display = (a.status === 'open') ? '' : 'none';
+  const ttl = document.getElementById('aaModalTitle'); if (ttl) ttl.textContent = restricted ? 'Update action' : 'Edit action';
+  const del = document.getElementById('aaDeleteBtn'); if (del) del.style.display = (!restricted && a.status === 'open') ? '' : 'none';
+  setActionModalScope(restricted);
   toggleActionEvidence(); openModal('modalAuditAction');
   await populateAssignee(a.school_id, a.assigned_to || '');
 }
 async function saveAuditAction() {
   const d = state._actionDraft || {};
+  const status = auditGetVal('aaStatus');
+  // Assignee path: only status + evidence may change (the DB trigger enforces this too).
+  if (d.editId && d.restricted) {
+    const patch = { status, evidence_notes: auditGetVal('aaEvidence') || null, completed_at: status === 'completed' ? new Date().toISOString() : null };
+    const res = await DB.audits.updateAction(d.editId, patch);
+    if (res.error) { alert('Could not save the action: ' + res.error); return; }
+    closeModal('modalAuditAction'); state.auditData = null; state.auditSignals = null; renderAudits();
+    return;
+  }
   const desc = auditGetVal('aaDesc').trim();
   if (!desc) { alert('Describe what needs to be done.'); return; }
-  const status = auditGetVal('aaStatus');
   const row = {
     description: desc, assigned_to: auditGetVal('aaAssignee') || null, priority: auditGetVal('aaPriority'),
     status, due_date: auditGetVal('aaDue') || null, evidence_notes: auditGetVal('aaEvidence') || null,
