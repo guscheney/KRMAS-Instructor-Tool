@@ -316,6 +316,10 @@ function planClassIsMine(dateKey) {
 function canAddPlan(dateKey) {
   if (!state.user) return false;
   if (typeof dateKey === 'string' && dateKey.startsWith('grading-')) return can.manageGrading();
+  // Grading on the roster: the assigned instructor may create a plan for it regardless of
+  // their lesson-plan permission (same structure as any lesson plan; anyone may view it).
+  const gc = classForDateKey(dateKey);
+  if (gc && isGradingClass(gc) && isMyClass(gc)) return true;
   return can.addLessonPlans() && planClassIsMine(dateKey);
 }
 // Edit an EXISTING lesson plan (gated by "Lesson plans → edit").
@@ -324,6 +328,8 @@ function canEditPlan(dateKey) {
   const p = state.plans[dateKey];
   if (p && p.shared) return can.switchAnySchool();
   if (typeof dateKey === 'string' && dateKey.startsWith('grading-')) return can.manageGrading();
+  const gc = classForDateKey(dateKey);
+  if (gc && isGradingClass(gc) && isMyClass(gc)) return true;   // grading: assigned instructor
   return can.editLessonPlans() && planClassIsMine(dateKey);
 }
 // Writing a plan = create when none exists yet, else edit. Used by the editor chrome + save.
@@ -644,6 +650,16 @@ function uidForInstructorId(instrId) {
 function isMyClass(c) {
   const id = myInstructorId();
   return !!id && c && (c.lead === id || c.assist === id || c.junior === id || c.backup === id);
+}
+// A roster class that came from a grading-day override (v93 grading→roster mirror).
+function isGradingClass(c) { return !!c && c.overrideKind === 'grading'; }
+// Who may request "cover needed" for a class: a superadmin/admin on any class they can
+// see (admin = own school context, superadmin = any school), or an instructor ONLY on
+// their own class. Juniors and non-owners cannot flag someone else's class.
+function canRequestCover(c) {
+  if (!state.user || !c) return false;
+  if (hasRole('admin')) return true;                 // admin (own school) + superadmin (any)
+  return hasRole('instructor') && isMyClass(c);      // instructors: own classes only
 }
 // Resolve a roster class from a dateKey ({YYYY-MM-DD}-{start}-{type}).
 function classForDateKey(dateKey) {
@@ -1413,18 +1429,30 @@ function renderCardDetail(c) {
   }
   const needsCover = !c.lead || c.status === 'needs-cover';
   const canVolunteer = needsCover && can.volunteerCover();
-  const canCover = can.markNeedsCover();
+  const canCover = canRequestCover(c);
+  const coverActive = c.status === 'needs-cover';
+  // Accredited-supervision status (computed live from current accreditation + supervisor).
+  if (classIsUnsupervised(c)) {
+    html += `<div style="background:#fff4e5;border-left:3px solid var(--warn);padding:8px 10px;margin-bottom:8px;border-radius:var(--r-sm);font-size:12px;color:#7a4a00;font-weight:600;">⚠ No accredited instructor present — supervision required</div>`;
+  } else {
+    const sup = supervisorNameForClass(c);
+    if (sup) html += `<div style="background:var(--off-white);border-left:3px solid var(--ok);padding:6px 10px;margin-bottom:8px;border-radius:var(--r-sm);font-size:12px;color:var(--grey-500);">Accredited supervisor: ${escapeHtml(sup)}</div>`;
+  }
+  const canSelfAssign = hasRole('instructor') && !isMyClass(c) && !!firstOpenRole(c) && !canVolunteer;
   html += `<div class="detail-actions">
     ${(() => {
       if (!c.plan) return canAddPlan(c.dateKey) ? `<button class="btn btn-black" onclick="event.stopPropagation(); openPlan('${c.dateKey}')">Create lesson plan</button>` : '';
       if (canEditPlan(c.dateKey)) return `<button class="btn btn-black" onclick="event.stopPropagation(); openPlan('${c.dateKey}')">Edit lesson plan</button>`;
-      if (can.viewPlans()) return `<button class="btn btn-ghost" onclick="event.stopPropagation(); openPlan('${c.dateKey}')">View lesson plan</button>`;
+      if (isGradingClass(c) || can.viewPlans()) return `<button class="btn btn-ghost" onclick="event.stopPropagation(); openPlan('${c.dateKey}')">View lesson plan</button>`;
       return '';
     })()}
     ${can.editRoster() ? `<button class="btn" onclick="event.stopPropagation(); openEdit('${c.dateKey}')">Edit roster</button>` : ''}
+    ${canSelfAssign ? `<button class="btn btn-primary" onclick="event.stopPropagation(); assignMeToClass('${c.dateKey}')">Assign me</button>` : ''}
     ${canVolunteer
       ? `<button class="btn btn-primary" onclick="event.stopPropagation(); volunteerToCover('${c.dateKey}')">Volunteer to cover</button>`
-      : canCover ? `<button class="btn btn-warn" onclick="event.stopPropagation(); markNeedsCover('${c.dateKey}')">Need cover</button>` : ''}
+      : canCover ? (coverActive
+          ? `<button class="btn btn-ghost" onclick="event.stopPropagation(); clearNeedsCover('${c.dateKey}')">Cancel cover request</button>`
+          : `<button class="btn btn-warn" onclick="event.stopPropagation(); markNeedsCover('${c.dateKey}')">Need cover</button>`) : ''}
   </div>`;
   return html;
 }
@@ -2850,6 +2878,7 @@ async function loadCurrentSchoolData() {
   state.classTypeOverrides = (await DB.loadClassTypeOverrides(state.schoolId)) || {};
   state.complianceReqs = await DB.loadComplianceRequirements(state.schoolId);
   state.complianceRecords = await DB.loadInstructorCompliance(state.schoolId);
+  ensureAccreditationRequirement(); // make sure the NCAS Accreditation requirement exists (superadmin, idempotent)
   state.myDocuments = state.user ? await DB.loadInstructorDocuments(state.user.id) : [];
   startRealtimeFeed(); // re-subscribe to the new school's realtime channel
 }
@@ -3349,15 +3378,28 @@ async function saveEdit() {
   await saveEdits();
   closeModal('modalEdit');
   if (state.view === 'roster') renderDay();
+  checkSupervisionAfterAssign(key, { fromAdmin: true });
 }
 
 async function markNeedsCover(dateKey) {
   if (!state.user) { openLogin(); return; }
+  const c = classForDateKey(dateKey);
+  if (!canRequestCover(c)) { alert('You can only request cover for your own classes.'); return; }
   const existing = state.edits[dateKey] || {};
   state.edits[dateKey] = { ...existing, status: 'needs-cover' };
   await saveEdits();
   renderDay();
   notifyBackupOfCover(dateKey); // alert the listed backup — best-effort, non-blocking
+}
+
+async function clearNeedsCover(dateKey) {
+  if (!state.user) { openLogin(); return; }
+  const c = classForDateKey(dateKey);
+  if (!canRequestCover(c)) { alert('You can only change cover for your own classes.'); return; }
+  const existing = state.edits[dateKey] || {};
+  state.edits[dateKey] = { ...existing, status: 'confirmed' };
+  await saveEdits();
+  renderDay();
 }
 
 // Send a push to the class's listed backup. The in-app banner (myBackupCoverAlerts)
@@ -3408,6 +3450,7 @@ async function volunteerToCover(dateKey) {
   // Close the expanded card
   const el = document.getElementById('card-' + dateKey);
   if (el) el.classList.remove('open');
+  checkSupervisionAfterAssign(dateKey, { self: true });
 }
 
 // ---------- Lesson plans ----------
@@ -5749,10 +5792,12 @@ ${daySections}
 function renderGrading() {
   hideDayHead();
   const main = document.getElementById('mainContent');
-  if (!can.viewGrading()) {
-    main.innerHTML = `<div class="empty"><h2>Restricted</h2><p>Sign in as an instructor or admin to view grading.</p><button class="btn btn-primary" onclick="openLogin()">Sign in</button></div>`;
+  if (!state.user) {
+    main.innerHTML = `<div class="empty"><h2>Restricted</h2><p>Sign in to view grading.</p><button class="btn btn-primary" onclick="openLogin()">Sign in</button></div>`;
     return;
   }
+  // Any signed-in user can view the grading list and PRINT the checklist; creating/editing
+  // sessions, scoring and certificates stay gated by can.manageGrading() inside the list.
   // Stocktake + Belt order retired from the grading manager (stock lives in Shop).
   state.gradingView = 'sessions';
   let html = `<h1 class="section-head">Grading <span class="accent">manager</span></h1>`;
@@ -7020,6 +7065,7 @@ function renderInstructorManagerModal() {
           <div style="font-size:11px;color:var(--grey-500);margin-top:2px;">${instr.email ? escapeHtml(instr.email) + ' · ' : ''}${instr.uid ? '<span style="color:#16a34a;font-weight:600;">Can sign in</span>' : (instr.email ? 'No login — re-save to enable' : 'No login (add an email)')}</div>
         </div>
         ${roleBadge(instr.role)}
+        ${isAccredited(instr.id) ? '<span title="Holds a valid NCAS Accreditation compliance record" style="font-size:9px;background:#dcfce7;color:#166534;padding:2px 7px;border-radius:999px;font-weight:700;text-transform:uppercase;">NCAS</span>' : ''}
         ${instr.status === 'leave' ? '<span style="font-size:9px;background:#fef3c7;color:#92400e;padding:2px 7px;border-radius:999px;font-weight:700;text-transform:uppercase;">On leave</span>' : ''}
         ${instr.active === false && instr.status !== 'leave' ? '<span style="font-size:9px;background:var(--grey-200);color:var(--grey-500);padding:2px 6px;border-radius:999px;font-weight:700;text-transform:uppercase;">Inactive</span>' : ''}
       </div>
@@ -12694,6 +12740,9 @@ function renderDashboard() {
     html += `<div style="text-align:center;padding:10px;font-size:13px;color:var(--ok);font-weight:700;margin-bottom:8px;">✓ Everything looks good</div>`;
   }
 
+  // Superadmin only: accredited-supervision gaps across ALL schools (filled in async).
+  if (isSuperAdmin) html += `<div id="dashUnsupervised"></div>`;
+
   // Compliance summary
   if (reqs.length > 0) {
     html += `<div class="section-sub">Compliance — ${escapeHtml(KRMAS_SCHOOLS.find(s=>s.id===state.schoolId)?.name||'')}</div>`;
@@ -12738,6 +12787,7 @@ function renderDashboard() {
   }
 
   body.innerHTML = html;
+  if (can.switchAnySchool()) { ensureAccreditationRequirement(); refreshUnsupervisedDashboard(); }
 }
 
 // ====================================================================
@@ -12770,6 +12820,7 @@ function renderMultiSchoolReportSection() {
         <button class="btn btn-sm" onclick="msReportToggleAll(false)" style="flex:1;">Clear</button>
       </div>
       <button class="btn btn-primary" onclick="generateMultiSchoolCompliance()" style="width:100%;">⬇ Combined compliance CSV</button>
+      <button class="btn btn-warn" onclick="openUnsupervisedReport()" style="width:100%;margin-top:8px;">⚠ Accredited-supervision gaps (all schools)</button>
     </div>`;
 }
 
@@ -16369,4 +16420,257 @@ function closeBrandingPanel() {
   applyBrand(state.brand);   // discard any unpublished preview
   state._brandDraft = null;
   closeModal('modalBranding');
+}
+
+// ====================================================================
+// ACCREDITED INSTRUCTORS + SUPERVISION (v95, F4)
+// Accreditation is DERIVED from a valid "NCAS Accreditation" compliance record
+// (not a manual flag), so it re-validates automatically when the record expires
+// or the instructor goes inactive. A class needs an accredited instructor PRESENT
+// (one of its assigned instructors, or a named accredited supervisor). When a
+// non-accredited instructor is assigned and no accredited person is present, we
+// prompt for a supervisor; if none, the class is flagged on the roster and in a
+// superadmin-only dashboard widget + all-schools report.
+// ====================================================================
+
+const ACCREDITATION_REQ_NAME = 'NCAS Accreditation';
+
+// The NCAS Accreditation compliance requirement (matched by name; tolerant of casing).
+function accreditationReq() {
+  const reqs = state.complianceReqs || [];
+  return reqs.find(r => (r.name || '').trim().toLowerCase() === ACCREDITATION_REQ_NAME.toLowerCase())
+      || reqs.find(r => /ncas/i.test(r.name || ''));
+}
+
+// True iff the instructor holds a currently-valid NCAS Accreditation record.
+function isAccredited(instrId) {
+  if (!instrId) return false;
+  const req = accreditationReq();
+  if (!req) return false;
+  const rec = (state.complianceRecords || []).find(r => r.instructorId === instrId && r.requirementId === req.id);
+  return getComplianceStatus(rec, req) === 'valid';
+}
+
+// Make sure the NCAS Accreditation requirement exists (superadmin only; idempotent).
+async function ensureAccreditationRequirement() {
+  try {
+    if (!can.switchAnySchool()) return;
+    if (accreditationReq()) return;
+    const req = { id: 'CRQ-NCAS-ACCRED', schoolId: null, name: ACCREDITATION_REQ_NAME, hasExpiry: true, description: 'National Coaching Accreditation Scheme', createdBy: 'system' };
+    state.complianceReqs.push(req);
+    await DB.saveComplianceRequirement(req);
+  } catch (e) {}
+}
+
+// Active, accredited instructors at the CURRENT school (for the supervisor dropdown).
+function accreditedInstructorsForSchool() {
+  return (currentInstructors() || []).filter(i => i.active !== false && isAccredited(i.id));
+}
+
+// ---------- per-class supervision logic (all computed live) ----------
+function classAssignedIds(c) { return [c.lead, c.assist, c.junior, c.backup].filter(Boolean); }
+
+function classHasAccreditedPresence(c) {
+  if (classAssignedIds(c).some(id => isAccredited(id))) return true;   // an accredited teacher is on the class
+  const e = state.edits[c.dateKey] || {};
+  if (e.supervisorId && isAccredited(e.supervisorId)) {                 // a named, still-valid accredited supervisor
+    const sup = getInstructor(e.supervisorId);
+    if (sup && sup.active !== false) return true;
+  }
+  return false;
+}
+
+// A STAFFED class with a non-accredited teacher and no accredited presence.
+function classIsUnsupervised(c) {
+  if (!c || c.status === 'cancelled') return false;
+  if (!classAssignedIds(c).length) return false;   // unstaffed is a separate (needs-cover) concern
+  return !classHasAccreditedPresence(c);
+}
+
+function firstOpenRole(c) {
+  if (!c) return null;
+  if (!c.lead) return 'lead';
+  if (!c.assist) return 'assist';
+  if (!c.junior) return 'junior';
+  return null; // backup is optional; lead/assist/junior all filled = staffed
+}
+
+function supervisorNameForClass(c) {
+  const e = state.edits[c.dateKey] || {};
+  if (!e.supervisorId) return null;
+  const i = getInstructor(e.supervisorId);
+  return i ? i.name : null;
+}
+function teacherNameForClass(c) {
+  const id = c.lead || c.assist || c.junior || c.backup;
+  const i = id ? getInstructor(id) : null;
+  return i ? i.name : '—';
+}
+function classDisplayName(c) {
+  return (c.label || (c.meta && c.meta.name) || c.type || 'Class') + ' · ' + (c.start || '');
+}
+
+// ---------- self-assign (the trigger surface for the supervision rule) ----------
+async function assignMeToClass(dateKey) {
+  if (!state.user) { openLogin(); return; }
+  if (!hasRole('instructor')) { alert('Only instructors can assign themselves to a class.'); return; }
+  const c = classForDateKey(dateKey);
+  if (!c) return;
+  if (isMyClass(c)) { alert('You are already assigned to this class.'); return; }
+  const role = firstOpenRole(c);
+  if (!role) { alert('This class is already fully staffed.'); return; }
+  const myId = myInstructorId();
+  if (!myId) { alert('Your account is not linked to an instructor profile, so you can\'t self-assign.'); return; }
+  const existing = state.edits[dateKey] || {};
+  const status = existing.status === 'needs-cover' ? 'confirmed' : (existing.status || 'confirmed');
+  state.edits[dateKey] = { ...existing, [role]: myId, status };
+  await saveEdits();
+  renderDay();
+  checkSupervisionAfterAssign(dateKey, { self: true });
+}
+
+// After ANY assignment (self-assign, volunteer-to-cover, or admin edit): if the class
+// now has a non-accredited teacher with no accredited presence, prompt for a supervisor.
+function checkSupervisionAfterAssign(dateKey, opts) {
+  opts = opts || {};
+  const c = classForDateKey(dateKey);
+  if (!c) return;
+  if (!classAssignedIds(c).length) return;        // nobody assigned — not a supervision case
+  if (classHasAccreditedPresence(c)) return;      // an accredited instructor is present — fine
+  openSupervisorPicker(dateKey);
+}
+
+function openSupervisorPicker(dateKey) {
+  state._supervisorDateKey = dateKey;
+  const body = document.getElementById('supervisorBody');
+  if (!body) return;
+  const accredited = accreditedInstructorsForSchool();
+  const current = (state.edits[dateKey] || {}).supervisorId || '';
+  const opts = accredited.map(i => `<option value="${i.id}"${i.id === current ? ' selected' : ''}>${escapeHtml(i.name)}</option>`).join('');
+  body.innerHTML = `
+    <p style="font-size:13px;line-height:1.55;margin:0 0 12px;">An accredited instructor needs to be present in the dojo. Please select which accredited instructor will be present while you're teaching your class.</p>
+    <select id="supervisorSelect" style="width:100%;padding:9px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:14px;box-sizing:border-box;">
+      <option value="">— No accredited instructor available —</option>
+      ${opts}
+    </select>
+    ${accredited.length ? '' : '<div style="font-size:12px;color:var(--warn);margin-top:8px;">No accredited instructors are set up at this school yet.</div>'}
+    <div style="display:flex;gap:8px;margin-top:16px;">
+      <button class="btn btn-primary" style="flex:1;" onclick="confirmSupervisor()">Confirm</button>
+      <button class="btn btn-ghost" onclick="closeModal('modalSupervisor')">Cancel</button>
+    </div>`;
+  openModal('modalSupervisor');
+}
+
+async function confirmSupervisor() {
+  const dateKey = state._supervisorDateKey;
+  if (!dateKey) { closeModal('modalSupervisor'); return; }
+  const sel = document.getElementById('supervisorSelect');
+  const val = sel ? sel.value : '';
+  const existing = state.edits[dateKey] || {};
+  state.edits[dateKey] = { ...existing, supervisorId: val || null };
+  await saveEdits();
+  closeModal('modalSupervisor');
+  if (state.view === 'roster') renderDay();
+  if (!val) alert('Flagged: this class has no accredited instructor present. It now shows a warning on the roster and appears in the superadmin supervision report.');
+}
+
+// ---------- cross-school aggregation (superadmin) ----------
+// Superadmins have every school's overlay loaded in state.customSchools, so we only
+// swap in each school's edits/grading/compliance/class-type-overrides and reuse
+// rosterForDay + classIsUnsupervised. The swap is synchronous and always restored.
+async function _loadSchoolBundle(id) {
+  const [edits, grading, reqs, recs, ctov] = await Promise.all([
+    Promise.resolve().then(() => DB.loadEdits(id)).catch(() => ({})),
+    Promise.resolve().then(() => DB.loadGrading(id)).catch(() => ({})),
+    Promise.resolve().then(() => DB.loadComplianceRequirements(id)).catch(() => []),
+    Promise.resolve().then(() => DB.loadInstructorCompliance(id)).catch(() => []),
+    Promise.resolve().then(() => DB.loadClassTypeOverrides(id)).catch(() => ({})),
+  ]);
+  return { edits: edits || {}, grading: grading || {}, reqs: reqs || [], recs: recs || [], ctov: ctov || {} };
+}
+
+function _withSchoolContext(id, bundle, fn) {
+  const saved = {
+    schoolId: state.schoolId, edits: state.edits, grading: state.grading,
+    reqs: state.complianceReqs, recs: state.complianceRecords, ctov: state.classTypeOverrides,
+  };
+  try {
+    state.schoolId = id; state.edits = bundle.edits; state.grading = bundle.grading;
+    state.complianceReqs = bundle.reqs; state.complianceRecords = bundle.recs; state.classTypeOverrides = bundle.ctov;
+    return fn();
+  } finally {
+    state.schoolId = saved.schoolId; state.edits = saved.edits; state.grading = saved.grading;
+    state.complianceReqs = saved.reqs; state.complianceRecords = saved.recs; state.classTypeOverrides = saved.ctov;
+  }
+}
+
+async function computeUnsupervisedAcrossSchools(days) {
+  days = days || 14;
+  const ids = [...new Set([...(typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS.map(s => s.id) : []), ...Object.keys(state.customSchools || {})])];
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const out = [];
+  for (const id of ids) {
+    if (!state.customSchools || !state.customSchools[id]) continue; // school not set up / not loaded
+    let bundle;
+    try { bundle = await _loadSchoolBundle(id); } catch (e) { continue; }
+    _withSchoolContext(id, bundle, () => {
+      const schoolName = (typeof KRMAS_SCHOOLS !== 'undefined' && (KRMAS_SCHOOLS.find(s => s.id === id) || {}).name) || id;
+      for (let d = 0; d < days; d++) {
+        const date = new Date(today); date.setDate(today.getDate() + d);
+        let classes;
+        try { classes = rosterForDay(date); } catch (e) { continue; }
+        for (const c of classes) {
+          if (classIsUnsupervised(c)) {
+            out.push({ schoolId: id, schoolName, date: isoDate(date), className: classDisplayName(c), teacher: teacherNameForClass(c), supervisor: supervisorNameForClass(c) });
+          }
+        }
+      }
+    });
+  }
+  out.sort((a, b) => (a.date + a.schoolName).localeCompare(b.date + b.schoolName));
+  return out;
+}
+
+// Dashboard widget (superadmin) — fills #dashUnsupervised once the async compute returns.
+async function refreshUnsupervisedDashboard() {
+  const el = document.getElementById('dashUnsupervised');
+  if (!el) return;
+  if (!can.switchAnySchool()) { el.innerHTML = ''; return; }
+  let list = [];
+  try { list = await computeUnsupervisedAcrossSchools(14); } catch (e) { el.innerHTML = ''; return; }
+  if (!list.length) { el.innerHTML = ''; return; }
+  const schools = new Set(list.map(x => x.schoolId)).size;
+  el.innerHTML = `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#fff4e511;border:1px solid #f59e0b33;border-left:4px solid #f59e0b;border-radius:var(--r-sm);margin-bottom:6px;font-size:13px;font-weight:600;flex-wrap:wrap;">
+    <span>⚠</span><span style="flex:1;">${list.length} class${list.length !== 1 ? 'es' : ''} without an accredited instructor present across ${schools} school${schools !== 1 ? 's' : ''} (next 2 weeks)</span>
+    <button class="btn btn-sm" onclick="openUnsupervisedReport()">View report</button>
+  </div>`;
+}
+
+// Printable report (superadmin) — every flagged class across all schools.
+async function openUnsupervisedReport() {
+  if (!can.switchAnySchool()) { alert('Superadmin only.'); return; }
+  let list = [];
+  try { list = await computeUnsupervisedAcrossSchools(28); } catch (e) {}
+  const rows = list.map(r => `<tr>
+    <td>${escapeHtml(r.schoolName)}</td><td>${escapeHtml(r.date)}</td><td>${escapeHtml(r.className)}</td>
+    <td>${escapeHtml(r.teacher)}</td><td>${r.supervisor ? escapeHtml(r.supervisor) + ' (no longer valid)' : '<strong>None</strong>'}</td>
+  </tr>`).join('');
+  const title = brandFullName() + ' — Accredited-supervision gaps';
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
+    <style>
+      body{font-family:Arial,Helvetica,sans-serif;color:#111;font-size:12px;padding:8mm;}
+      h1{font-size:18px;margin:0 0 2px;} .sub{color:#555;margin:0 0 14px;font-size:11px;}
+      table{width:100%;border-collapse:collapse;} th,td{border:1px solid #ccc;padding:5px 7px;text-align:left;vertical-align:top;}
+      th{background:#f0f0f0;text-transform:uppercase;font-size:10px;letter-spacing:.04em;}
+      .empty{padding:20px;text-align:center;color:#2d7a4a;font-weight:700;}
+    </style></head><body>
+    <h1>${escapeHtml(title)}</h1>
+    <p class="sub">Classes with a non-accredited instructor and no accredited instructor present · next 4 weeks · generated ${escapeHtml(isoDate(new Date()))}</p>
+    ${list.length ? `<table><thead><tr><th>School</th><th>Date</th><th>Class</th><th>Instructor</th><th>Accredited present</th></tr></thead><tbody>${rows}</tbody></table>`
+      : `<div class="empty">✓ No supervision gaps — every staffed class has an accredited instructor present.</div>`}
+  </body></html>`;
+  const w = window.open('', '_blank', 'width=1100,height=800');
+  if (!w) { alert('Allow pop-ups for this site to print the report.'); return; }
+  w.document.write(html); w.document.close();
+  setTimeout(() => { try { w.focus(); w.print(); } catch (e) {} }, 500);
 }
