@@ -1724,10 +1724,20 @@ const DB = (() => {
       async listActions() {
         const sb = sbClient(); if (!sb) return [];
         const { data, error } = await sb.from('audit_actions')
-          .select('id,audit_id,school_id,item_id,description,assigned_to,priority,status,due_date,completed_at,evidence_notes,created_by,created_at,updated_at')
+          .select('id,audit_id,school_id,item_id,description,assigned_to,priority,status,due_date,completed_at,evidence_notes,source,incident_id,created_by,created_at,updated_at')
           .order('created_at', { ascending: false });
         if (error) { console.warn('[DB] listActions:', error.message); return []; }
         return data || [];
+      },
+      // Raise the incident review action(s) via the SECURITY DEFINER RPC (an instructor
+      // may file the incident but cannot insert audit_actions directly).
+      async createIncidentReviewAction(schoolId, incidentId, summary, dueDate) {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        try {
+          const { data, error } = await sb.rpc('create_incident_review_action', { p_school_id: schoolId, p_incident_id: incidentId, p_summary: summary, p_due_date: dueDate || null });
+          if (error) throw error;
+          return { data };
+        } catch (e) { return { error: e.message }; }
       },
       async createAction(row) {
         const sb = sbClient(); if (!sb) return { error: 'offline' };
@@ -1757,6 +1767,34 @@ const DB = (() => {
       },
     },
 
+    // Special orders — per-school custom/one-off orders for a student. RLS-gated
+    // (admin-write, member-read). Mirrors the audits action CRUD shape.
+    specialOrders: {
+      async list(schoolId) {
+        const sb = sbClient(); if (!sb) return [];
+        let q = sb.from('special_orders').select('id,school_id,item_id,item_name,supplier_id,size,student_name,status,notes,created_by,created_at,updated_at').order('created_at', { ascending: false });
+        if (schoolId) q = q.eq('school_id', schoolId);
+        const { data, error } = await q;
+        if (error) { console.warn('[DB] specialOrders.list:', error.message); return []; }
+        return data || [];
+      },
+      async create(row) {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        try { const { data, error } = await sb.from('special_orders').insert(row).select().single(); if (error) throw error; return { data }; }
+        catch (e) { return { error: e.message }; }
+      },
+      async update(id, patch) {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        try { const { error } = await sb.from('special_orders').update(patch).eq('id', id); if (error) throw error; return {}; }
+        catch (e) { return { error: e.message }; }
+      },
+      async remove(id) {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        try { const { error } = await sb.from('special_orders').delete().eq('id', id); if (error) throw error; return {}; }
+        catch (e) { return { error: e.message }; }
+      },
+    },
+
     // Login-user administration (profiles). Reads are RLS-gated and direct; create /
     // delete go through the service-role manage-users Edge Function.
     users: {
@@ -1779,6 +1817,8 @@ const DB = (() => {
     savePlans:        (schoolId, d) => set('lesson-plans:' + schoolId, d),
     loadNetworkPlans: () => get('lesson-plans:network'),
     saveNetworkPlans: (d) => set('lesson-plans:network', d),
+    loadBrand: () => get('brand:global'),
+    saveBrand: (d) => set('brand:global', d),
     loadIncidents:    (schoolId) => sbLoadTableMap('incidents', schoolId),
     saveIncidents:    (schoolId, d) => sbSaveTableMap('incidents', schoolId, d),
     deleteIncident:   (schoolId, id) => sbDeleteRow('incidents', id),

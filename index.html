@@ -8,11 +8,35 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Kumiai Ryu Instructors</title>
 <meta name="apple-mobile-web-app-title" content="Kumiai Ryu Instructors">
-<link rel="manifest" href="manifest.json">
+<link rel="manifest" href="manifest.json" id="manifestLink">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Open+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=93">
+<link rel="stylesheet" href="styles.css?v=94">
+<script>
+/* No-flash brand boot: apply the cached published brand to :root BEFORE first paint,
+   so a custom-branded portal never flashes the default palette on load. Self-contained
+   (runs before app.js); the full apply (logos, manifest, fonts already via vars) runs in init(). */
+(function(){
+  try {
+    var raw = localStorage.getItem('krmas-brand'); if (!raw) return;
+    var b = JSON.parse(raw); if (!b || b.enabled === false) return;
+    var rs = document.documentElement.style;
+    var P = b.palette || {}, M = {
+      primary:'--red', primaryHover:'--red-2', primaryDark:'--red-3', primarySoft:'--red-soft',
+      accent:'--blue', gold:'--gold', ok:'--ok', warn:'--warn', black:'--black',
+      white:'--white', offWhite:'--off-white', grey100:'--grey-100', grey200:'--grey-200',
+      grey300:'--grey-300', grey400:'--grey-400', grey500:'--grey-500'
+    };
+    for (var k in M) if (P[k]) rs.setProperty(M[k], P[k]);
+    var C = b.classColours || {}; for (var ck in C) if (C[ck]) rs.setProperty('--c-' + ck, C[ck]);
+    if (b.radius) { if (b.radius.sm) rs.setProperty('--r-sm', b.radius.sm); if (b.radius.md) rs.setProperty('--r-md', b.radius.md); if (b.radius.lg) rs.setProperty('--r-lg', b.radius.lg); }
+    if (b.fonts) { if (b.fonts.body) rs.setProperty('--font-body', b.fonts.body); if (b.fonts.head) rs.setProperty('--font-head', b.fonts.head); if (b.fonts.mono) rs.setProperty('--font-mono', b.fonts.mono); }
+    if (b.appName) { document.title = b.appName; }
+    if (b.themeColor) { var mt = document.querySelector('meta[name="theme-color"]'); if (mt) mt.content = b.themeColor; }
+  } catch (e) {}
+})();
+</script>
 </head>
 <body>
 
@@ -21,7 +45,7 @@
   <header class="top">
     <div class="top-row">
       <div style="display:flex;align-items:center;gap:10px;">
-        <img src="krmas-logo.svg" alt="KRMAS" height="34" style="height:34px;width:auto;background:rgba(255,255,255,.95);border-radius:6px;padding:2px 6px;">
+        <img src="krmas-logo.svg" alt="KRMAS" height="34" class="brand-logo" style="height:34px;width:auto;background:rgba(255,255,255,.95);border-radius:6px;padding:2px 6px;">
       </div>
       <div style="display:flex;align-items:center;gap:8px;">
         <div id="syncDot" class="sync-dot" title="Online"></div>
@@ -89,6 +113,8 @@
 <div class="modal-bg" id="modalLogin">
   <div class="modal">
     <div class="modal-handle"></div>
+    <img src="krmas-logo.svg" alt="" class="brand-logo brand-login-logo" style="height:40px;width:auto;display:block;margin:4px auto 10px;">
+    <div class="brand-tagline" id="brandTagline" style="display:none;text-align:center;font-size:13px;color:var(--grey-500);margin:-4px 0 12px;"></div>
     <h2>Sign in</h2>
     <p class="modal-sub">Enter your email and password.</p>
     <div class="form-row">
@@ -2057,6 +2083,15 @@
 </div>
 
 <!-- Supabase JS v2 -->
+<div class="modal-bg" id="modalBranding">
+  <div class="modal" style="max-width:560px;">
+    <div class="modal-handle"></div>
+    <h2>🎨 Portal branding</h2>
+    <p class="modal-sub">Customise the whole portal. Changes preview live for you — <strong>Publish</strong> to apply for everyone.</p>
+    <div id="brandingBody"></div>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <!-- SheetJS for XLSX import -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -2067,14 +2102,14 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '93';
+  window.KRMAS_APP_VERSION = '94';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
 </script>
-<script src="data.js?v=93"></script>
-<script src="db.js?v=93"></script>
-<script src="app.js?v=93"></script>
+<script src="data.js?v=94"></script>
+<script src="db.js?v=94"></script>
+<script src="app.js?v=94"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

@@ -2203,6 +2203,7 @@ function openLogin() { showLoginGate(); }
 // The sign-in modal is the gate: under RLS there is no anonymous/guest access, so
 // the app cannot load data without a Supabase session.
 function showLoginGate(msg) {
+  try { if (!state.brand) { const raw = localStorage.getItem('krmas-brand'); if (raw) state.brand = JSON.parse(raw); } applyBrand(state.brand); } catch (e) {}
   try { openModal('modalLogin'); } catch (e) {}
   const err = document.getElementById('loginError');
   const status = document.getElementById('loginStatus');
@@ -3661,7 +3662,7 @@ NOTES & INCIDENTS
 Notes: ${p.notes}
 Incidents reported: ${p.incidents}
 
-— Sent from KRMAS Roster app`;
+— Sent from ${brandShortName()} Roster app`;
 
   const mailto = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
   // Use a temp anchor to avoid navigating away from the PWA
@@ -4304,7 +4305,7 @@ function formatIncidentHtml(inc) {
       </section>`;
   }
 
-  const title = isInjury ? 'KRMAS Member Injury Report' : 'KRMAS Incident Report';
+  const title = isInjury ? (brandShortName() + ' Member Injury Report') : (brandShortName() + ' Incident Report');
   return `<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
 <title>${title} — ${id}</title>
@@ -6752,7 +6753,7 @@ function buildGradingSheetHtml(session) {
 </style></head>
 <body>
 <div class="header">
-  <h1>Kumiai Ryu Martial Arts System · Under Black Badge/Belt Examination Form</h1>
+  <h1>${brandFullName()} · Under Black Badge/Belt Examination Form</h1>
   <div class="meta">
     <div>Dojo / Location: <span>${escapeHtml(schoolName)} — ${escapeHtml(syl?.label || '')} Grading</span></div>
     <div>Date: <span>${escapeHtml(session.date || '—')}</span></div>
@@ -7845,6 +7846,7 @@ DB.auth && DB.auth.onChange(async (session, evt) => {
 });
 
 async function enterAppWithSession(session) {
+  try { loadAndApplyBrand(); } catch (e) {} // re-skin the portal from the published brand
   // Reload-safety: if the browser persisted the TARGET's session because the tab was
   // refreshed/closed mid-impersonation, transparently restore the real user first so
   // nobody is ever stranded inside someone else's account.
@@ -11467,6 +11469,7 @@ function renderAdmin() {
     ] },
     { title: 'System', items: [
       { icon: '🔑', label: 'Roles & permissions',  fn: 'openRolesMatrix()', sup: true },
+      { icon: '🎨', label: 'Branding',             fn: 'openBrandingPanel()', sup: true },
       { icon: '📄', label: 'Upload docs',          fn: 'openDocUpload()', sup: true },
       ...(isSuperAdmin && !DB.isSupabase ? [{ icon: '☁', label: 'Migrate to Supabase', fn: 'runMigration()', sup: true }] : []),
     ] },
@@ -15953,4 +15956,417 @@ async function transitionAction(id, status) {
   const res = await DB.audits.updateAction(id, patch);
   if (res.error) { alert('Could not update: ' + res.error); return; }
   state.auditData = null; state.auditSignals = null; renderAudits();
+}
+
+// ====================================================================
+// PORTAL BRANDING — superadmin global white-label (v1 + v2)
+// One global brand record (kv_store 'brand:global'), superadmin-write /
+// everyone-read. Re-skins the whole portal via :root CSS variables (light +
+// auto-derived dark), the logo, app name, login screen, exported PDFs/emails,
+// and (v2) the PWA manifest/icons/favicon and fonts. Preview-then-publish:
+// edits apply live to the editor's own session; Publish writes the record for
+// everyone. Falls back cleanly to the built-in KRMAS look when unset/invalid.
+// ====================================================================
+
+const BRAND_DEFAULTS = {
+  appName: 'Kumiai Ryu Instructors',          // title bar / header / manifest / report titles
+  shortName: 'KRMAS',                         // document titles + email subjects
+  fullName: 'Kumiai Ryu Martial Arts System', // grading exam-form header
+  tagline: '',
+  themeColor: '#000000',
+  backgroundColor: '#f5f2ec',
+  palette: { // mirrors styles.css :root
+    primary: '#d22c12', primaryHover: '#b3250f', primaryDark: '#931e0c', primarySoft: '#fbe8e4',
+    accent: '#62a3db', gold: '#c9a14a', ok: '#2d7a4a', warn: '#d48a1a',
+    black: '#010101', white: '#ffffff', offWhite: '#f5f5f4',
+    grey100: '#e6e7e8', grey200: '#d3d5d8', grey300: '#a7abb0', grey400: '#69727d', grey500: '#3f444b',
+  },
+  classColours: { mln: '#4a8fbf', ln: '#2c6a9b', karate: '#000000', jmt: '#d48a1a', mt: '#d62828', lmt: '#e57373', mtf: '#8c1818', sanda: '#5a3a8b', sparring: '#2d5a3c', kata: '#c9a14a', bjj: '#4a7a4a', sc: '#4a4845', plates: '#6e6c68' },
+  radius: { sm: '2px', md: '4px', lg: '6px' },
+  fonts: { body: "'Open Sans', system-ui, sans-serif", head: "'Oswald', sans-serif", mono: "'JetBrains Mono', monospace" },
+  logo: null, loginBg: null, favicon: null, icon192: null, icon512: null,
+  dark: 'auto', enabled: true,
+};
+
+const BRAND_VAR_MAP = {
+  primary: '--red', primaryHover: '--red-2', primaryDark: '--red-3', primarySoft: '--red-soft',
+  accent: '--blue', gold: '--gold', ok: '--ok', warn: '--warn', black: '--black',
+  white: '--white', offWhite: '--off-white', grey100: '--grey-100', grey200: '--grey-200',
+  grey300: '--grey-300', grey400: '--grey-400', grey500: '--grey-500',
+};
+
+// Curated font choices (v2). Each option carries a CSS stack and an optional Google Fonts spec.
+const BRAND_FONT_CHOICES = {
+  head: [
+    { label: 'Oswald (default)', stack: "'Oswald', sans-serif" },
+    { label: 'Anton', stack: "'Anton', sans-serif", google: 'Anton' },
+    { label: 'Bebas Neue', stack: "'Bebas Neue', sans-serif", google: 'Bebas+Neue' },
+    { label: 'Montserrat', stack: "'Montserrat', sans-serif", google: 'Montserrat:wght@600;700' },
+    { label: 'System sans', stack: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' },
+    { label: 'Serif', stack: "Georgia, 'Times New Roman', serif" },
+  ],
+  body: [
+    { label: 'Open Sans (default)', stack: "'Open Sans', system-ui, sans-serif" },
+    { label: 'Inter', stack: "'Inter', system-ui, sans-serif", google: 'Inter:wght@400;500;600;700' },
+    { label: 'Roboto', stack: "'Roboto', system-ui, sans-serif", google: 'Roboto:wght@400;500;700' },
+    { label: 'Lato', stack: "'Lato', system-ui, sans-serif", google: 'Lato:wght@400;700' },
+    { label: 'System sans', stack: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' },
+  ],
+  mono: [
+    { label: 'JetBrains Mono (default)', stack: "'JetBrains Mono', monospace" },
+    { label: 'Roboto Mono', stack: "'Roboto Mono', monospace", google: 'Roboto+Mono' },
+    { label: 'System mono', stack: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+  ],
+};
+
+// ---------- accessors (used across PDFs, emails, manifest) ----------
+function brandCfg() { return (state.brand && state.brand.enabled !== false) ? state.brand : null; }
+function brandAppName() { return (brandCfg() && state.brand.appName) || BRAND_DEFAULTS.appName; }
+function brandShortName() { return (brandCfg() && (state.brand.shortName || state.brand.appName)) || BRAND_DEFAULTS.shortName; }
+function brandFullName() { return (brandCfg() && (state.brand.fullName || state.brand.appName)) || BRAND_DEFAULTS.fullName; }
+function brandLogoSrc() { return (brandCfg() && state.brand.logo) || 'krmas-logo.svg'; }
+
+// ---------- colour maths (contrast + dark derivation) ----------
+function _hexToRgb(h) {
+  if (!h) return null; h = String(h).trim().replace('#', '');
+  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+  if (h.length !== 6 || /[^0-9a-fA-F]/.test(h)) return null;
+  return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16) };
+}
+function _relLum(hex) {
+  const c = _hexToRgb(hex); if (!c) return 0;
+  const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+  return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+}
+function contrastRatio(a, b) {
+  const l1 = _relLum(a), l2 = _relLum(b);
+  const hi = Math.max(l1, l2), lo = Math.min(l1, l2);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+// Auto-derive a dark palette: invert neutral surfaces/text, keep brand hue + accents.
+function deriveDark(pal) {
+  return {
+    '--white': '#1b1d22', '--off-white': '#101216', '--black': '#f2f3f5',
+    '--grey-100': '#2b2e35', '--grey-200': '#3a3e46', '--grey-300': '#565b64',
+    '--grey-400': '#9aa0aa', '--grey-500': '#cfd3d9',
+    '--red': pal.primary, '--red-2': pal.primaryHover, '--red-3': pal.primaryDark, '--red-soft': '#2a1a17',
+    '--blue': pal.accent, '--gold': pal.gold, '--ok': pal.ok, '--warn': pal.warn,
+  };
+}
+
+// ---------- the apply (re-skins the live document) ----------
+function applyBrand(b) {
+  try {
+    const rs = document.documentElement.style;
+    const dark = document.body.classList.contains('dark-mode');
+    const pal = Object.assign({}, BRAND_DEFAULTS.palette, (b && b.palette) || {});
+    let tokens = {};
+    for (const k in BRAND_VAR_MAP) tokens[BRAND_VAR_MAP[k]] = pal[k];
+    if (dark) tokens = deriveDark(pal);
+    for (const v in tokens) rs.setProperty(v, tokens[v]);
+
+    const cc = Object.assign({}, BRAND_DEFAULTS.classColours, (b && b.classColours) || {});
+    for (const ck in cc) rs.setProperty('--c-' + ck, cc[ck]);
+    const rad = Object.assign({}, BRAND_DEFAULTS.radius, (b && b.radius) || {});
+    rs.setProperty('--r-sm', rad.sm); rs.setProperty('--r-md', rad.md); rs.setProperty('--r-lg', rad.lg);
+    const fonts = Object.assign({}, BRAND_DEFAULTS.fonts, (b && b.fonts) || {});
+    rs.setProperty('--font-body', fonts.body); rs.setProperty('--font-head', fonts.head); rs.setProperty('--font-mono', fonts.mono);
+    ensureBrandFontLink(fonts);
+
+    const appName = (b && b.appName) || BRAND_DEFAULTS.appName;
+    try { document.title = appName; } catch (e) {}
+    const amwa = document.querySelector('meta[name="apple-mobile-web-app-title"]'); if (amwa) amwa.content = appName;
+    const mt = document.querySelector('meta[name="theme-color"]'); if (mt && !dark) mt.content = (b && b.themeColor) || BRAND_DEFAULTS.themeColor;
+
+    const logo = (b && b.logo) || 'krmas-logo.svg';
+    document.querySelectorAll('img.brand-logo').forEach((img) => { img.src = logo; });
+    const tg = document.getElementById('brandTagline');
+    if (tg) { const t = (b && b.tagline) || ''; tg.textContent = t; tg.style.display = t ? 'block' : 'none'; }
+    const lm = document.getElementById('modalLogin');
+    if (lm) { lm.style.backgroundImage = (b && b.loginBg) ? ("url(" + b.loginBg + ")") : ''; lm.style.backgroundSize = 'cover'; lm.style.backgroundPosition = 'center'; }
+
+    applyBrandManifest(b);   // v2
+    applyBrandFavicon(b);    // v2
+  } catch (e) { /* never let theming break the app */ }
+}
+
+// v2: inject Google Fonts link only for chosen families that need it.
+function ensureBrandFontLink(fonts) {
+  try {
+    const specs = [];
+    ['head', 'body', 'mono'].forEach((slot) => {
+      const stack = fonts[slot];
+      const opt = (BRAND_FONT_CHOICES[slot] || []).find((o) => o.stack === stack);
+      if (opt && opt.google) specs.push(opt.google);
+    });
+    let link = document.getElementById('brandFontLink');
+    if (!specs.length) { if (link) link.remove(); return; }
+    const href = 'https://fonts.googleapis.com/css2?' + specs.map((s) => 'family=' + s).join('&') + '&display=swap';
+    if (!link) { link = document.createElement('link'); link.id = 'brandFontLink'; link.rel = 'stylesheet'; document.head.appendChild(link); }
+    if (link.href !== href) link.href = href;
+  } catch (e) {}
+}
+
+// v2: dynamic PWA manifest from the brand (name/colours/icons). Note: an installed
+// PWA's home-screen icon is cached by the OS and may not update until reinstall.
+function applyBrandManifest(b) {
+  try {
+    const link = document.getElementById('manifestLink'); if (!link) return;
+    if (!b) { if (link._objUrl) { URL.revokeObjectURL(link._objUrl); link._objUrl = null; } link.href = 'manifest.json'; return; }
+    const name = b.appName || BRAND_DEFAULTS.appName;
+    const m = {
+      name, short_name: name.slice(0, 30), start_url: './', scope: './',
+      display: 'standalone', orientation: 'portrait',
+      background_color: b.backgroundColor || BRAND_DEFAULTS.backgroundColor,
+      theme_color: b.themeColor || BRAND_DEFAULTS.themeColor,
+      icons: [
+        { src: b.icon192 || 'icon-192.png', sizes: '192x192', type: 'image/png' },
+        { src: b.icon512 || 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+      ],
+    };
+    const blob = new Blob([JSON.stringify(m)], { type: 'application/manifest+json' });
+    if (link._objUrl) URL.revokeObjectURL(link._objUrl);
+    link._objUrl = URL.createObjectURL(blob);
+    link.href = link._objUrl;
+  } catch (e) {}
+}
+
+// v2: favicon (data-URI) — falls back to the logo, then the app icon.
+function applyBrandFavicon(b) {
+  try {
+    let l = document.querySelector('link[rel="icon"]');
+    if (!l) { l = document.createElement('link'); l.rel = 'icon'; document.head.appendChild(l); }
+    l.href = (b && b.favicon) || (b && b.logo) || 'icon-192.png';
+  } catch (e) {}
+}
+
+// ---------- load + cache at boot ----------
+async function loadAndApplyBrand() {
+  try {
+    const b = await DB.loadBrand();
+    if (b && typeof b === 'object') {
+      state.brand = b;
+      try { localStorage.setItem('krmas-brand', JSON.stringify(b)); } catch (e) {}
+    } else {
+      state.brand = null;
+      try { localStorage.removeItem('krmas-brand'); } catch (e) {}
+    }
+  } catch (e) {
+    try { const raw = localStorage.getItem('krmas-brand'); state.brand = raw ? JSON.parse(raw) : null; } catch (_) { state.brand = null; }
+  }
+  applyBrand(state.brand);
+  return state.brand;
+}
+
+// ====================================================================
+// BRANDING EDITOR (superadmin) — preview-then-publish
+// ====================================================================
+function _brandClone(o) { return JSON.parse(JSON.stringify(o)); }
+function _brandMergeDefaults(b) {
+  const d = _brandClone(BRAND_DEFAULTS);
+  if (!b) return d;
+  d.appName = b.appName || d.appName; d.shortName = b.shortName || d.shortName; d.fullName = b.fullName || d.fullName;
+  d.tagline = b.tagline || ''; d.themeColor = b.themeColor || d.themeColor; d.backgroundColor = b.backgroundColor || d.backgroundColor;
+  d.palette = Object.assign(d.palette, b.palette || {});
+  d.classColours = Object.assign(d.classColours, b.classColours || {});
+  d.radius = Object.assign(d.radius, b.radius || {});
+  d.fonts = Object.assign(d.fonts, b.fonts || {});
+  ['logo', 'loginBg', 'favicon', 'icon192', 'icon512'].forEach((k) => { if (b[k]) d[k] = b[k]; });
+  d.enabled = true;
+  return d;
+}
+
+function openBrandingPanel() {
+  if (!can.switchAnySchool()) { alert('Only a superadmin can change portal branding.'); return; }
+  state._brandDraft = _brandMergeDefaults(state.brand);
+  renderBrandingPanel();
+  openModal('modalBranding');
+}
+
+// nested set on the draft, then live-preview + refresh contrast warning
+function brandSet(path, value) {
+  const d = state._brandDraft; if (!d) return;
+  const parts = path.split('.');
+  let o = d; for (let i = 0; i < parts.length - 1; i++) { o[parts[i]] = o[parts[i]] || {}; o = o[parts[i]]; }
+  o[parts[parts.length - 1]] = value;
+  applyBrand(d);                 // live preview for this session only (not saved)
+  brandUpdateContrast();
+}
+
+function brandUpdateContrast() {
+  const el = document.getElementById('brandContrast'); if (!el) return;
+  const d = state._brandDraft; if (!d) return;
+  const warns = [];
+  const cText = contrastRatio(d.palette.black, d.palette.white);
+  if (cText < 4.5) warns.push('Body text on surface is low-contrast (' + cText.toFixed(1) + ':1; aim ≥ 4.5).');
+  const cBtn = contrastRatio(d.palette.white, d.palette.primary);
+  if (cBtn < 3) warns.push('White button text on the primary colour is low-contrast (' + cBtn.toFixed(1) + ':1; aim ≥ 4.5).');
+  el.innerHTML = warns.length
+    ? ('<div style="background:#fff4e5;border:1px solid var(--warn);border-radius:var(--r-sm);padding:8px 10px;font-size:12px;color:#7a4a00;">⚠ ' + warns.join('<br>') + '</div>')
+    : '<div style="font-size:12px;color:var(--ok);">✓ Contrast looks fine.</div>';
+}
+
+function _colorRow(label, path, val) {
+  const safe = (/^#[0-9a-fA-F]{6}$/.test(val || '')) ? val : '#000000';
+  return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">'
+    + '<input type="color" value="' + safe + '" oninput="brandSet(\'' + path + '\', this.value); var t=document.getElementById(\'tx-' + path.replace(/\./g, '_') + '\'); if(t)t.value=this.value;" style="width:34px;height:28px;padding:0;border:1px solid var(--grey-200);border-radius:var(--r-sm);background:none;">'
+    + '<input id="tx-' + path.replace(/\./g, '_') + '" type="text" value="' + escapeHtml(val || '') + '" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value))brandSet(\'' + path + '\', this.value);" style="width:88px;padding:5px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;font-family:var(--font-mono);">'
+    + '<span style="font-size:12px;color:var(--grey-500);">' + escapeHtml(label) + '</span></div>';
+}
+
+function _fontSelect(slot, val) {
+  const opts = BRAND_FONT_CHOICES[slot] || [];
+  return '<select onchange="brandSet(\'fonts.' + slot + '\', this.value)" style="width:100%;padding:6px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;">'
+    + opts.map((o) => '<option value="' + escapeHtml(o.stack) + '"' + (o.stack === val ? ' selected' : '') + '>' + escapeHtml(o.label) + '</option>').join('')
+    + '</select>';
+}
+
+function renderBrandingPanel() {
+  const body = document.getElementById('brandingBody'); if (!body) return;
+  const d = state._brandDraft; if (!d) return;
+  const ist = 'width:100%;padding:7px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;box-sizing:border-box;';
+  const sec = (t) => '<div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--grey-400);margin:16px 0 8px;">' + t + '</div>';
+  const radPreset = (d.radius.sm === '0' || d.radius.sm === '0px') ? 'sharp' : (parseInt(d.radius.sm) >= 8 ? 'round' : 'default');
+
+  let h = '';
+  // identity
+  h += sec('Identity');
+  h += '<label style="font-size:12px;color:var(--grey-500);">App name (title bar, header, install)</label><input type="text" value="' + escapeHtml(d.appName) + '" oninput="brandSet(\'appName\', this.value)" style="' + ist + 'margin-bottom:8px;">';
+  h += '<div style="display:flex;gap:8px;"><div style="flex:1;"><label style="font-size:12px;color:var(--grey-500);">Short name (report titles, emails)</label><input type="text" value="' + escapeHtml(d.shortName) + '" oninput="brandSet(\'shortName\', this.value)" style="' + ist + '"></div>'
+    + '<div style="flex:1;"><label style="font-size:12px;color:var(--grey-500);">Tagline (login)</label><input type="text" value="' + escapeHtml(d.tagline) + '" oninput="brandSet(\'tagline\', this.value)" style="' + ist + '"></div></div>';
+  h += '<label style="font-size:12px;color:var(--grey-500);margin-top:8px;display:block;">Full org name (grading exam form)</label><input type="text" value="' + escapeHtml(d.fullName) + '" oninput="brandSet(\'fullName\', this.value)" style="' + ist + '">';
+
+  // palette
+  h += sec('Colours');
+  h += _colorRow('Primary (brand)', 'palette.primary', d.palette.primary);
+  h += _colorRow('Accent', 'palette.accent', d.palette.accent);
+  h += _colorRow('Gold', 'palette.gold', d.palette.gold);
+  h += _colorRow('Success', 'palette.ok', d.palette.ok);
+  h += _colorRow('Warning', 'palette.warn', d.palette.warn);
+  h += _colorRow('Surface (cards)', 'palette.white', d.palette.white);
+  h += _colorRow('Background', 'palette.offWhite', d.palette.offWhite);
+  h += _colorRow('Text', 'palette.black', d.palette.black);
+  h += '<div id="brandContrast" style="margin-top:6px;"></div>';
+
+  // shape
+  h += sec('Shape');
+  h += '<select onchange="brandApplyRadius(this.value)" style="' + ist + '">'
+    + '<option value="sharp"' + (radPreset === 'sharp' ? ' selected' : '') + '>Sharp (0)</option>'
+    + '<option value="default"' + (radPreset === 'default' ? ' selected' : '') + '>Default (2 / 4 / 6)</option>'
+    + '<option value="round"' + (radPreset === 'round' ? ' selected' : '') + '>Rounded (8 / 12 / 16)</option></select>';
+
+  // logo + login + favicon (v1)
+  h += sec('Logo & images');
+  h += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;"><img src="' + (d.logo || 'krmas-logo.svg') + '" alt="" style="height:34px;width:auto;background:#eee;border-radius:4px;padding:2px 6px;"><label class="btn btn-sm" style="cursor:pointer;">Upload logo (SVG/PNG)<input type="file" accept="image/svg+xml,image/png,image/jpeg,image/webp" onchange="brandUpload(\'logo\', this)" style="display:none;"></label>' + (d.logo ? '<button class="btn btn-sm" onclick="brandClearImage(\'logo\')" style="color:var(--red);">Remove</button>' : '') + '</div>';
+  h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px;">'
+    + '<label class="btn btn-sm" style="cursor:pointer;">Login background<input type="file" accept="image/png,image/jpeg,image/webp" onchange="brandUpload(\'loginBg\', this)" style="display:none;"></label>'
+    + (d.loginBg ? '<button class="btn btn-sm" onclick="brandClearImage(\'loginBg\')" style="color:var(--red);">Clear bg</button>' : '')
+    + '<label class="btn btn-sm" style="cursor:pointer;">Favicon<input type="file" accept="image/png,image/svg+xml" onchange="brandUpload(\'favicon\', this)" style="display:none;"></label></div>';
+
+  // PWA icons + fonts (v2)
+  h += sec('App icons (v2) — installed icon may need reinstall to refresh');
+  h += '<div style="display:flex;gap:8px;flex-wrap:wrap;">'
+    + '<label class="btn btn-sm" style="cursor:pointer;">Icon 192' + (d.icon192 ? ' ✓' : '') + '<input type="file" accept="image/png" onchange="brandUpload(\'icon192\', this)" style="display:none;"></label>'
+    + '<label class="btn btn-sm" style="cursor:pointer;">Icon 512' + (d.icon512 ? ' ✓' : '') + '<input type="file" accept="image/png" onchange="brandUpload(\'icon512\', this)" style="display:none;"></label></div>';
+  h += sec('Fonts (v2)');
+  h += '<div style="display:flex;gap:8px;flex-wrap:wrap;"><div style="flex:1;min-width:120px;"><label style="font-size:12px;color:var(--grey-500);">Headings</label>' + _fontSelect('head', d.fonts.head) + '</div>'
+    + '<div style="flex:1;min-width:120px;"><label style="font-size:12px;color:var(--grey-500);">Body</label>' + _fontSelect('body', d.fonts.body) + '</div>'
+    + '<div style="flex:1;min-width:120px;"><label style="font-size:12px;color:var(--grey-500);">Mono</label>' + _fontSelect('mono', d.fonts.mono) + '</div></div>';
+
+  // advanced — class colours
+  h += '<details style="margin-top:16px;"><summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--grey-500);">Advanced — class type colours</summary><div style="margin-top:8px;">';
+  const CL = { mln: 'Mini Little Ninjas', ln: 'Little Ninjas', karate: 'Karate', jmt: 'Junior Muay Thai', mt: 'Muay Thai', lmt: 'Ladies Muay Thai', mtf: 'Muay Thai (F)', sanda: 'Sanda', sparring: 'Sparring', kata: 'Kata', bjj: 'Jiu Jitsu', sc: 'S&C', plates: 'Plates' };
+  for (const k in CL) h += _colorRow(CL[k], 'classColours.' + k, d.classColours[k]);
+  h += '</div></details>';
+
+  // theme-color + bg (advanced)
+  h += '<details style="margin-top:10px;"><summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--grey-500);">Advanced — browser chrome</summary><div style="margin-top:8px;">';
+  h += _colorRow('Theme colour (status bar)', 'themeColor', d.themeColor);
+  h += _colorRow('Splash background', 'backgroundColor', d.backgroundColor);
+  h += '</div></details>';
+
+  // actions
+  h += '<div style="display:flex;gap:8px;margin-top:18px;padding-top:14px;border-top:2px solid var(--grey-200);flex-wrap:wrap;">'
+    + '<button class="btn btn-primary" style="flex:1;min-width:120px;" onclick="brandPublish()">Publish to everyone</button>'
+    + '<button class="btn" onclick="brandRevertPreview()">Revert preview</button></div>'
+    + '<button class="btn btn-ghost btn-sm" onclick="brandResetDefaults()" style="width:100%;margin-top:8px;color:var(--grey-500);">Reset to KRMAS defaults</button>'
+    + '<button class="btn btn-ghost btn-sm" onclick="closeBrandingPanel()" style="width:100%;margin-top:4px;">Close</button>';
+
+  body.innerHTML = h;
+  brandUpdateContrast();
+}
+
+function brandApplyRadius(preset) {
+  const map = { sharp: { sm: '0', md: '0', lg: '2px' }, default: { sm: '2px', md: '4px', lg: '6px' }, round: { sm: '8px', md: '12px', lg: '16px' } };
+  const r = map[preset] || map.default;
+  state._brandDraft.radius = r; applyBrand(state._brandDraft);
+}
+
+// raster -> downscaled data-URI (cap dimension + re-encode); SVG kept as-is.
+function brandUpload(field, input) {
+  const file = input && input.files && input.files[0]; if (!file) return;
+  const caps = { logo: 512, loginBg: 1600, favicon: 64, icon192: 192, icon512: 512 };
+  const maxDim = caps[field] || 512;
+  if (file.type === 'image/svg+xml') {
+    const r = new FileReader();
+    r.onload = () => { brandSet(field, r.result); renderBrandingPanel(); };
+    r.readAsDataURL(file);
+    return;
+  }
+  const r = new FileReader();
+  r.onload = () => {
+    const img = new Image();
+    img.onload = () => {
+      let { width: w, height: h } = img;
+      const scale = Math.min(1, maxDim / Math.max(w, h));
+      w = Math.round(w * scale); h = Math.round(h * scale);
+      const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+      cv.getContext('2d').drawImage(img, 0, 0, w, h);
+      let out;
+      try { out = cv.toDataURL('image/webp', 0.85); if (!out || out.indexOf('image/webp') === -1) out = cv.toDataURL('image/png'); }
+      catch (e) { out = cv.toDataURL('image/png'); }
+      if (out.length > 700000) { try { out = cv.toDataURL('image/jpeg', 0.7); } catch (e) {} }
+      brandSet(field, out); renderBrandingPanel();
+    };
+    img.onerror = () => alert('Could not read that image.');
+    img.src = r.result;
+  };
+  r.readAsDataURL(file);
+}
+
+function brandClearImage(field) { brandSet(field, null); renderBrandingPanel(); }
+
+async function brandPublish() {
+  if (!can.switchAnySchool()) { alert('Only a superadmin can change portal branding.'); return; }
+  const d = state._brandDraft; if (!d) return;
+  const cText = contrastRatio(d.palette.black, d.palette.white);
+  const cBtn = contrastRatio(d.palette.white, d.palette.primary);
+  if ((cText < 4.5 || cBtn < 3) && !confirm('Some colours are low-contrast and may be hard to read. Publish anyway?')) return;
+  d.enabled = true; d.updatedBy = (state.user && state.user.name) || null; d.updatedAt = new Date().toISOString();
+  state.brand = _brandClone(d);
+  try { localStorage.setItem('krmas-brand', JSON.stringify(state.brand)); } catch (e) {}
+  try { await DB.saveBrand(state.brand); } catch (e) {}
+  applyBrand(state.brand);
+  closeModal('modalBranding');
+  alert('Branding published. Everyone will see it on their next load.');
+}
+
+function brandResetDefaults() {
+  if (!confirm('Reset all branding back to the KRMAS defaults? Publish afterwards to apply for everyone.')) return;
+  state._brandDraft = _brandClone(BRAND_DEFAULTS);
+  applyBrand(state._brandDraft);
+  renderBrandingPanel();
+}
+
+function brandRevertPreview() {
+  state._brandDraft = _brandMergeDefaults(state.brand);
+  applyBrand(state.brand);
+  renderBrandingPanel();
+}
+
+function closeBrandingPanel() {
+  applyBrand(state.brand);   // discard any unpublished preview
+  state._brandDraft = null;
+  closeModal('modalBranding');
 }
