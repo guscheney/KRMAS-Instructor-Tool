@@ -3422,6 +3422,59 @@ async function notifyBackupOfCover(dateKey) {
   } catch (e) { /* best-effort */ }
 }
 
+// ---------- @mention / @everyone push notifications (feed posts + comments) ----------
+// Whether the current user may page the WHOLE school with @everyone. Open to any
+// signed-in user by default; change to `hasRole('admin')` to limit it to admins+.
+function canNotifyEveryone() { return !!state.user; }
+
+// Resolve the auth UIDs to notify from a post/comment body. Names are matched against
+// the active roster (longest-first, and consumed on match so a shorter prefix name
+// can't double-fire). Returns { uids:Set<string>, everyone:boolean }.
+function resolveMentionUids(body) {
+  let text = ' ' + (body || '') + ' ';
+  const everyone = /(^|\s)@everyone(?=\s|[.,!?]|$)/i.test(text) || /(^|\s)@all(?=\s|[.,!?]|$)/i.test(text);
+  const uids = new Set();
+  if (everyone) {
+    if (canNotifyEveryone()) currentInstructors().forEach(i => { if (i.uid) uids.add(i.uid); });
+    return { uids, everyone };
+  }
+  const people = currentInstructors().slice().sort((a, b) => b.name.length - a.name.length);
+  for (const i of people) {
+    if (!i.uid) continue;
+    const esc = i.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp('@' + esc + '(?=\\s|[.,!?]|$)', 'i').test(text)) {
+      uids.add(i.uid);
+      text = text.replace(new RegExp('@' + esc, 'gi'), ' '); // consume so a prefix can't re-match
+    }
+  }
+  return { uids, everyone };
+}
+
+// Fire a push to anyone @mentioned (or the whole school for @everyone) in a feed post
+// or comment. Best-effort and fire-and-forget — never blocks or throws into the caller.
+function notifyFeedMentions(body, opts) {
+  opts = opts || {};
+  try {
+    if (!state.user || !(body && body.indexOf('@') !== -1)) return;
+    const { uids, everyone } = resolveMentionUids(body);
+    uids.delete(state.user.id); // never notify yourself
+    if (!uids.size) return;
+    const who = state.user.name || 'Someone';
+    const noun = opts.kind === 'comment' ? 'commented' : 'posted';
+    const title = everyone ? ('📣 ' + who + ' ' + noun + ' to everyone') : ('💬 ' + who + ' mentioned you');
+    const snippet = (body || '').replace(/\s+/g, ' ').trim().slice(0, 140) || 'Open KRMAS to read.';
+    DB.sendPushNotification({
+      title,
+      body: snippet,
+      tag: 'feed-mention-' + (opts.postId || Date.now()),
+      url: './',
+      schoolId: state.schoolId || null,
+      targetUserIds: Array.from(uids),
+      excludeUserId: state.user.id,
+    });
+  } catch (e) { /* best-effort */ }
+}
+
 // Upcoming classes (next 28 days) that need cover AND list the current user as backup.
 function myBackupCoverAlerts() {
   const id = myInstructorId();
@@ -8509,6 +8562,7 @@ async function submitComment(postId) {
     }, 50);
   }
   await DB.saveComment(comment);
+  notifyFeedMentions(body, { kind: 'comment', postId });
 }
 
 async function deleteComment(commentId, postId) {
@@ -8812,6 +8866,9 @@ async function submitPost() {
       }
     } catch (e) { /* push is best-effort */ }
   }
+
+  // @mention / @everyone pushes — for ANY new post (independent of the notices above).
+  if (!existing) notifyFeedMentions(body, { kind: 'post', postId: post.id });
 }
 
 // ---------- Realtime feed subscription ----------
