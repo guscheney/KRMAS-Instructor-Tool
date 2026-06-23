@@ -8242,6 +8242,32 @@ function resolveTargetAudience(post) {
   return null;
 }
 
+// Same audience as resolveTargetAudience(), but resolved to auth UIDs for PUSH targeting.
+// push_subscriptions keys on uid, not the roster id — so role- and group-scoped pushes
+// must convert to uids (the member objects carry .uid, which also works cross-school for
+// network groups). 'users' targets already store the uid from the composer. null = the
+// whole school in scope (the Edge Function handles that case by school_id).
+function resolveTargetAudienceUids(post) {
+  if (post.targetScope === 'network' || post.targetScope === 'school') return null;
+  if (post.targetScope === 'role') {
+    const roles = post.targetIds || [];
+    return new Set(allInstructors().filter(i => roles.includes(i.role)).map(i => i.uid).filter(Boolean));
+  }
+  if (post.targetScope === 'users') {
+    return new Set(post.targetIds || []); // composer stored uid for anyone with a login
+  }
+  if (post.targetScope === 'group') {
+    const groupIds = post.targetIds || [];
+    const uids = new Set();
+    for (const gid of groupIds) {
+      const group = state.groups.find(g => g.id === gid);
+      if (group) resolveGroupMembers(group).forEach(i => { if (i.uid) uids.add(i.uid); });
+    }
+    return uids;
+  }
+  return null;
+}
+
 function canSeePost(post) {
   if (state.user && post.authorId === state.user.id) return true;
   if (!state.user) return post.targetScope === 'network' || post.targetScope === 'school';
@@ -8851,7 +8877,7 @@ async function submitPost() {
   // fire-and-forget). Targets the same audience the post is visible to.
   if (!existing && (post.requiredReading || post.noticeType)) {
     try {
-      const audience = resolveTargetAudience(post); // Set of user ids, or null = everyone
+      const audience = resolveTargetAudienceUids(post); // Set of auth UIDs, or null = everyone in scope
       const targetUserIds = audience ? [...audience].filter(id => id !== post.authorId) : null;
       if (!(audience && targetUserIds.length === 0)) { // skip if precise audience is empty
         DB.sendPushNotification({
