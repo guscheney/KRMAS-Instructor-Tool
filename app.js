@@ -16028,12 +16028,13 @@ const BRAND_DEFAULTS = {
   backgroundColor: '#f5f2ec',
   palette: { // mirrors styles.css :root
     primary: '#d22c12', primaryHover: '#b3250f', primaryDark: '#931e0c', primarySoft: '#fbe8e4',
-    accent: '#62a3db', gold: '#c9a14a', ok: '#2d7a4a', warn: '#d48a1a',
-    black: '#010101', white: '#ffffff', offWhite: '#f5f5f4',
+    accent: '#62a3db', accentLight: '#6ec1e4', gold: '#c9a14a', ok: '#2d7a4a', warn: '#d48a1a',
+    black: '#010101', black2: '#1a1a1a', black3: '#2a2a2a', white: '#ffffff', offWhite: '#f5f5f4',
     grey100: '#e6e7e8', grey200: '#d3d5d8', grey300: '#a7abb0', grey400: '#69727d', grey500: '#3f444b',
   },
   classColours: { mln: '#4a8fbf', ln: '#2c6a9b', karate: '#000000', jmt: '#d48a1a', mt: '#d62828', lmt: '#e57373', mtf: '#8c1818', sanda: '#5a3a8b', sparring: '#2d5a3c', kata: '#c9a14a', bjj: '#4a7a4a', sc: '#4a4845', plates: '#6e6c68' },
   radius: { sm: '2px', md: '4px', lg: '6px' },
+  shadows: { card: '0 1px 2px rgba(0,0,0,0.06), 0 2px 8px rgba(0,0,0,0.04)', modal: '0 8px 32px rgba(0,0,0,0.16)' },
   fonts: { body: "'Open Sans', system-ui, sans-serif", head: "'Oswald', sans-serif", mono: "'JetBrains Mono', monospace" },
   logo: null, loginBg: null, favicon: null, icon192: null, icon512: null,
   dark: 'auto', enabled: true,
@@ -16041,7 +16042,8 @@ const BRAND_DEFAULTS = {
 
 const BRAND_VAR_MAP = {
   primary: '--red', primaryHover: '--red-2', primaryDark: '--red-3', primarySoft: '--red-soft',
-  accent: '--blue', gold: '--gold', ok: '--ok', warn: '--warn', black: '--black',
+  accent: '--blue', accentLight: '--blue-light', gold: '--gold', ok: '--ok', warn: '--warn',
+  black: '--black', black2: '--black-2', black3: '--black-3',
   white: '--white', offWhite: '--off-white', grey100: '--grey-100', grey200: '--grey-200',
   grey300: '--grey-300', grey400: '--grey-400', grey500: '--grey-500',
 };
@@ -16052,7 +16054,11 @@ const BRAND_FONT_CHOICES = {
     { label: 'Oswald (default)', stack: "'Oswald', sans-serif" },
     { label: 'Anton', stack: "'Anton', sans-serif", google: 'Anton' },
     { label: 'Bebas Neue', stack: "'Bebas Neue', sans-serif", google: 'Bebas+Neue' },
+    { label: 'Archivo', stack: "'Archivo', sans-serif", google: 'Archivo:wght@600;700;800' },
+    { label: 'Teko', stack: "'Teko', sans-serif", google: 'Teko:wght@500;600;700' },
+    { label: 'Barlow Condensed', stack: "'Barlow Condensed', sans-serif", google: 'Barlow+Condensed:wght@600;700' },
     { label: 'Montserrat', stack: "'Montserrat', sans-serif", google: 'Montserrat:wght@600;700' },
+    { label: 'Poppins', stack: "'Poppins', sans-serif", google: 'Poppins:wght@600;700' },
     { label: 'System sans', stack: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' },
     { label: 'Serif', stack: "Georgia, 'Times New Roman', serif" },
   ],
@@ -16061,11 +16067,16 @@ const BRAND_FONT_CHOICES = {
     { label: 'Inter', stack: "'Inter', system-ui, sans-serif", google: 'Inter:wght@400;500;600;700' },
     { label: 'Roboto', stack: "'Roboto', system-ui, sans-serif", google: 'Roboto:wght@400;500;700' },
     { label: 'Lato', stack: "'Lato', system-ui, sans-serif", google: 'Lato:wght@400;700' },
+    { label: 'Nunito Sans', stack: "'Nunito Sans', system-ui, sans-serif", google: 'Nunito+Sans:wght@400;600;700' },
+    { label: 'Work Sans', stack: "'Work Sans', system-ui, sans-serif", google: 'Work+Sans:wght@400;500;600;700' },
+    { label: 'Source Sans 3', stack: "'Source Sans 3', system-ui, sans-serif", google: 'Source+Sans+3:wght@400;600;700' },
     { label: 'System sans', stack: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' },
   ],
   mono: [
     { label: 'JetBrains Mono (default)', stack: "'JetBrains Mono', monospace" },
     { label: 'Roboto Mono', stack: "'Roboto Mono', monospace", google: 'Roboto+Mono' },
+    { label: 'IBM Plex Mono', stack: "'IBM Plex Mono', monospace", google: 'IBM+Plex+Mono:wght@400;500' },
+    { label: 'Space Mono', stack: "'Space Mono', monospace", google: 'Space+Mono:wght@400;700' },
     { label: 'System mono', stack: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
   ],
 };
@@ -16099,10 +16110,11 @@ function contrastRatio(a, b) {
 function deriveDark(pal) {
   return {
     '--white': '#1b1d22', '--off-white': '#101216', '--black': '#f2f3f5',
+    '--black-2': '#dfe1e5', '--black-3': '#c7cad0',
     '--grey-100': '#2b2e35', '--grey-200': '#3a3e46', '--grey-300': '#565b64',
     '--grey-400': '#9aa0aa', '--grey-500': '#cfd3d9',
     '--red': pal.primary, '--red-2': pal.primaryHover, '--red-3': pal.primaryDark, '--red-soft': '#2a1a17',
-    '--blue': pal.accent, '--gold': pal.gold, '--ok': pal.ok, '--warn': pal.warn,
+    '--blue': pal.accent, '--blue-light': pal.accentLight || pal.accent, '--gold': pal.gold, '--ok': pal.ok, '--warn': pal.warn,
   };
 }
 
@@ -16121,6 +16133,8 @@ function applyBrand(b) {
     for (const ck in cc) rs.setProperty('--c-' + ck, cc[ck]);
     const rad = Object.assign({}, BRAND_DEFAULTS.radius, (b && b.radius) || {});
     rs.setProperty('--r-sm', rad.sm); rs.setProperty('--r-md', rad.md); rs.setProperty('--r-lg', rad.lg);
+    const sh = Object.assign({}, BRAND_DEFAULTS.shadows, (b && b.shadows) || {});
+    rs.setProperty('--shadow', sh.card); rs.setProperty('--shadow-lg', sh.modal);
     const fonts = Object.assign({}, BRAND_DEFAULTS.fonts, (b && b.fonts) || {});
     rs.setProperty('--font-body', fonts.body); rs.setProperty('--font-head', fonts.head); rs.setProperty('--font-mono', fonts.mono);
     ensureBrandFontLink(fonts);
@@ -16189,6 +16203,11 @@ function applyBrandFavicon(b) {
     let l = document.querySelector('link[rel="icon"]');
     if (!l) { l = document.createElement('link'); l.rel = 'icon'; document.head.appendChild(l); }
     l.href = (b && b.favicon) || (b && b.logo) || 'icon-192.png';
+    // iOS home-screen icon ignores the (blob) manifest — it reads apple-touch-icon, and
+    // needs a raster PNG. Prefer the uploaded 192 icon, else the bundled default.
+    let at = document.querySelector('link[rel="apple-touch-icon"]');
+    if (!at) { at = document.createElement('link'); at.rel = 'apple-touch-icon'; document.head.appendChild(at); }
+    at.href = (b && b.icon192) || 'icon-192.png';
   } catch (e) {}
 }
 
@@ -16222,7 +16241,9 @@ function _brandMergeDefaults(b) {
   d.palette = Object.assign(d.palette, b.palette || {});
   d.classColours = Object.assign(d.classColours, b.classColours || {});
   d.radius = Object.assign(d.radius, b.radius || {});
+  d.shadows = Object.assign(d.shadows, b.shadows || {});
   d.fonts = Object.assign(d.fonts, b.fonts || {});
+  d.dark = b.dark || d.dark;
   ['logo', 'loginBg', 'favicon', 'icon192', 'icon512'].forEach((k) => { if (b[k]) d[k] = b[k]; });
   d.enabled = true;
   return d;
@@ -16231,6 +16252,9 @@ function _brandMergeDefaults(b) {
 function openBrandingPanel() {
   if (!can.switchAnySchool()) { alert('Only a superadmin can change portal branding.'); return; }
   state._brandDraft = _brandMergeDefaults(state.brand);
+  state._brandTab = state._brandTab || 'theme';
+  state._brandPrevDark = document.body.classList.contains('dark-mode'); // restored on close
+  state._brandPreviewDark = state._brandPrevDark;
   renderBrandingPanel();
   openModal('modalBranding');
 }
@@ -16242,6 +16266,7 @@ function brandSet(path, value) {
   let o = d; for (let i = 0; i < parts.length - 1; i++) { o[parts[i]] = o[parts[i]] || {}; o = o[parts[i]]; }
   o[parts[parts.length - 1]] = value;
   applyBrand(d);                 // live preview for this session only (not saved)
+  renderBrandPreview();          // refresh the on-screen component mock
   brandUpdateContrast();
 }
 
@@ -16258,12 +16283,19 @@ function brandUpdateContrast() {
     : '<div style="font-size:12px;color:var(--ok);">✓ Contrast looks fine.</div>';
 }
 
-function _colorRow(label, path, val) {
+function _colorRow(label, path, val, defVal, hint) {
   const safe = (/^#[0-9a-fA-F]{6}$/.test(val || '')) ? val : '#000000';
-  return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">'
-    + '<input type="color" value="' + safe + '" oninput="brandSet(\'' + path + '\', this.value); var t=document.getElementById(\'tx-' + path.replace(/\./g, '_') + '\'); if(t)t.value=this.value;" style="width:34px;height:28px;padding:0;border:1px solid var(--grey-200);border-radius:var(--r-sm);background:none;">'
-    + '<input id="tx-' + path.replace(/\./g, '_') + '" type="text" value="' + escapeHtml(val || '') + '" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value))brandSet(\'' + path + '\', this.value);" style="width:88px;padding:5px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;font-family:var(--font-mono);">'
-    + '<span style="font-size:12px;color:var(--grey-500);">' + escapeHtml(label) + '</span></div>';
+  const id = path.replace(/\./g, '_');
+  return '<div style="margin-bottom:11px;">'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;gap:8px;">'
+      + '<span style="font-size:12px;font-weight:600;color:var(--black-2);">' + escapeHtml(label) + '</span>'
+      + (defVal ? '<button onclick="brandResetField(\'' + path + '\')" title="Reset to default" style="border:none;background:none;color:var(--grey-400);font-size:13px;cursor:pointer;padding:0 2px;line-height:1;">↺</button>' : '')
+    + '</div>'
+    + (hint ? '<div style="font-size:10.5px;color:var(--grey-400);margin:-1px 0 5px;line-height:1.3;">' + escapeHtml(hint) + '</div>' : '')
+    + '<div style="display:flex;align-items:center;gap:8px;">'
+      + '<input type="color" value="' + safe + '" oninput="brandSet(\'' + path + '\', this.value); var t=document.getElementById(\'tx-' + id + '\'); if(t)t.value=this.value;" style="width:44px;height:32px;padding:0;border:1px solid var(--grey-200);border-radius:var(--r-sm);background:none;cursor:pointer;flex-shrink:0;">'
+      + '<input id="tx-' + id + '" type="text" value="' + escapeHtml(val || '') + '" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value))brandSet(\'' + path + '\', this.value);" style="width:104px;padding:7px 9px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;font-family:var(--font-mono);">'
+    + '</div></div>';
 }
 
 function _fontSelect(slot, val) {
@@ -16273,7 +16305,8 @@ function _fontSelect(slot, val) {
     + '</select>';
 }
 
-function renderBrandingPanel() {
+// Superseded by the Branding Studio (v96) — kept only for reference; not called.
+function _renderBrandingPanelLegacy() {
   const body = document.getElementById('brandingBody'); if (!body) return;
   const d = state._brandDraft; if (!d) return;
   const ist = 'width:100%;padding:7px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;box-sizing:border-box;';
@@ -16398,6 +16431,7 @@ async function brandPublish() {
   state.brand = _brandClone(d);
   try { localStorage.setItem('krmas-brand', JSON.stringify(state.brand)); } catch (e) {}
   try { await DB.saveBrand(state.brand); } catch (e) {}
+  _brandRestoreDark();
   applyBrand(state.brand);
   closeModal('modalBranding');
   alert('Branding published. Everyone will see it on their next load.');
@@ -16412,14 +16446,321 @@ function brandResetDefaults() {
 
 function brandRevertPreview() {
   state._brandDraft = _brandMergeDefaults(state.brand);
+  state._brandPreviewDark = state._brandPrevDark;
+  _brandRestoreDark();
   applyBrand(state.brand);
   renderBrandingPanel();
 }
 
 function closeBrandingPanel() {
+  _brandRestoreDark();       // undo any dark-mode preview toggle
   applyBrand(state.brand);   // discard any unpublished preview
   state._brandDraft = null;
   closeModal('modalBranding');
+}
+
+// ====================================================================
+// BRANDING STUDIO (v96) — the tabbed editor + live preview.
+// Builds the functions the editor calls (renderBrandingPanel, renderBrandPreview,
+// brandResetField, _brandRestoreDark) plus presets, smart-fill, roundness/elevation,
+// and per-tab renderers. Reuses the existing helpers (_colorRow, _fontSelect, brandSet,
+// brandUpload, brandPublish, …). Far more components are customisable than the old panel.
+// ====================================================================
+
+// One-tap starting themes. Applying a preset sets brand+accent+status and smart-derives
+// the hover/dark/soft shades from the primary colour.
+const BRAND_PRESETS = [
+  { id: 'krmas',    name: 'KRMAS Red',  primary: '#d22c12', accent: '#62a3db', gold: '#c9a14a' },
+  { id: 'midnight', name: 'Midnight',   primary: '#3b82f6', accent: '#22d3ee', gold: '#eab308' },
+  { id: 'forest',   name: 'Forest',     primary: '#16a34a', accent: '#65a30d', gold: '#ca8a04' },
+  { id: 'ocean',    name: 'Ocean',      primary: '#0ea5e9', accent: '#14b8a6', gold: '#f59e0b' },
+  { id: 'crimson',  name: 'Crimson',    primary: '#dc2626', accent: '#fb7185', gold: '#d97706' },
+  { id: 'violet',   name: 'Violet',     primary: '#7c3aed', accent: '#a855f7', gold: '#eab308' },
+  { id: 'slate',    name: 'Slate',      primary: '#475569', accent: '#0ea5e9', gold: '#f59e0b' },
+  { id: 'sunset',   name: 'Sunset',     primary: '#ea580c', accent: '#f59e0b', gold: '#facc15' },
+  { id: 'rose',     name: 'Rose',       primary: '#e11d48', accent: '#fb7185', gold: '#f59e0b' },
+  { id: 'teal',     name: 'Teal',       primary: '#0d9488', accent: '#22d3ee', gold: '#eab308' },
+  { id: 'indigo',   name: 'Indigo',     primary: '#4f46e5', accent: '#818cf8', gold: '#f59e0b' },
+  { id: 'mono',     name: 'Mono',       primary: '#111827', accent: '#6b7280', gold: '#9ca3af' },
+];
+
+// Lighten (amt>0) / darken (amt<0) a hex colour by a fraction.
+function _shade(hex, amt) {
+  const c = _hexToRgb(hex); if (!c) return hex;
+  const f = (v) => amt < 0 ? v * (1 + amt) : v + (255 - v) * amt;
+  const h = (v) => ('0' + Math.max(0, Math.min(255, Math.round(f(v)))).toString(16)).slice(-2);
+  return '#' + h(c.r) + h(c.g) + h(c.b);
+}
+function _softTint(hex) {
+  const c = _hexToRgb(hex); if (!c) return '#f5f5f5';
+  const h = (v) => ('0' + Math.round(v + (255 - v) * 0.9).toString(16)).slice(-2);
+  return '#' + h(c.r) + h(c.g) + h(c.b);
+}
+
+function brandApplyPreset(id) {
+  const p = BRAND_PRESETS.find((x) => x.id === id); if (!p || !state._brandDraft) return;
+  const pal = state._brandDraft.palette;
+  pal.primary = p.primary;
+  pal.primaryHover = _shade(p.primary, -0.15);
+  pal.primaryDark = _shade(p.primary, -0.30);
+  pal.primarySoft = _softTint(p.primary);
+  pal.accent = p.accent;
+  pal.accentLight = _shade(p.accent, 0.18);
+  pal.gold = p.gold;
+  applyBrand(state._brandDraft);
+  renderBrandingPanel();
+}
+
+// Re-derive hover/dark/soft from the current primary (one click).
+function brandDeriveFromPrimary() {
+  const pal = state._brandDraft && state._brandDraft.palette; if (!pal) return;
+  pal.primaryHover = _shade(pal.primary, -0.15);
+  pal.primaryDark = _shade(pal.primary, -0.30);
+  pal.primarySoft = _softTint(pal.primary);
+  pal.accentLight = _shade(pal.accent, 0.18);
+  applyBrand(state._brandDraft);
+  renderBrandingPanel();
+}
+
+// Single roundness slider -> the three radius tokens (proportional).
+function brandSetRoundness(v) {
+  v = parseInt(v, 10) || 0;
+  state._brandDraft.radius = { sm: v + 'px', md: Math.round(v * 1.6) + 'px', lg: Math.round(v * 2.2) + 'px' };
+  applyBrand(state._brandDraft);
+  renderBrandingPanel();
+}
+function brandSetElevation(id) {
+  const map = {
+    flat:   { card: '0 0 0 1px rgba(0,0,0,0.06)', modal: '0 2px 10px rgba(0,0,0,0.12)' },
+    soft:   { card: '0 1px 2px rgba(0,0,0,0.06), 0 2px 8px rgba(0,0,0,0.04)', modal: '0 8px 32px rgba(0,0,0,0.16)' },
+    raised: { card: '0 2px 6px rgba(0,0,0,0.10), 0 8px 24px rgba(0,0,0,0.10)', modal: '0 16px 48px rgba(0,0,0,0.24)' },
+  };
+  state._brandDraft.shadows = map[id] || map.soft;
+  applyBrand(state._brandDraft);
+  renderBrandingPanel();
+}
+
+function brandSetTab(tab) { state._brandTab = tab; renderBrandingPanel(); }
+
+function _brandRestoreDark() {
+  try {
+    if (state._brandPrevDark) document.body.classList.add('dark-mode');
+    else document.body.classList.remove('dark-mode');
+  } catch (e) {}
+}
+function brandSetPreviewDark(on) {
+  state._brandPreviewDark = !!on;
+  try { if (on) document.body.classList.add('dark-mode'); else document.body.classList.remove('dark-mode'); } catch (e) {}
+  applyBrand(state._brandDraft);
+  renderBrandingPanel();
+}
+
+// Reset a single field back to its BRAND_DEFAULTS value (used by the ↺ buttons).
+function brandResetField(path) {
+  const parts = path.split('.');
+  let src = BRAND_DEFAULTS;
+  for (const p of parts) { src = src && src[p]; }
+  if (src === undefined) return;
+  brandSet(path, src);
+  renderBrandingPanel();
+}
+
+// ---- live preview mock (reads CSS vars, so it reflects the draft instantly) ----
+function renderBrandPreview() {
+  const el = document.getElementById('brandPreview'); if (!el) return;
+  const d = state._brandDraft || {};
+  el.innerHTML =
+    '<div style="border-radius:var(--r-md);overflow:hidden;border:1px solid var(--grey-200);">'
+    + '<div style="background:var(--red);color:#fff;padding:8px 10px;display:flex;align-items:center;gap:8px;">'
+      + '<img src="' + (d.logo || 'krmas-logo.svg') + '" alt="" style="height:20px;width:auto;background:rgba(255,255,255,.9);border-radius:4px;padding:1px 4px;">'
+      + '<span style="font-family:var(--font-head);font-weight:700;font-size:14px;">' + escapeHtml(d.appName || 'App name') + '</span>'
+    + '</div>'
+    + '<div style="background:var(--white);padding:11px;">'
+      + '<div style="font-family:var(--font-head);font-weight:700;font-size:14px;color:var(--black);margin-bottom:3px;">Sample card</div>'
+      + '<div style="font-family:var(--font-body);font-size:12px;color:var(--black-2);margin-bottom:9px;">Body text on a card surface — the quick brown fox.</div>'
+      + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:9px;">'
+        + '<span style="background:var(--red);color:#fff;font-size:11px;font-weight:600;padding:6px 11px;border-radius:var(--r-sm);">Primary</span>'
+        + '<span style="background:var(--white);color:var(--black-2);border:1px solid var(--grey-200);font-size:11px;font-weight:600;padding:6px 11px;border-radius:var(--r-sm);">Ghost</span>'
+        + '<span style="background:var(--warn);color:#fff;font-size:11px;font-weight:600;padding:6px 11px;border-radius:var(--r-sm);">Warning</span>'
+      + '</div>'
+      + '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:9px;">'
+        + '<span style="background:#dcfce7;color:var(--ok);font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;">Success</span>'
+        + '<span style="background:var(--red-soft);color:var(--red-3);font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;">Soft</span>'
+        + '<span style="background:var(--gold);color:#fff;font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;">Gold</span>'
+        + '<span style="background:var(--blue);color:#fff;font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;">Accent</span>'
+      + '</div>'
+      + '<input type="text" value="Input field" readonly style="width:100%;box-sizing:border-box;padding:8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;font-family:var(--font-body);background:var(--off-white);color:var(--black);">'
+      + '<div style="display:flex;gap:4px;margin-top:9px;">'
+        + ['mln', 'karate', 'mt', 'bjj', 'kata'].map((k) => '<span style="flex:1;height:9px;border-radius:3px;background:var(--c-' + k + ');"></span>').join('')
+      + '</div>'
+    + '</div>'
+  + '</div>';
+}
+
+// ---- per-tab content ----
+function _brandLab(t) { return '<label style="font-size:12px;font-weight:600;color:var(--black-2);display:block;margin:10px 0 3px;">' + t + '</label>'; }
+function _brandHint(t) { return '<div style="font-size:10.5px;color:var(--grey-400);margin:-1px 0 4px;line-height:1.35;">' + t + '</div>'; }
+function _brandGrp(t) { return '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--grey-400);margin:16px 0 8px;">' + t + '</div>'; }
+
+function _brandTabPresets(d) {
+  let h = '<div style="font-size:12px;color:var(--grey-500);margin-bottom:10px;line-height:1.45;">Pick a starting theme, then fine-tune on the other tabs. A preset sets the brand, accent and status colours and smart-derives the hover/dark shades.</div>';
+  h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:8px;">';
+  h += BRAND_PRESETS.map((p) => '<button onclick="brandApplyPreset(\'' + p.id + '\')" style="text-align:left;border:1px solid ' + (d.palette.primary === p.primary ? 'var(--red)' : 'var(--grey-200)') + ';border-radius:var(--r-md);padding:10px;background:var(--white);cursor:pointer;">'
+    + '<div style="display:flex;gap:5px;margin-bottom:7px;">'
+      + '<span style="width:22px;height:22px;border-radius:50%;background:' + p.primary + ';"></span>'
+      + '<span style="width:22px;height:22px;border-radius:50%;background:' + p.accent + ';"></span>'
+      + '<span style="width:22px;height:22px;border-radius:50%;background:' + p.gold + ';"></span>'
+    + '</div>'
+    + '<span style="font-size:12px;font-weight:700;color:var(--black-2);">' + escapeHtml(p.name) + '</span>'
+  + '</button>').join('');
+  h += '</div>';
+  return h;
+}
+
+function _brandTabIdentity(d) {
+  const ist = 'width:100%;padding:9px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:16px;box-sizing:border-box;';
+  let h = '';
+  h += _brandLab('App name') + _brandHint('Title bar, header, install name and report titles.') + '<input type="text" value="' + escapeHtml(d.appName) + '" oninput="brandSet(\'appName\',this.value)" style="' + ist + '">';
+  h += _brandLab('Short name') + _brandHint('Document titles and email subjects.') + '<input type="text" value="' + escapeHtml(d.shortName) + '" oninput="brandSet(\'shortName\',this.value)" style="' + ist + '">';
+  h += _brandLab('Full organisation name') + _brandHint('Grading exam-form header and the supervision report.') + '<input type="text" value="' + escapeHtml(d.fullName) + '" oninput="brandSet(\'fullName\',this.value)" style="' + ist + '">';
+  h += _brandLab('Tagline') + _brandHint('Shown under the logo on the login screen (optional).') + '<input type="text" value="' + escapeHtml(d.tagline) + '" oninput="brandSet(\'tagline\',this.value)" style="' + ist + '">';
+  return h;
+}
+
+function _brandTabColour(d) {
+  const D = BRAND_DEFAULTS.palette;
+  let h = '<button class="btn btn-sm" onclick="brandDeriveFromPrimary()" style="width:100%;margin-bottom:4px;">✨ Smart-fill hover / dark / soft from primary</button>';
+  h += _brandGrp('Brand');
+  h += _colorRow('Primary', 'palette.primary', d.palette.primary, D.primary, 'Buttons, links and header accents.');
+  h += _colorRow('Primary — hover', 'palette.primaryHover', d.palette.primaryHover, D.primaryHover);
+  h += _colorRow('Primary — dark', 'palette.primaryDark', d.palette.primaryDark, D.primaryDark);
+  h += _colorRow('Primary — soft tint', 'palette.primarySoft', d.palette.primarySoft, D.primarySoft, 'Subtle highlight backgrounds.');
+  h += _brandGrp('Accent & status');
+  h += _colorRow('Accent', 'palette.accent', d.palette.accent, D.accent);
+  h += _colorRow('Accent — light', 'palette.accentLight', d.palette.accentLight, D.accentLight);
+  h += _colorRow('Gold', 'palette.gold', d.palette.gold, D.gold);
+  h += _colorRow('Success', 'palette.ok', d.palette.ok, D.ok);
+  h += _colorRow('Warning', 'palette.warn', d.palette.warn, D.warn);
+  h += _brandGrp('Surfaces & text');
+  h += _colorRow('Surface (cards)', 'palette.white', d.palette.white, D.white);
+  h += _colorRow('Background', 'palette.offWhite', d.palette.offWhite, D.offWhite);
+  h += _colorRow('Text', 'palette.black', d.palette.black, D.black);
+  h += _colorRow('Text — secondary', 'palette.black2', d.palette.black2, D.black2);
+  h += _colorRow('Text — tertiary', 'palette.black3', d.palette.black3, D.black3);
+  h += '<details style="margin-top:10px;"><summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--grey-500);">Greys (5 steps)</summary><div style="margin-top:8px;">';
+  h += _colorRow('Grey 100', 'palette.grey100', d.palette.grey100, D.grey100);
+  h += _colorRow('Grey 200', 'palette.grey200', d.palette.grey200, D.grey200);
+  h += _colorRow('Grey 300', 'palette.grey300', d.palette.grey300, D.grey300);
+  h += _colorRow('Grey 400', 'palette.grey400', d.palette.grey400, D.grey400);
+  h += _colorRow('Grey 500', 'palette.grey500', d.palette.grey500, D.grey500);
+  h += '</div></details>';
+  h += '<div id="brandContrast" style="margin-top:8px;"></div>';
+  return h;
+}
+
+function _brandTabType(d) {
+  let h = '';
+  h += _brandLab('Headings') + _fontSelect('head', d.fonts.head);
+  h += '<div style="font-family:var(--font-head);font-size:21px;font-weight:700;margin:7px 0 2px;color:var(--black);">Heading sample 1234</div>';
+  h += _brandLab('Body') + _fontSelect('body', d.fonts.body);
+  h += '<div style="font-family:var(--font-body);font-size:14px;margin:7px 0 2px;color:var(--black-2);">Body text — the quick brown fox jumps over the lazy dog.</div>';
+  h += _brandLab('Mono') + _fontSelect('mono', d.fonts.mono);
+  h += '<div style="font-family:var(--font-mono);font-size:13px;margin:7px 0 2px;color:var(--black-2);">mono 0123 · const x = 42;</div>';
+  h += _brandHint('Non-default fonts load from Google Fonts on demand.');
+  return h;
+}
+
+function _brandTabShape(d) {
+  const cur = parseInt(d.radius.sm, 10) || 0;
+  let h = '';
+  h += _brandLab('Corner roundness') + _brandHint('Applies across buttons, cards, inputs and badges.');
+  h += '<input type="range" min="0" max="16" step="1" value="' + cur + '" oninput="brandSetRoundness(this.value)" style="width:100%;accent-color:var(--red);">';
+  h += '<div style="font-size:11px;color:var(--grey-400);margin-top:2px;">Small ' + d.radius.sm + ' · Medium ' + d.radius.md + ' · Large ' + d.radius.lg + '</div>';
+  h += _brandLab('Card elevation');
+  h += '<div style="display:flex;gap:8px;">' + [['flat', 'Flat'], ['soft', 'Soft'], ['raised', 'Raised']].map(([id, label]) => '<button class="btn btn-sm" onclick="brandSetElevation(\'' + id + '\')" style="flex:1;">' + label + '</button>').join('') + '</div>';
+  return h;
+}
+
+function _brandTabImages(d) {
+  const imgPrev = (src, ht) => src ? '<img src="' + src + '" alt="" style="height:' + ht + 'px;width:auto;max-width:96px;background:#eee;border-radius:4px;border:1px solid var(--grey-200);">' : '<span style="font-size:11px;color:var(--grey-400);">none</span>';
+  const tile = (field, label, accept, prev, note) =>
+    '<div style="border:1px solid var(--grey-200);border-radius:var(--r-md);padding:10px;margin-bottom:8px;">'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">'
+      + '<div><div style="font-size:12px;font-weight:600;color:var(--black-2);">' + label + '</div>' + (note ? '<div style="font-size:10.5px;color:var(--grey-400);">' + note + '</div>' : '') + '</div>'
+      + prev
+    + '</div>'
+    + '<div style="display:flex;gap:6px;margin-top:8px;">'
+      + '<label class="btn btn-sm" style="cursor:pointer;flex:1;text-align:center;">Upload<input type="file" accept="' + accept + '" onchange="brandUpload(\'' + field + '\',this)" style="display:none;"></label>'
+      + (d[field] ? '<button class="btn btn-sm" onclick="brandClearImage(\'' + field + '\')" style="color:var(--red);">Remove</button>' : '')
+    + '</div>'
+  + '</div>';
+  let h = '';
+  h += tile('logo', 'Logo', 'image/svg+xml,image/png,image/jpeg,image/webp', imgPrev(d.logo || 'krmas-logo.svg', 32), 'Header + login. SVG recommended.');
+  h += tile('loginBg', 'Login background', 'image/png,image/jpeg,image/webp', imgPrev(d.loginBg, 32), 'Full-screen image behind the login card.');
+  h += tile('favicon', 'Favicon', 'image/png,image/svg+xml', imgPrev(d.favicon, 24), 'Browser tab icon.');
+  h += tile('icon192', 'App icon · 192', 'image/png', imgPrev(d.icon192, 32), 'Home-screen icon (PNG).');
+  h += tile('icon512', 'App icon · 512', 'image/png', imgPrev(d.icon512, 32), 'Splash / high-res install icon (PNG).');
+  h += '<div style="font-size:11px;color:var(--grey-400);margin-top:2px;line-height:1.4;">On iPhone/iPad the home-screen icon uses the 192 PNG and may only refresh after removing and re-adding the installed app.</div>';
+  return h;
+}
+
+function _brandTabAdvanced(d) {
+  const D = BRAND_DEFAULTS;
+  let h = '';
+  h += _brandGrp('Browser chrome');
+  h += _colorRow('Theme colour (status bar)', 'themeColor', d.themeColor, D.themeColor, 'Tints the mobile browser / status bar.');
+  h += _colorRow('Splash background', 'backgroundColor', d.backgroundColor, D.backgroundColor, 'Install splash-screen background.');
+  h += _brandGrp('Dark mode');
+  h += _brandHint('Dark mode auto-derives from your palette — preview it with the Light / Dark toggle above the preview.');
+  h += _brandGrp('Class-type colours');
+  const CL = { mln: 'Mini Little Ninjas', ln: 'Little Ninjas', karate: 'Karate', jmt: 'Junior Muay Thai', mt: 'Muay Thai', lmt: 'Ladies Muay Thai', mtf: 'Muay Thai (F)', sanda: 'Sanda', sparring: 'Sparring', kata: 'Kata', bjj: 'Jiu Jitsu', sc: 'S&C', plates: 'Plates' };
+  for (const k in CL) h += _colorRow(CL[k], 'classColours.' + k, d.classColours[k], D.classColours[k]);
+  return h;
+}
+
+// ---- the Studio shell: tab bar + sticky live preview + active tab + actions ----
+function renderBrandingPanel() {
+  const body = document.getElementById('brandingBody'); if (!body) return;
+  const d = state._brandDraft; if (!d) return;
+  const tab = state._brandTab || 'theme';
+  const tabs = [['theme', 'Presets'], ['identity', 'Identity'], ['colour', 'Colours'], ['type', 'Type'], ['shape', 'Shape'], ['images', 'Images'], ['advanced', 'Advanced']];
+
+  const tabBar = '<div style="display:flex;gap:4px;overflow-x:auto;padding-bottom:8px;margin-bottom:4px;-webkit-overflow-scrolling:touch;">'
+    + tabs.map(([id, label]) => '<button onclick="brandSetTab(\'' + id + '\')" style="flex:0 0 auto;padding:7px 13px;border:1px solid ' + (tab === id ? 'var(--red)' : 'var(--grey-200)') + ';background:' + (tab === id ? 'var(--red)' : 'var(--white)') + ';color:' + (tab === id ? '#fff' : 'var(--black-2)') + ';border-radius:999px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;">' + label + '</button>').join('')
+    + '</div>';
+
+  const dk = state._brandPreviewDark;
+  const preview = '<div style="position:sticky;top:0;z-index:2;background:var(--off-white);border:1px solid var(--grey-200);border-radius:var(--r-md);padding:10px;margin-bottom:12px;">'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">'
+      + '<span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-400);">Live preview</span>'
+      + '<div style="display:flex;border:1px solid var(--grey-200);border-radius:999px;overflow:hidden;">'
+        + '<button onclick="brandSetPreviewDark(false)" style="padding:4px 11px;border:none;background:' + (dk ? 'var(--white)' : 'var(--red)') + ';color:' + (dk ? 'var(--grey-500)' : '#fff') + ';font-size:11px;font-weight:600;cursor:pointer;">Light</button>'
+        + '<button onclick="brandSetPreviewDark(true)" style="padding:4px 11px;border:none;background:' + (dk ? 'var(--red)' : 'var(--white)') + ';color:' + (dk ? '#fff' : 'var(--grey-500)') + ';font-size:11px;font-weight:600;cursor:pointer;">Dark</button>'
+      + '</div>'
+    + '</div>'
+    + '<div id="brandPreview"></div>'
+  + '</div>';
+
+  let h = tabBar + preview;
+  if (tab === 'theme') h += _brandTabPresets(d);
+  else if (tab === 'identity') h += _brandTabIdentity(d);
+  else if (tab === 'colour') h += _brandTabColour(d);
+  else if (tab === 'type') h += _brandTabType(d);
+  else if (tab === 'shape') h += _brandTabShape(d);
+  else if (tab === 'images') h += _brandTabImages(d);
+  else if (tab === 'advanced') h += _brandTabAdvanced(d);
+
+  h += '<div style="display:flex;gap:8px;margin-top:18px;padding-top:14px;border-top:2px solid var(--grey-200);flex-wrap:wrap;">'
+    + '<button class="btn btn-primary" style="flex:1;min-width:120px;" onclick="brandPublish()">Publish to everyone</button>'
+    + '<button class="btn" onclick="brandRevertPreview()">Revert</button></div>'
+    + '<div style="display:flex;gap:8px;margin-top:6px;">'
+      + '<button class="btn btn-ghost btn-sm" onclick="brandResetDefaults()" style="flex:1;color:var(--grey-500);">Reset to defaults</button>'
+      + '<button class="btn btn-ghost btn-sm" onclick="closeBrandingPanel()" style="flex:1;">Close</button>'
+    + '</div>';
+
+  body.innerHTML = h;
+  renderBrandPreview();
+  brandUpdateContrast();
 }
 
 // ====================================================================
