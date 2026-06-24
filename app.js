@@ -14024,8 +14024,8 @@ function renderShop() {
   if (!tabs.find(t => t.id === state.shopView)) state.shopView = 'stock';
 
   let html = `<div style="padding:16px;max-width:920px;margin:0 auto;">
-    <h1 style="font-family:'Oswald',sans-serif;font-size:22px;text-transform:uppercase;letter-spacing:.04em;margin:0 0 12px;">📦 Stock / inventory</h1>
-    <div class="grading-tabs">${tabs.map(t => `<button class="grading-tab ${state.shopView === t.id ? 'active' : ''}" onclick="setShopView('${t.id}')">${escapeHtml(t.label)}</button>`).join('')}</div>`;
+    <h1 style="font-family:'Oswald',sans-serif;font-size:20px;text-transform:uppercase;letter-spacing:.04em;margin:0 0 10px;display:flex;align-items:center;gap:7px;"><span style="font-size:17px;">📦</span> Inventory</h1>
+    <div class="grading-tabs shop-tabs">${tabs.map(t => `<button class="grading-tab ${state.shopView === t.id ? 'active' : ''}" onclick="setShopView('${t.id}')">${escapeHtml(t.label)}</button>`).join('')}</div>`;
 
   if      (state.shopView === 'stock')     html += renderShopStock();
   else if (state.shopView === 'reorder')   html += renderShopReorder();
@@ -14153,25 +14153,38 @@ function shopStockListHtml(editable) {
 }
 
 // ── tab: STOCK (per-school counts) ──
+// ⋯ menu for the Stock tab — keeps the occasional Import / Print actions out of the toolbar.
+function shopStockActions() {
+  const sid = state.shopStockSchool;
+  const editable = can.editStock(sid);
+  let h = `<h3>Stock actions</h3>`;
+  if (editable) h += `<div class="action-sheet-row" onclick="closeModal('modalActions'); shopOpenImport('stock')">
+    <div class="icon">⤓</div><div style="flex:1;">Import counts (CSV)<div class="meta">Bulk-update on-hand quantities from a spreadsheet</div></div></div>`;
+  h += `<div class="action-sheet-row" onclick="closeModal('modalActions'); shopPrint('stocklist')">
+    <div class="icon">🖨</div><div style="flex:1;">Print list<div class="meta">Printable stock sheet for this school</div></div></div>`;
+  document.getElementById('actionSheetBody').innerHTML = h;
+  openModal('modalActions');
+}
+
 function renderShopStock() {
   const sid = state.shopStockSchool;
   const editable = can.editStock(sid);
   if (state.shopImport && state.shopImport.kind === 'stock') return renderShopImportPanel();
   let html = '';
 
-  // school switcher (shop/superadmin see all schools; multi-school members see theirs)
+  // Compact control row: school picker (or name) on the left, ⋯ menu (Import / Print) on the right.
   const schoolOpts = can.manageShop()
     ? ((typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS : []).map(s => ({ id: s.id, name: s.name })))
     : ((state.userSchools || []).map(id => ({ id, name: shopSchoolName(id) })));
-  if (schoolOpts.length > 1) {
-    html += `<div style="margin:12px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-      <span style="font-size:12px;color:var(--grey-500);">School:</span>
-      <select onchange="shopSwitchSchool(this.value)" style="padding:6px 8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;">
-        ${schoolOpts.map(s => `<option value="${escapeHtml(s.id)}"${s.id === sid ? ' selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}
-      </select></div>`;
-  } else {
-    html += `<p style="font-size:13px;color:var(--grey-500);margin:12px 0;">${escapeHtml(shopSchoolName(sid))}</p>`;
-  }
+  const schoolCtl = schoolOpts.length > 1
+    ? `<select onchange="shopSwitchSchool(this.value)" aria-label="School" style="padding:6px 8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;max-width:210px;">
+        ${schoolOpts.map(s => `<option value="${escapeHtml(s.id)}"${s.id === sid ? ' selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}</select>`
+    : `<span style="font-size:13px;font-weight:600;">${escapeHtml(shopSchoolName(sid))}</span>`;
+  html += `<div style="margin:12px 0;display:flex;align-items:center;gap:8px;">
+    ${schoolCtl}
+    ${!editable ? `<span style="font-size:11px;color:var(--grey-500);">View only</span>` : ''}
+    <button class="btn" onclick="shopStockActions()" aria-label="More actions" title="More actions" style="margin-left:auto;padding:5px 11px;font-size:15px;line-height:1;min-width:38px;">⋯</button>
+  </div>`;
 
   if (state.shopStockLoading) { html += shopStockSkeletonHtml(); return html; }
   if (state.shopLoadError || state.shopStockError) {
@@ -14184,11 +14197,6 @@ function renderShopStock() {
     html += `<div class="empty"><h2>No items yet</h2><p>${can.manageShop() ? 'Add items on the Catalogue tab.' : 'A shop admin needs to add items to the catalogue first.'}</p></div>`;
     return html;
   }
-  html += `<div style="margin:0 0 10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-    ${editable ? `<button class="btn" onclick="shopOpenImport('stock')" style="padding:6px 12px;font-size:12px;">Import counts (CSV)</button>` : ''}
-    <button class="btn" onclick="shopPrint('stocklist')" style="padding:6px 12px;font-size:12px;">🖨 Print list</button>
-    ${!editable ? `<span style="font-size:12px;color:var(--grey-500);">View only — you can't change this school's stock.</span>` : ''}
-  </div>`;
 
   if (!state.shopFilter) state.shopFilter = shopFilterLoad();
   html += shopFilterBarHtml();
@@ -14929,14 +14937,23 @@ function renderShopValue() {
 }
 
 // ── tab: CATALOGUE (items) ──
+// ⋯ menu for the Catalogue tab — mirrors the Stock tab (utility actions live under ⋯).
+function shopCatalogueActions() {
+  let h = `<h3>Catalogue actions</h3>`;
+  h += `<div class="action-sheet-row" onclick="closeModal('modalActions'); shopOpenImport('catalogue')">
+    <div class="icon">⤓</div><div style="flex:1;">Import CSV<div class="meta">Bulk-add or update catalogue items from a spreadsheet</div></div></div>`;
+  document.getElementById('actionSheetBody').innerHTML = h;
+  openModal('modalActions');
+}
+
 function renderShopCatalogue() {
   if (!can.manageShop()) return `<div class="empty"><h2>No access</h2></div>`;
   if (state.shopEdit && state.shopEdit.kind === 'item') return renderShopItemEditor();
   if (state.shopImport && state.shopImport.kind === 'catalogue') return renderShopImportPanel();
 
-  let html = `<div style="margin:12px 0;display:flex;gap:8px;flex-wrap:wrap;">
+  let html = `<div style="margin:12px 0;display:flex;gap:8px;align-items:center;">
     <button class="btn btn-black" onclick="shopNewItem()" style="padding:8px 14px;">+ Add item</button>
-    <button class="btn" onclick="shopOpenImport('catalogue')" style="padding:8px 14px;">Import CSV</button></div>`;
+    <button class="btn" onclick="shopCatalogueActions()" aria-label="More actions" title="More actions" style="margin-left:auto;padding:6px 11px;font-size:15px;line-height:1;min-width:38px;">⋯</button></div>`;
   const items = state.shop.items.slice().sort((a, b) => a.name.localeCompare(b.name));
   if (!items.length) { html += `<div class="empty"><h2>No items</h2><p>Add your first catalogue item.</p></div>`; return html; }
 

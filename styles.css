@@ -803,6 +803,12 @@
   }
   .grading-tab.active { background: var(--black); color: var(--white); border-color: var(--black); }
 
+  /* Stock/Inventory sub-tabs: one horizontally-scrollable rail instead of wrapping to 2+ rows */
+  .shop-tabs { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: thin; padding-bottom: 5px; }
+  .shop-tabs::-webkit-scrollbar { height: 4px; }
+  .shop-tabs::-webkit-scrollbar-thumb { background: var(--grey-200); border-radius: 2px; }
+  .shop-tabs .grading-tab { flex: 0 0 auto; white-space: nowrap; }
+
   .grading-candidate-row {
     display: grid; grid-template-columns: 90px 1fr auto;
     gap: 6px; align-items: center; padding: 8px 10px;
