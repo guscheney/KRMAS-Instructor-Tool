@@ -5430,7 +5430,7 @@ async function reconcileStudents() {
 function openStudentAddMenu() {
   if (!state.user) { openLogin(); return; }
   const aquila = aquilaCanProgression();
-  let h = `<h3>Search in Aquila</h3><p class="sub">Pull a member from your CRM — or add one by hand</p>`;
+  let h = `<h3>Search in Aquila</h3><p class="sub">Pull a member from your EFC CRM</p>`;
   if (aquila && can.managePathway()) {
     h += `<div class="action-sheet-row" onclick="closeModal('modalActions'); openAquilaPathwayPicker()">
       <div class="icon">★</div>
@@ -5447,12 +5447,6 @@ function openStudentAddMenu() {
     h += `<div class="action-sheet-row" onclick="closeModal('modalActions'); openAquilaStudentLookup()">
       <div class="icon">🔍</div>
       <div style="flex:1;">Look up a member<div class="meta">Quick read-only Aquila details</div></div>
-    </div>`;
-  }
-  if (can.editPlans()) {
-    h += `<div class="action-sheet-row" style="border-top:1px solid var(--grey-200);margin-top:6px;padding-top:14px;" onclick="closeModal('modalActions'); newStudent()">
-      <div class="icon">＋</div>
-      <div style="flex:1;">Add Student<div class="meta">Create a student record by hand for those schools not connected to EFC</div></div>
     </div>`;
   }
   document.getElementById('actionSheetBody').innerHTML = h;
@@ -5473,17 +5467,20 @@ function renderStudents() {
   const allFlaggedCount = Object.keys(state.pathways || {}).length;
 
   let html = `<h1 class="section-head">Students</h1>`;
-  // Single entry point. Aquila schools get a "Search in Aquila" menu with manual add
-  // folded in; schools without Aquila member access just get the manual add button.
-  if (aquilaCanProgression()) {
-    html += `<div style="margin-bottom:14px;">
-      <button class="btn btn-primary" style="width:100%;" onclick="openStudentAddMenu()">🔗 Search in Aquila</button>
-    </div>`;
-  } else if (can.editPlans()) {
-    html += `<div style="margin-bottom:14px;">
-      <button class="btn btn-primary" style="width:100%;" onclick="newStudent()">+ Add student</button>
+  // Two clear actions in the same area: "Search in Aquila" (EFC schools only) opens the
+  // Aquila menu; "Add Student" is the manual / non-EFC path and is always available.
+  const aquila = aquilaCanProgression();
+  html += `<div style="margin-bottom:14px; display:flex; flex-direction:column; gap:8px;">`;
+  if (aquila) {
+    html += `<button class="btn btn-primary" style="width:100%;" onclick="openStudentAddMenu()">🔗 Search in Aquila</button>`;
+  }
+  if (can.editPlans()) {
+    html += `<div>
+      <button class="btn${aquila ? '' : ' btn-primary'}" style="width:100%;" onclick="newStudent()">+ Add Student</button>
+      <div style="font-size:11px;color:var(--grey-500);margin-top:4px;text-align:center;">Create a student record by hand for those schools not connected to EFC</div>
     </div>`;
   }
+  html += `</div>`;
 
   // Candidates summary (if any flagged)
   if (allFlaggedCount > 0) {
