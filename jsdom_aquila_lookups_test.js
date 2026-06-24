@@ -75,33 +75,50 @@ process.on('unhandledRejection', (e) => { console.log('UNHANDLED', (e && e.messa
   W("openAquilaStudentLookup();"); await sleep(10);
   ck('lookup surfaces permission error', /Development_Read/.test(body('aquilaLookupBody')));
 
-  // ---------- E: progression PICKER → materialise student → existing planner ----------
+  // ---------- E: progression PICKER → planner pre-filled, PRINT-ONLY (no save) ----------
   W("aquilaCacheClear(); DB.aquila.members=async()=>({ members:window.__members, programmes:[{id:'P1',name:'KR Karate'}], fetchedAt:'t' });");
   W("state.students={}; state.progressions={}; state.user={id:'U1',name:'Tester',role:'admin'};");
   W("openAquilaProgPicker();");
-  ck('picker opens in loading state', W("state._aqPick.loading") === true);
+  ck('prog picker opens in loading state', W("state._aqPick.loading") === true);
   await sleep(10);
-  ck('picker lists Aquila students', /Gus Cheney/.test(body('aquilaProgBody')) && /Zoe Pryke/.test(body('aquilaProgBody')));
-  ck('picker row shows DOB', /1985-05-05/.test(body('aquilaProgBody')));
+  ck('prog picker lists Aquila students', /Gus Cheney/.test(body('aquilaProgBody')) && /Zoe Pryke/.test(body('aquilaProgBody')));
+  ck('prog picker row shows DOB', /1985-05-05/.test(body('aquilaProgBody')));
   W("state._aqPick.query='zoe'; _aquilaProgPickerResults();");
-  ck('picker search filters to Zoe', /Zoe Pryke/.test(body('aqPickResults')) && !/Gus Cheney/.test(body('aqPickResults')));
+  ck('prog picker search filters to Zoe', /Zoe Pryke/.test(body('aqPickResults')) && !/Gus Cheney/.test(body('aqPickResults')));
   W("state._aqPick.query=''; _aquilaProgPickerResults();");
 
-  // pick Gus (index 0) → creates a local student + hands off to the SAME planner
+  // pick Gus → planner opens pre-filled, and NOTHING is saved (print-only)
   await W("_aquilaProgPick(0)"); await sleep(10);
-  ck('picking creates a local student', W("Object.values(state.students).some(s=>s.name==='Gus Cheney')") === true);
-  ck('created student tagged source=aquila', W("Object.values(state.students).find(s=>s.name==='Gus Cheney').source") === 'aquila');
-  ck('created student carries DOB', W("Object.values(state.students).find(s=>s.name==='Gus Cheney').dob") === '1985-05-05');
-  ck('created student carries Aquila reference', W("Object.values(state.students).find(s=>s.name==='Gus Cheney').memberNum") === 'AU-1');
-  // the existing planner opened, pre-filled (proves the handoff to openProgressionForStudent)
-  ck('existing planner pre-filled with student name', W("document.getElementById('progStudentName').value") === 'Gus Cheney');
-  ck('existing planner pre-filled with DOB', W("document.getElementById('progDob').value") === '1985-05-05');
+  ck('prog pick does NOT materialise a student', W("Object.keys(state.students).length") === 0);
+  ck('prog pick fills planner name', W("document.getElementById('progStudentName').value") === 'Gus Cheney');
+  ck('prog pick fills planner DOB', W("document.getElementById('progDob').value") === '1985-05-05');
+  ck('prog pick saves nothing to state.progressions', W("Object.keys(state.progressions).length") === 0);
 
-  // pick the SAME student again → folds to one record (no duplicate)
+  // ---------- E: pathway PICKER → materialise student → saved pathway editor ----------
+  W("can.managePathway=function(){return true;}; aquilaCacheClear(); state.students={}; state.pathways={};");
+  W("DB.aquila.members=async()=>({ members:window.__members, programmes:[{id:'P1',name:'KR Karate'}], fetchedAt:'t' });");
+  W("openAquilaPathwayPicker();");
+  ck('pathway picker opens loading', W("state._aqPwPick.loading") === true);
+  await sleep(10);
+  ck('pathway picker lists Aquila members', /Gus Cheney/.test(body('aquilaPathwayBody')) && /Zoe Pryke/.test(body('aquilaPathwayBody')));
+  W("state._aqPwPick.query='zoe'; _aquilaPathwayPickerResults();");
+  ck('pathway picker search filters', /Zoe Pryke/.test(body('aqPwResults')) && !/Gus Cheney/.test(body('aqPwResults')));
+  W("state._aqPwPick.query=''; _aquilaPathwayPickerResults();");
+
+  // pick Gus → creates a local student + opens the pathway editor (saved)
+  await W("_aquilaPathwayPick(0)"); await sleep(10);
+  ck('pathway pick creates a local student', W("Object.values(state.students).some(s=>s.name==='Gus Cheney')") === true);
+  ck('pathway student tagged source=aquila', W("Object.values(state.students).find(s=>s.name==='Gus Cheney').source") === 'aquila');
+  ck('pathway student carries DOB', W("Object.values(state.students).find(s=>s.name==='Gus Cheney').dob") === '1985-05-05');
+  ck('pathway student carries Aquila reference', W("Object.values(state.students).find(s=>s.name==='Gus Cheney').memberNum") === 'AU-1');
+  ck('pathway editor opened pre-filled', W("document.getElementById('pwStudentName').value") === 'Gus Cheney');
+  ck('pathway record created in state', W("Object.keys(state.pathways).length") === 1);
+
+  // pick the SAME member again → folds to one student record (no duplicate)
   const beforeCount = W("Object.keys(state.students).length");
-  W("openAquilaProgPicker();"); await sleep(10);
-  await W("_aquilaProgPick(0)"); await sleep(10);
-  ck('re-picking same student does not duplicate', W("Object.keys(state.students).length") === beforeCount);
+  W("openAquilaPathwayPicker();"); await sleep(10);
+  await W("_aquilaPathwayPick(0)"); await sleep(10);
+  ck('re-picking same member does not duplicate', W("Object.keys(state.students).length") === beforeCount);
 
   // _aquilaCreateOrFindStudent normalises an ISO-datetime DOB to YYYY-MM-DD
   W("state.students={};");
@@ -137,6 +154,9 @@ process.on('unhandledRejection', (e) => { console.log('UNHANDLED', (e && e.messa
   ck('carry: muayThai rank mapped (Yellow Level 2 → idx 1)', W("(_ppCardState['muayThai']||{}).startIdx") === '1');
   ck('carry: unmatched programme (BJJ) added no card', W("Object.keys(_ppCardState).sort().join(',')") === 'karate,muayThai');
   ck('carry: projection auto-generated', W("!!(state.progResultsCache && state.progResultsCache.programs && state.progResultsCache.programs.karate)") === true);
+  // print/download path works off the in-memory generated plan (no save needed)
+  ck('print html includes the student name', /Carry Over/.test(W("formatProgressionHtml()")));
+  ck('print html includes a program section', /KR Karate/.test(W("formatProgressionHtml()")));
 
   // graceful: programme matches but grade does not → date carries, rank stays blank
   W("aquilaCacheClear(); state.students={}; state.progressions={};");
@@ -155,12 +175,14 @@ process.on('unhandledRejection', (e) => { console.log('UNHANDLED', (e && e.messa
   W("openAquilaStudentLookup();");
   ck('student lookup alerts when no Aquila', /not connected/.test(W('__lastAlert') || ''));
 
-  // ---------- Students-view buttons ----------
-  W("can.viewStudents=function(){return true;}; state.students={};");
+  // ---------- Students-view buttons (split: pathway vs progression) ----------
+  W("can.viewStudents=function(){return true;}; can.editPlans=function(){return true;}; can.managePathway=function(){return true;}; state.students={};");
   W("state.aquilaIntegration={ locationId:'L1', roles:['Development_Read'] }; renderStudents();");
-  ck('buttons present when member data available', /Aquila progression/.test(body('mainContent')) && /Aquila lookup/.test(body('mainContent')));
+  ck('pathway button present when member data available', /Aquila pathway/.test(body('mainContent')));
+  ck('progression button present', /Aquila progression/.test(body('mainContent')));
+  ck('lookup button present', /Aquila lookup/.test(body('mainContent')));
   W("state.aquilaIntegration={ locationId:'L1', roles:['Members_Read'] }; renderStudents();");
-  ck('buttons absent without Development_Read', !/Aquila progression/.test(body('mainContent')));
+  ck('buttons absent without Development_Read', !/Aquila pathway/.test(body('mainContent')) && !/Aquila progression/.test(body('mainContent')));
   W("state.aquilaIntegration=null; renderStudents();");
   ck('buttons absent for non-Aquila school', !/Aquila progression/.test(body('mainContent')) && !/Aquila lookup/.test(body('mainContent')));
 

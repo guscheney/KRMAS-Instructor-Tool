@@ -473,6 +473,16 @@ async function loadStudents()    { state.students    = (await DB.loadStudents(st
 async function saveStudents()    { await DB.saveStudents(state.schoolId, state.students); }
 async function loadProgressions(){ state.progressions = (await DB.loadProgressions(state.schoolId)) || {}; }
 async function saveProgressions(){ await DB.saveProgressions(state.schoolId, state.progressions); }
+// Grading progressions are no longer persisted (print/download only). On load, clear
+// any previously-stored plans for this school so they stop occupying the database.
+// Self-healing + idempotent: only writes when something is actually there to clear.
+async function clearStoredProgressionsOnce() {
+  state.progressions = {};
+  try {
+    const stored = (await DB.loadProgressions(state.schoolId)) || {};
+    if (stored && Object.keys(stored).length) await DB.saveProgressions(state.schoolId, {});
+  } catch (e) { /* non-fatal */ }
+}
 async function loadPathways()    { state.pathways    = (await DB.loadPathways(state.schoolId))    || {}; }
 async function savePathways()    { await DB.savePathways(state.schoolId, state.pathways); }
 async function loadPinOverrides(){ state.pinOverrides = (await DB.loadPinOverrides(state.schoolId)) || {}; }
@@ -2869,7 +2879,7 @@ function selectSchool(id) {
 // incidents, posts, students or gradings in memory.
 async function loadCurrentSchoolData() {
   await loadEdits(); await loadPlans(); await loadIncidents();
-  await loadStudents(); await loadProgressions(); await loadPathways(); await loadPinOverrides(); await loadGrading(); await loadNotices(); await loadFeedData(); await loadGroupsData(); await loadClassAssignmentsData(); await loadCalendarData(); await loadAquilaIntegration();
+  await loadStudents(); await clearStoredProgressionsOnce(); await loadPathways(); await loadPinOverrides(); await loadGrading(); await loadNotices(); await loadFeedData(); await loadGroupsData(); await loadClassAssignmentsData(); await loadCalendarData(); await loadAquilaIntegration();
   await reconcileStudents();
   state.lastLogins = (await DB.loadLastLogins(state.schoolId)) || {};
   state.documents = await DB.loadDocuments(state.schoolId);
@@ -4839,15 +4849,80 @@ async function _aquilaProgPick(idx) {
   const m = members[idx]; if (!m) return;
   P.busy = true; _aquilaProgPickerResults();
   try {
-    const sid = await _aquilaCreateOrFindStudent(m);
-    const hadPlan = Object.values(state.progressions || {}).some((p) => p.studentId === sid);
-    P.busy = false;
+    // Print-only: open a fresh planner pre-filled from Aquila. Nothing is saved —
+    // no student record, no stored plan. The user prints or downloads the result.
     closeModal('modalAquilaProg');
-    openProgressionForStudent(sid);
-    // For a fresh plan, carry the student's Aquila grade + last-grading date into the cards.
-    if (!hadPlan) _aquilaApplyProgressionPrefill(m);
+    openProgression(null);
+    document.getElementById('progStudentName').value = _aquilaFullName(m);
+    document.getElementById('progDob').value = m.dob ? String(m.dob).slice(0, 10) : '';
+    ppUpdateAgeDisplay();
+    _aquilaApplyProgressionPrefill(m); // carry grade + last-grading date into the cards
+    P.busy = false;
   } catch (e) {
-    P.busy = false; P.error = (e && e.message) || 'Could not add the student.'; _aquilaProgPickerResults();
+    P.busy = false; P.error = (e && e.message) || 'Could not open the planner.'; _aquilaProgPickerResults();
+  }
+}
+
+// ---- Aquila → instructor pathway picker (mirror of the progression picker) ----
+// Unlike the progression picker, this one MATERIALISES a local student and opens
+// the saved pathway editor, because pathways are tracked and updated over time.
+function openAquilaPathwayPicker() {
+  if (!schoolHasAquila()) { alert('Aquila is not connected for this school.'); return; }
+  if (!aquilaCanProgression()) { alert('The Aquila key for this school lacks the Development_Read role, so the roster is unavailable.'); return; }
+  if (!can.managePathway()) { alert('You need instructor access to manage pathways.'); return; }
+  state._aqPwPick = { query: '', data: null, error: '', loading: true, busy: false };
+  renderAquilaPathwayPicker();
+  openModal('modalAquilaPathway');
+  aquilaMembers().then((res) => {
+    state._aqPwPick.loading = false;
+    if (res && res.error) state._aqPwPick.error = _aquilaErrText(res.error); else state._aqPwPick.data = res;
+    renderAquilaPathwayPicker();
+  });
+}
+function renderAquilaPathwayPicker() {
+  const el = document.getElementById('aquilaPathwayBody'); if (!el) return;
+  const P = state._aqPwPick || {};
+  let h = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+      <div class="section-sub" style="margin:0;">🔗 Aquila → instructor pathway</div>
+      <button class="btn" onclick="closeModal('modalAquilaPathway')" style="min-width:44px;min-height:44px;padding:0;justify-content:center;font-size:15px;">✕</button></div>
+    <p style="font-size:13px;color:var(--grey-600,#52525b);margin:0 0 10px;">Pick a member from Aquila to start or continue their instructor pathway. They're added to your students list and their pathway is saved so you can track and update it over time.</p>
+    <input type="search" id="aqPwSearch" placeholder="Search Aquila members by name…" value="${escapeHtml(P.query || '')}"
+      oninput="state._aqPwPick.query=this.value; _aquilaPathwayPickerResults();"
+      style="width:100%;padding:9px 12px;border:1px solid var(--grey-300,#d4d4d8);border-radius:8px;font-size:13px;box-sizing:border-box;margin-bottom:10px;">
+    <div id="aqPwResults"></div>`;
+  el.innerHTML = h;
+  _aquilaPathwayPickerResults();
+}
+function _aquilaPathwayPickerResults() {
+  const box = document.getElementById('aqPwResults'); if (!box) return;
+  const P = state._aqPwPick || {};
+  if (P.busy)    { box.innerHTML = `<div style="color:var(--grey-500,#71717a);font-size:13px;padding:8px 0;">Opening pathway…</div>`; return; }
+  if (P.loading) { box.innerHTML = `<div style="color:var(--grey-500,#71717a);font-size:13px;padding:8px 0;">Loading roster…</div>`; return; }
+  if (P.error)   { box.innerHTML = `<div style="background:var(--red-50,#fde8e8);color:var(--red-700,#b42318);border-radius:8px;padding:8px 10px;font-size:13px;">${escapeHtml(P.error)}</div>`; return; }
+  const members = (P.data && P.data.members) || [];
+  const hits = aquilaSearch(members, P.query);
+  if (!hits.length) { box.innerHTML = `<div style="color:var(--grey-500,#71717a);font-size:13px;padding:8px 0;">No matching members.</div>`; return; }
+  box.innerHTML = `<div style="font-size:11px;color:var(--grey-500,#71717a);margin-bottom:6px;">${hits.length} member${hits.length === 1 ? '' : 's'}${P.query ? '' : ' (showing first 50)'} · tap to open pathway</div>` +
+    hits.map((m) => {
+      const idx = members.indexOf(m);
+      const dob = m.dob ? String(m.dob).slice(0, 10) : '';
+      const meta = [dob ? ('DOB ' + dob) : '', aquilaGradeSummary(m)].filter(Boolean).map(escapeHtml).join(' · ');
+      return `<div onclick="_aquilaPathwayPick(${idx})" style="border:1px solid var(--grey-200,#e4e4e7);border-radius:8px;padding:11px;margin-bottom:6px;cursor:pointer;">
+        <div style="font-weight:600;font-size:13px;">${escapeHtml(_aquilaFullName(m))} <span style="float:right;color:var(--grey-400,#a1a1aa);">›</span></div>
+        ${meta ? `<div style="font-size:12px;color:var(--grey-600,#52525b);margin-top:2px;">${meta}</div>` : ''}</div>`;
+    }).join('');
+}
+async function _aquilaPathwayPick(idx) {
+  const P = state._aqPwPick; const members = (P && P.data && P.data.members) || [];
+  const m = members[idx]; if (!m) return;
+  P.busy = true; _aquilaPathwayPickerResults();
+  try {
+    const sid = await _aquilaCreateOrFindStudent(m);
+    P.busy = false;
+    closeModal('modalAquilaPathway');
+    openPathway(sid);
+  } catch (e) {
+    P.busy = false; P.error = (e && e.message) || 'Could not open the pathway.'; _aquilaPathwayPickerResults();
   }
 }
 // Normalise a programme/grade name for matching: lowercase, punctuation→space.
@@ -5368,11 +5443,18 @@ function renderStudents() {
     ${can.editPlans() ? `<button class="btn btn-primary" style="width:100%;" onclick="newStudent()">+ Add student</button>` : ''}
   </div>`;
 
-  // Aquila live lookups (only for Aquila schools whose key exposes member data)
+  // Aquila live tools — split into the two distinct flows
   if (aquilaCanProgression()) {
-    html += `<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
-      <button class="btn" style="flex:1;min-width:150px;" onclick="openAquilaProgPicker()">🔗 Aquila progression</button>
-      <button class="btn" style="flex:1;min-width:150px;" onclick="openAquilaStudentLookup()">🔗 Aquila lookup</button>
+    html += `<div style="margin-bottom:14px;">
+      <div class="section-sub" style="margin:0 0 6px;">Instructor pathway <span style="font-weight:400;color:var(--grey-500);font-size:11px;">· saved &amp; tracked</span></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        ${can.managePathway() ? `<button class="btn btn-primary" style="flex:1;min-width:150px;" onclick="openAquilaPathwayPicker()">🔗 Aquila pathway</button>` : '<span style="font-size:12px;color:var(--grey-500);">Instructor access required.</span>'}
+      </div>
+      <div class="section-sub" style="margin:14px 0 6px;">Grading progression <span style="font-weight:400;color:var(--grey-500);font-size:11px;">· print / download only</span></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        ${can.editPlans() ? `<button class="btn" style="flex:1;min-width:150px;" onclick="openAquilaProgPicker()">🔗 Aquila progression</button>` : ''}
+        <button class="btn" style="flex:1;min-width:150px;" onclick="openAquilaStudentLookup()">🔗 Aquila lookup</button>
+      </div>
     </div>`;
   }
 
@@ -5406,7 +5488,6 @@ function renderStudents() {
       <option value="all"${(state.studentFilter||'all')==='all'?' selected':''}>All students</option>
       <option value="candidates"${state.studentFilter==='candidates'?' selected':''}>Pathway candidates</option>
       <option value="leadership"${state.studentFilter==='leadership'?' selected':''}>In Leadership Program</option>
-      <option value="hasplan"${state.studentFilter==='hasplan'?' selected':''}>Has progression plan</option>
     </select>
   </div>`;
   html += `<div id="studentsResults"></div>`;
@@ -5425,10 +5506,8 @@ function renderStudentsResults() {
   if (filter !== 'all') {
     studentList = studentList.filter(stu => {
       const pathway = state.pathways[stu.id];
-      const progPlans = Object.values(state.progressions).filter(p => p.studentId === stu.id);
       if (filter === 'candidates') return !!pathway;
       if (filter === 'leadership') return pathway && pathway.enrolledInLeadership;
-      if (filter === 'hasplan') return progPlans.length > 0;
       return true;
     });
   }
@@ -5440,20 +5519,15 @@ function renderStudentsResults() {
 
   let html = `<div class="section-sub">Students (${studentList.length})</div>`;
   for (const stu of studentList) {
-    const progPlans = Object.values(state.progressions).filter(p => p.studentId === stu.id);
     const pathway = state.pathways[stu.id];
     const pathwayPoints = pathway ? instructorPathwayPoints(pathway) : 0;
     const isCandidate = pathway && pathway.enrolledInLeadership;
-    const progDots = [...new Set(progPlans.flatMap(p => Object.keys(p.programs || {})))].map(pid => {
-      const pr = progressionProgramById(pid);
-      return pr ? `<span class="pp-prog-dot" style="background: ${pr.colour};" title="${escapeHtml(pr.name)}"></span>` : '';
-    }).join('');
     const age = stu.dob ? ppCalcAge(new Date(stu.dob + 'T00:00:00'), new Date()) : null;
     html += `<div class="student-card" onclick="openStudent('${stu.id}')">
       <div style="flex: 1; min-width: 0;">
         <div class="name">${escapeHtml(stu.name)}${isCandidate ? '<span class="pw-badge-candidate">Candidate</span>' : ''}</div>
         <div class="meta">${age ? age.years + 'y ' + age.months + 'm' : '—'} · DOB ${ppFmt(stu.dob ? new Date(stu.dob + 'T00:00:00') : null) || '—'}${pathway?.syllabus ? ' · ' + escapeHtml(pathway.syllabus) : ''}</div>
-        <div class="progs">${progDots}${progPlans.length > 0 ? ` <span style="font-size: 11px; color: var(--grey-500); margin-left: 4px;">${progPlans.length} plan${progPlans.length === 1 ? '' : 's'}</span>` : ''}${pathway ? ` · <span class="pw-points-pill" style="font-size: 10px; padding: 2px 8px;"><span>PTS</span><span class="num">${pathwayPoints}</span></span>` : ''}</div>
+        ${pathway ? `<div class="progs"><span class="pw-points-pill" style="font-size: 10px; padding: 2px 8px;"><span>PTS</span><span class="num">${pathwayPoints}</span></span></div>` : ''}
       </div>
     </div>`;
   }
@@ -5465,7 +5539,6 @@ function openStudent(studentId) {
   if (!state.user) { openLogin(); return; }
   const stu = state.students[studentId];
   if (!stu) return;
-  const hasProgression = Object.values(state.progressions).some(p => p.studentId === studentId);
   const hasPathway = !!state.pathways[studentId];
   const age = stu.dob ? ppCalcAge(new Date(stu.dob + 'T00:00:00'), new Date()) : null;
   const pathway = state.pathways[studentId];
@@ -5479,8 +5552,8 @@ function openStudent(studentId) {
     ${can.editPlans() ? `<div class="action-sheet-row" onclick="closeModal('modalActions'); openProgressionForStudent('${studentId}')">
       <div class="icon">◷</div>
       <div style="flex: 1;">
-        ${hasProgression ? 'Edit progression plan' : 'Create progression plan'}
-        <div class="meta">Pathway across the KRMAS rank ladder</div>
+        Grading progression <span style="font-size:10px;color:var(--grey-500);">(print / download)</span>
+        <div class="meta">Project this student across the KRMAS rank ladder</div>
       </div>
     </div>` : ''}
 
@@ -5634,10 +5707,6 @@ function openProgression(progressionId) {
   // Wire DOB change to age display (no re-render of cards)
   document.getElementById('progDob').onchange = ppUpdateAgeDisplay;
 
-  // Show delete only for existing plans
-  const delBtn = document.getElementById('deleteProgressionBtn');
-  if (delBtn) delBtn.style.display = (progressionId && can.editPlans()) ? 'block' : 'none';
-
   openModal('modalProgression');
 }
 
@@ -5654,19 +5723,6 @@ function openProgressionForStudent(studentId) {
   }
 }
 
-async function deleteProgression() {
-  if (!can.editPlans()) return;
-  const id = state.editingProgressionId;
-  if (!id) return;
-  const prog = state.progressions[id];
-  const stu = prog ? state.students[prog.studentId] : null;
-  if (!confirm(`Delete progression plan${stu ? ' for ' + stu.name : ''}? Cannot be undone.`)) return;
-  delete state.progressions[id];
-  await saveProgressions();
-  closeModal('modalProgression');
-  if (state.view === 'students') renderStudents();
-}
-
 async function deletePathway() {
   if (!can.managePathway()) return;
   const id = state.editingPathwayId;
@@ -5679,58 +5735,6 @@ async function deletePathway() {
   if (state.view === 'students') renderStudents();
 }
 
-async function saveProgression() {
-  const name = document.getElementById('progStudentName').value.trim();
-  const dob = document.getElementById('progDob').value;
-  if (!name) { alert('Enter the student name.'); return; }
-  if (!dob)  { alert('Enter the date of birth.'); return; }
-
-  // Auto-generate if user hasn't pressed Generate yet (they may have just set grades)
-  if (!state.progResultsCache) {
-    const selected = ppGetSelectedPrograms();
-    if (selected.length === 0) { alert('Pick at least one program.'); return; }
-    generateProgression();
-    if (!state.progResultsCache) return; // generateProgression showed its own alert
-  }
-
-  // Resolve student ID: from existing progression, from existing student with same name/dob,
-  // or generate a new one
-  let stuId = null;
-  if (state.editingProgressionId) {
-    stuId = state.progressions[state.editingProgressionId]?.studentId || null;
-  }
-  // Fallback: find existing student by name+dob to avoid duplicates
-  if (!stuId) {
-    const existingStudent = Object.values(state.students).find(
-      s => s.name === name && s.dob === dob
-    );
-    stuId = existingStudent?.id || ('STU-' + Date.now().toString(36).toUpperCase());
-  }
-
-  state.students[stuId] = {
-    id: stuId, name, dob,
-    schoolId: state.schoolId,
-    updatedAt: new Date().toISOString(),
-    updatedBy: state.user ? state.user.name : 'unknown'
-  };
-
-  const progId = state.editingProgressionId || ('PROG-' + Date.now().toString(36).toUpperCase());
-  state.progressions[progId] = {
-    id: progId,
-    studentId: stuId,
-    schoolId: state.schoolId,
-    programs: state.progResultsCache.programs,
-    createdAt: state.progressions[progId]?.createdAt || new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    updatedBy: state.user ? state.user.name : 'unknown'
-  };
-
-  await saveStudents();
-  await saveProgressions();
-  closeModal('modalProgression');
-  alert('Progression plan saved.');
-  if (state.view === 'students') renderStudents();
-}
 
 function formatProgressionHtml() {
   const cache = state.progResultsCache;
