@@ -5440,7 +5440,7 @@ function openStudentAddMenu() {
   if (aquila && can.editPlans()) {
     h += `<div class="action-sheet-row" onclick="closeModal('modalActions'); openAquilaProgPicker()">
       <div class="icon">◷</div>
-      <div style="flex:1;">Grading progression<div class="meta">Print or download a belt timeline · nothing saved</div></div>
+      <div style="flex:1;">Grading progression<div class="meta">Print or download a belt timeline</div></div>
     </div>`;
   }
   if (aquila) {
@@ -5452,7 +5452,7 @@ function openStudentAddMenu() {
   if (can.editPlans()) {
     h += `<div class="action-sheet-row" style="border-top:1px solid var(--grey-200);margin-top:6px;padding-top:14px;" onclick="closeModal('modalActions'); newStudent()">
       <div class="icon">＋</div>
-      <div style="flex:1;">Add manually<div class="meta">Create a student record by hand</div></div>
+      <div style="flex:1;">Add Student<div class="meta">Create a student record by hand for those schools not connected to EFC</div></div>
     </div>`;
   }
   document.getElementById('actionSheetBody').innerHTML = h;
