@@ -111,6 +111,41 @@ process.on('unhandledRejection', (e) => { console.log('UNHANDLED', (e && e.messa
   await W("_aquilaCreateOrFindStudent({firstName:'No',lastName:'Dob'})");
   ck('member with no dob → empty dob, still created', W("(Object.values(state.students).find(s=>s.name==='No Dob')||{}).dob") === '');
 
+  // ---------- E carry-over: Aquila grade + last-grading date pre-fill the planner ----------
+  ck('match program: KR Karate → karate', W("(_aquilaProgMatchProgram('KR Karate')||{}).id") === 'karate');
+  ck('match program: Muay Thai (no KR) → muayThai', W("(_aquilaProgMatchProgram('Muay Thai')||{}).id") === 'muayThai');
+  ck('match program: unknown → null', W("_aquilaProgMatchProgram('Fencing')") === null);
+  ck('match rank: exact Yellow 9th Kyu → 0', W("_aquilaProgMatchRank(progressionProgramById('karate'),'Yellow 9th Kyu')") === 0);
+  ck('match rank: exact Blue 7th Kyu → 2', W("_aquilaProgMatchRank(progressionProgramById('karate'),'Blue 7th Kyu')") === 2);
+  ck('match rank: unknown grade → -1 (never guesses)', W("_aquilaProgMatchRank(progressionProgramById('karate'),'Totally Unknown Grade')") === -1);
+
+  // full pick → existing planner pre-filled with rank + last-grading date
+  W("aquilaCacheClear(); state.students={}; state.progressions={};");
+  W("DB.aquila.members=async()=>({ members:[{firstName:'Carry',lastName:'Over',dob:'2005-05-05',reference:'C1',programmes:[" +
+    "{name:'KR Karate',gradeName:'Blue 7th Kyu',promoted:'2024-03-01'}," +
+    "{name:'KR Muay Thai',gradeName:'Yellow Level 2',promoted:'2024-06-15'}," +
+    "{name:'Brazilian Jiu Jitsu',gradeName:'White',promoted:'2024-01-01'}" + // no KRMAS program → skipped
+  "]}], programmes:[], fetchedAt:'t' });");
+  W("openAquilaProgPicker();"); await sleep(10);
+  await W("_aquilaProgPick(0)"); await sleep(10);
+  ck('carry: karate chip auto-checked', W("(document.getElementById('pp-chip-karate')||{}).checked") === true);
+  ck('carry: karate last-grading date in state', W("(_ppCardState['karate']||{}).startDate") === '2024-03-01');
+  ck('carry: karate rank mapped (Blue 7th Kyu → idx 2)', W("(_ppCardState['karate']||{}).startIdx") === '2');
+  ck('carry: karate date input shows the date', W("(document.getElementById('pp-date-karate')||{}).value") === '2024-03-01');
+  ck('carry: karate rank select shows idx 2', W("(document.getElementById('pp-start-karate')||{}).value") === '2');
+  ck('carry: muayThai date carried', W("(_ppCardState['muayThai']||{}).startDate") === '2024-06-15');
+  ck('carry: muayThai rank mapped (Yellow Level 2 → idx 1)', W("(_ppCardState['muayThai']||{}).startIdx") === '1');
+  ck('carry: unmatched programme (BJJ) added no card', W("Object.keys(_ppCardState).sort().join(',')") === 'karate,muayThai');
+  ck('carry: projection auto-generated', W("!!(state.progResultsCache && state.progResultsCache.programs && state.progResultsCache.programs.karate)") === true);
+
+  // graceful: programme matches but grade does not → date carries, rank stays blank
+  W("aquilaCacheClear(); state.students={}; state.progressions={};");
+  W("DB.aquila.members=async()=>({ members:[{firstName:'NoRank',lastName:'Match',dob:'2000-01-01',programmes:[{name:'KR Karate',gradeName:'Some Custom Belt',promoted:'2022-02-02'}]}], programmes:[], fetchedAt:'t' });");
+  W("openAquilaProgPicker();"); await sleep(10);
+  await W("_aquilaProgPick(0)"); await sleep(10);
+  ck('graceful: unmatched grade → blank rank', W("(_ppCardState['karate']||{}).startIdx") === '');
+  ck('graceful: date still carries', W("(_ppCardState['karate']||{}).startDate") === '2022-02-02');
+
   // ---------- gating ----------
   W("__lastAlert=''; state.aquilaIntegration={ locationId:'L1', roles:['Members_Read'] };"); // no Development_Read
   ck('prog gate blocked without Development_Read', W("aquilaCanProgression()") === false);

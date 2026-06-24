@@ -4840,12 +4840,60 @@ async function _aquilaProgPick(idx) {
   P.busy = true; _aquilaProgPickerResults();
   try {
     const sid = await _aquilaCreateOrFindStudent(m);
+    const hadPlan = Object.values(state.progressions || {}).some((p) => p.studentId === sid);
     P.busy = false;
     closeModal('modalAquilaProg');
     openProgressionForStudent(sid);
+    // For a fresh plan, carry the student's Aquila grade + last-grading date into the cards.
+    if (!hadPlan) _aquilaApplyProgressionPrefill(m);
   } catch (e) {
     P.busy = false; P.error = (e && e.message) || 'Could not add the student.'; _aquilaProgPickerResults();
   }
+}
+// Map an Aquila programme name -> KRMAS program (normalised; unambiguous only).
+function _aquilaProgMatchProgram(aqName) {
+  const norm = (s) => String(s || '').toLowerCase().replace(/^kr\s+/, '').replace(/[^a-z0-9]+/g, ' ').trim();
+  const t = norm(aqName); if (!t) return null;
+  let p = PROGRESSION_PROGRAMS.find((pp) => norm(pp.name) === t);
+  if (p) return p;
+  const ms = PROGRESSION_PROGRAMS.filter((pp) => { const n = norm(pp.name); return n.includes(t) || t.includes(n); });
+  return ms.length === 1 ? ms[0] : null;
+}
+// Map an Aquila grade name -> rank index in that program (exact, else unambiguous
+// contains). Returns -1 rather than guess a wrong rank.
+function _aquilaProgMatchRank(prog, aqGrade) {
+  const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const t = norm(aqGrade); if (!t || !prog) return -1;
+  let i = prog.ranks.findIndex((r) => norm(r.label) === t);
+  if (i >= 0) return i;
+  const ms = [];
+  prog.ranks.forEach((r, idx) => { const n = norm(r.label); if (n.includes(t) || t.includes(n)) ms.push(idx); });
+  return ms.length === 1 ? ms[0] : -1;
+}
+// After the planner opens for a fresh plan, pre-fill each program card's current
+// rank + last-grading date from the member's live Aquila programmes. The DATE
+// carries whenever the programme maps; the RANK carries when the grade maps too.
+function _aquilaApplyProgressionPrefill(member) {
+  const ps = Array.isArray(member && member.programmes) ? member.programmes : [];
+  let any = false;
+  for (const ap of ps) {
+    const prog = _aquilaProgMatchProgram(ap.name);
+    if (!prog) continue;
+    const rankIdx = _aquilaProgMatchRank(prog, ap.gradeName);
+    const dateRaw = ap.promoted || ap.assessed || '';
+    const date = dateRaw ? String(dateRaw).slice(0, 10) : '';
+    _ppCardState[prog.id] = { startIdx: rankIdx >= 0 ? String(rankIdx) : '', startDate: date };
+    const cb = document.querySelector('#progProgramChips input[data-program-id="' + prog.id + '"]');
+    if (cb) { cb.checked = true; const chip = cb.closest('.pp-chip'); if (chip) chip.classList.add('checked'); }
+    any = true;
+  }
+  if (any) {
+    ppRenderProgramCards();
+    const dobOk = !!ppParseDate(document.getElementById('progDob').value);
+    const nameOk = !!(document.getElementById('progStudentName').value || '').trim();
+    if (dobOk && nameOk && typeof generateProgression === 'function') generateProgression();
+  }
+  return any;
 }
 // Find-or-create a local student from an Aquila member (same name+DOB fold as
 // saveStudent), so the progression plan attaches to a real student record.
