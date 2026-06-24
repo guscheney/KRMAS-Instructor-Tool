@@ -5425,6 +5425,40 @@ async function reconcileStudents() {
   return changed;
 }
 
+// The "Search in Aquila" entry point: one action sheet that folds in manual add.
+// Reuses the existing action-sheet modal so it looks like the rest of the app.
+function openStudentAddMenu() {
+  if (!state.user) { openLogin(); return; }
+  const aquila = aquilaCanProgression();
+  let h = `<h3>Search in Aquila</h3><p class="sub">Pull a member from your CRM — or add one by hand</p>`;
+  if (aquila && can.managePathway()) {
+    h += `<div class="action-sheet-row" onclick="closeModal('modalActions'); openAquilaPathwayPicker()">
+      <div class="icon">★</div>
+      <div style="flex:1;">Instructor pathway<div class="meta">Start or update a saved development plan · adds them to your students</div></div>
+    </div>`;
+  }
+  if (aquila && can.editPlans()) {
+    h += `<div class="action-sheet-row" onclick="closeModal('modalActions'); openAquilaProgPicker()">
+      <div class="icon">◷</div>
+      <div style="flex:1;">Grading progression<div class="meta">Print or download a belt timeline · nothing saved</div></div>
+    </div>`;
+  }
+  if (aquila) {
+    h += `<div class="action-sheet-row" onclick="closeModal('modalActions'); openAquilaStudentLookup()">
+      <div class="icon">🔍</div>
+      <div style="flex:1;">Look up a member<div class="meta">Quick read-only Aquila details</div></div>
+    </div>`;
+  }
+  if (can.editPlans()) {
+    h += `<div class="action-sheet-row" style="border-top:1px solid var(--grey-200);margin-top:6px;padding-top:14px;" onclick="closeModal('modalActions'); newStudent()">
+      <div class="icon">＋</div>
+      <div style="flex:1;">Add manually<div class="meta">Create a student record by hand</div></div>
+    </div>`;
+  }
+  document.getElementById('actionSheetBody').innerHTML = h;
+  openModal('modalActions');
+}
+
 function renderStudents() {
   hideDayHead();
   const main = document.getElementById('mainContent');
@@ -5438,23 +5472,16 @@ function renderStudents() {
   const candidateCount = Object.values(state.pathways || {}).filter(p => p.enrolledInLeadership).length;
   const allFlaggedCount = Object.keys(state.pathways || {}).length;
 
-  let html = `<h1 class="section-head">Students <span class="accent">&</span> pathway</h1>`;
-  html += `<div style="margin-bottom: 14px;">
-    ${can.editPlans() ? `<button class="btn btn-primary" style="width:100%;" onclick="newStudent()">+ Add student</button>` : ''}
-  </div>`;
-
-  // Aquila live tools — split into the two distinct flows
+  let html = `<h1 class="section-head">Students</h1>`;
+  // Single entry point. Aquila schools get a "Search in Aquila" menu with manual add
+  // folded in; schools without Aquila member access just get the manual add button.
   if (aquilaCanProgression()) {
     html += `<div style="margin-bottom:14px;">
-      <div class="section-sub" style="margin:0 0 6px;">Instructor pathway <span style="font-weight:400;color:var(--grey-500);font-size:11px;">· saved &amp; tracked</span></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        ${can.managePathway() ? `<button class="btn btn-primary" style="flex:1;min-width:150px;" onclick="openAquilaPathwayPicker()">🔗 Aquila pathway</button>` : '<span style="font-size:12px;color:var(--grey-500);">Instructor access required.</span>'}
-      </div>
-      <div class="section-sub" style="margin:14px 0 6px;">Grading progression <span style="font-weight:400;color:var(--grey-500);font-size:11px;">· print / download only</span></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        ${can.editPlans() ? `<button class="btn" style="flex:1;min-width:150px;" onclick="openAquilaProgPicker()">🔗 Aquila progression</button>` : ''}
-        <button class="btn" style="flex:1;min-width:150px;" onclick="openAquilaStudentLookup()">🔗 Aquila lookup</button>
-      </div>
+      <button class="btn btn-primary" style="width:100%;" onclick="openStudentAddMenu()">🔗 Search in Aquila</button>
+    </div>`;
+  } else if (can.editPlans()) {
+    html += `<div style="margin-bottom:14px;">
+      <button class="btn btn-primary" style="width:100%;" onclick="newStudent()">+ Add student</button>
     </div>`;
   }
 

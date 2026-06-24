@@ -175,16 +175,29 @@ process.on('unhandledRejection', (e) => { console.log('UNHANDLED', (e && e.messa
   W("openAquilaStudentLookup();");
   ck('student lookup alerts when no Aquila', /not connected/.test(W('__lastAlert') || ''));
 
-  // ---------- Students-view buttons (split: pathway vs progression) ----------
+  // ---------- Students-view entry point: single "Search in Aquila" menu ----------
   W("can.viewStudents=function(){return true;}; can.editPlans=function(){return true;}; can.managePathway=function(){return true;}; state.students={};");
   W("state.aquilaIntegration={ locationId:'L1', roles:['Development_Read'] }; renderStudents();");
-  ck('pathway button present when member data available', /Aquila pathway/.test(body('mainContent')));
-  ck('progression button present', /Aquila progression/.test(body('mainContent')));
-  ck('lookup button present', /Aquila lookup/.test(body('mainContent')));
+  ck('Aquila school shows single Search-in-Aquila button', /Search in Aquila/.test(body('mainContent')));
+  ck('individual Aquila buttons no longer on the main view', !/Aquila pathway|Aquila progression|Aquila lookup/.test(body('mainContent')));
+  // the menu folds in every option
+  W("openStudentAddMenu();");
+  ck('menu offers instructor pathway', /Instructor pathway/.test(body('actionSheetBody')));
+  ck('menu offers grading progression', /Grading progression/.test(body('actionSheetBody')));
+  ck('menu offers look-up a member', /Look up a member/.test(body('actionSheetBody')));
+  ck('menu folds in manual add', /Add manually/.test(body('actionSheetBody')));
+  W("closeModal('modalActions');");
+  // pathway option hides without instructor access; lookup stays
+  W("can.managePathway=function(){return false;}; openStudentAddMenu();");
+  ck('menu hides pathway without instructor access', !/Instructor pathway/.test(body('actionSheetBody')));
+  ck('menu still offers lookup', /Look up a member/.test(body('actionSheetBody')));
+  W("can.managePathway=function(){return true;}; closeModal('modalActions');");
+  // non-Aquila school: plain manual add button, no Search-in-Aquila
   W("state.aquilaIntegration={ locationId:'L1', roles:['Members_Read'] }; renderStudents();");
-  ck('buttons absent without Development_Read', !/Aquila pathway/.test(body('mainContent')) && !/Aquila progression/.test(body('mainContent')));
+  ck('no Search-in-Aquila without Development_Read', !/Search in Aquila/.test(body('mainContent')));
+  ck('manual add button shown instead', /Add student/.test(body('mainContent')));
   W("state.aquilaIntegration=null; renderStudents();");
-  ck('buttons absent for non-Aquila school', !/Aquila progression/.test(body('mainContent')) && !/Aquila lookup/.test(body('mainContent')));
+  ck('non-Aquila school still shows manual add', /Add student/.test(body('mainContent')) && !/Search in Aquila/.test(body('mainContent')));
 
   ck('no errors during lookups', window.__errs.length === 0);
 
