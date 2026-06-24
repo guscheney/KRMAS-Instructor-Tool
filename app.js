@@ -4633,7 +4633,7 @@ function renderAquilaSettings() {
   const schoolName = _aquilaSchoolName(state.schoolId);
   let h = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
       <div class="section-sub" style="margin:0;">🔗 Aquila CRM — ${escapeHtml(schoolName)}</div>
-      <button class="btn" onclick="closeModal('modalAquila')" style="padding:4px 10px;">✕</button></div>`;
+      <button class="btn" onclick="closeModal('modalAquila')" style="min-width:44px;min-height:44px;padding:0;justify-content:center;font-size:15px;">✕</button></div>`;
   if (d.error) h += `<div style="background:var(--red-50,#fde8e8);color:var(--red-700,#b42318);border-radius:8px;padding:8px 10px;margin:6px 0;font-size:13px;">${escapeHtml(d.error)}</div>`;
 
   if (d.step === 'connected' && intg) {
@@ -4759,7 +4759,7 @@ function renderAquilaLookup() {
   const L = state._aqLookup || {};
   el.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
       <div class="section-sub" style="margin:0;">🔗 Aquila student lookup</div>
-      <button class="btn" onclick="closeModal('modalAquilaLookup')" style="padding:4px 10px;">✕</button></div>
+      <button class="btn" onclick="closeModal('modalAquilaLookup')" style="min-width:44px;min-height:44px;padding:0;justify-content:center;font-size:15px;">✕</button></div>
     <input type="search" id="aqLookupSearch" placeholder="Search live Aquila students by name…" value="${escapeHtml(L.query || '')}"
       oninput="state._aqLookup.query=this.value; _aquilaLookupResults();"
       style="width:100%;padding:9px 12px;border:1px solid var(--grey-300,#d4d4d8);border-radius:8px;font-size:13px;box-sizing:border-box;margin-bottom:10px;">
@@ -4785,124 +4785,92 @@ function _aquilaLookupResults() {
     }).join('');
 }
 
-// ---------- E: progression live lookup (search → select → detail + branded print) ----------
-function openAquilaProgLookup() {
+// ---------- E: Aquila -> progression plan (pick a student, run the existing planner) ----------
+// Picks a student from the live Aquila roster, materialises them as a local
+// student record (found-or-created by name+DOB, tagged source:'aquila'), then
+// hands off to openProgressionForStudent -- the SAME planner the manual flow uses.
+function openAquilaProgPicker() {
   if (!schoolHasAquila()) { alert('Aquila is not connected for this school.'); return; }
-  if (!aquilaCanProgression()) { alert('The Aquila key for this school lacks the Development_Read role, so progression data is unavailable.'); return; }
-  state._aqProg = { query: '', data: null, error: '', loading: true, selected: null };
-  renderAquilaProg();
+  if (!aquilaCanProgression()) { alert('The Aquila key for this school lacks the Development_Read role, so the student roster is unavailable.'); return; }
+  state._aqPick = { query: '', data: null, error: '', loading: true, busy: false };
+  renderAquilaProgPicker();
   openModal('modalAquilaProg');
   aquilaMembers().then((res) => {
-    state._aqProg.loading = false;
-    if (res && res.error) state._aqProg.error = _aquilaErrText(res.error); else state._aqProg.data = res;
-    renderAquilaProg();
+    state._aqPick.loading = false;
+    if (res && res.error) state._aqPick.error = _aquilaErrText(res.error); else state._aqPick.data = res;
+    renderAquilaProgPicker();
   });
 }
-function renderAquilaProg() {
+function renderAquilaProgPicker() {
   const el = document.getElementById('aquilaProgBody'); if (!el) return;
-  const P = state._aqProg || {};
+  const P = state._aqPick || {};
   let h = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-      <div class="section-sub" style="margin:0;">🔗 Aquila progression lookup</div>
-      <button class="btn" onclick="closeModal('modalAquilaProg')" style="padding:4px 10px;">✕</button></div>`;
-  if (P.selected) {
-    h += _aquilaProgDetailHtml(P.selected) +
-      `<div style="display:flex;gap:8px;margin-top:14px;">
-        <button class="btn" onclick="state._aqProg.selected=null; renderAquilaProg();" style="flex:1;">← Back to search</button>
-        <button class="btn btn-primary" onclick="_aquilaProgPrint()" style="flex:1;">🖨 Print</button></div>`;
-    el.innerHTML = h; return;
-  }
-  h += `<input type="search" id="aqProgSearch" placeholder="Search live Aquila students by name…" value="${escapeHtml(P.query || '')}"
-      oninput="state._aqProg.query=this.value; _aquilaProgResults();"
+      <div class="section-sub" style="margin:0;">🔗 Aquila → progression plan</div>
+      <button class="btn" onclick="closeModal('modalAquilaProg')" style="min-width:44px;min-height:44px;padding:0;justify-content:center;font-size:15px;">✕</button></div>
+    <p style="font-size:13px;color:var(--grey-600,#52525b);margin:0 0 10px;">Pick a student from Aquila to build a progression plan on. They're added to your students list and the plan works exactly like a manual one.</p>
+    <input type="search" id="aqPickSearch" placeholder="Search Aquila students by name…" value="${escapeHtml(P.query || '')}"
+      oninput="state._aqPick.query=this.value; _aquilaProgPickerResults();"
       style="width:100%;padding:9px 12px;border:1px solid var(--grey-300,#d4d4d8);border-radius:8px;font-size:13px;box-sizing:border-box;margin-bottom:10px;">
-    <div id="aqProgResults"></div>`;
+    <div id="aqPickResults"></div>`;
   el.innerHTML = h;
-  _aquilaProgResults();
+  _aquilaProgPickerResults();
 }
-function _aquilaProgResults() {
-  const box = document.getElementById('aqProgResults'); if (!box) return;
-  const P = state._aqProg || {};
-  if (P.loading) { box.innerHTML = `<div style="color:var(--grey-500,#71717a);font-size:13px;padding:8px 0;">Loading live roster…</div>`; return; }
-  if (P.error) { box.innerHTML = `<div style="background:var(--red-50,#fde8e8);color:var(--red-700,#b42318);border-radius:8px;padding:8px 10px;font-size:13px;">${escapeHtml(P.error)}</div>`; return; }
+function _aquilaProgPickerResults() {
+  const box = document.getElementById('aqPickResults'); if (!box) return;
+  const P = state._aqPick || {};
+  if (P.busy)    { box.innerHTML = `<div style="color:var(--grey-500,#71717a);font-size:13px;padding:8px 0;">Opening planner…</div>`; return; }
+  if (P.loading) { box.innerHTML = `<div style="color:var(--grey-500,#71717a);font-size:13px;padding:8px 0;">Loading roster…</div>`; return; }
+  if (P.error)   { box.innerHTML = `<div style="background:var(--red-50,#fde8e8);color:var(--red-700,#b42318);border-radius:8px;padding:8px 10px;font-size:13px;">${escapeHtml(P.error)}</div>`; return; }
   const members = (P.data && P.data.members) || [];
   const hits = aquilaSearch(members, P.query);
   if (!hits.length) { box.innerHTML = `<div style="color:var(--grey-500,#71717a);font-size:13px;padding:8px 0;">No matching students.</div>`; return; }
-  box.innerHTML = `<div style="font-size:11px;color:var(--grey-500,#71717a);margin-bottom:6px;">${hits.length} student${hits.length === 1 ? '' : 's'}${P.query ? '' : ' (showing first 50)'} · tap to view</div>` +
+  box.innerHTML = `<div style="font-size:11px;color:var(--grey-500,#71717a);margin-bottom:6px;">${hits.length} student${hits.length === 1 ? '' : 's'}${P.query ? '' : ' (showing first 50)'} · tap to start a plan</div>` +
     hits.map((m) => {
       const idx = members.indexOf(m);
-      const grades = escapeHtml(aquilaGradeSummary(m) || 'No grades recorded');
-      return `<div onclick="_aquilaProgSelect(${idx})" style="border:1px solid var(--grey-200,#e4e4e7);border-radius:8px;padding:10px;margin-bottom:6px;cursor:pointer;">
+      const dob = m.dob ? String(m.dob).slice(0, 10) : '';
+      const meta = [dob ? ('DOB ' + dob) : '', aquilaGradeSummary(m)].filter(Boolean).map(escapeHtml).join(' · ');
+      return `<div onclick="_aquilaProgPick(${idx})" style="border:1px solid var(--grey-200,#e4e4e7);border-radius:8px;padding:11px;margin-bottom:6px;cursor:pointer;">
         <div style="font-weight:600;font-size:13px;">${escapeHtml(_aquilaFullName(m))} <span style="float:right;color:var(--grey-400,#a1a1aa);">›</span></div>
-        <div style="font-size:12px;color:var(--grey-600,#52525b);margin-top:2px;">${grades}</div></div>`;
+        ${meta ? `<div style="font-size:12px;color:var(--grey-600,#52525b);margin-top:2px;">${meta}</div>` : ''}</div>`;
     }).join('');
 }
-function _aquilaProgSelect(idx) {
-  const P = state._aqProg; const members = (P && P.data && P.data.members) || [];
-  if (P) { P.selected = members[idx] || null; renderAquilaProg(); }
+async function _aquilaProgPick(idx) {
+  const P = state._aqPick; const members = (P && P.data && P.data.members) || [];
+  const m = members[idx]; if (!m) return;
+  P.busy = true; _aquilaProgPickerResults();
+  try {
+    const sid = await _aquilaCreateOrFindStudent(m);
+    P.busy = false;
+    closeModal('modalAquilaProg');
+    openProgressionForStudent(sid);
+  } catch (e) {
+    P.busy = false; P.error = (e && e.message) || 'Could not add the student.'; _aquilaProgPickerResults();
+  }
 }
-function _aquilaProgDetailHtml(m) {
-  const ps = Array.isArray(m.programmes) ? m.programmes : [];
-  const sub = [m.dob ? ('DOB ' + m.dob) : '', (m.age != null ? (m.age + 'y') : ''), m.reference || ''].filter(Boolean).map(escapeHtml).join(' · ');
-  let h = `<div style="background:var(--grey-100,#f4f4f5);border-radius:10px;padding:12px;margin-bottom:10px;">
-      <div style="font-weight:700;font-size:15px;">${escapeHtml(_aquilaFullName(m))}</div>
-      ${sub ? `<div style="font-size:12px;color:var(--grey-500,#71717a);margin-top:2px;">${sub}</div>` : ''}</div>`;
-  if (!ps.length) return h + `<div style="font-size:13px;color:var(--grey-500,#71717a);">No programme enrolments in Aquila.</div>`;
-  return h + ps.map((p) => {
-    const ready = p.readyToPromote ? `<span style="background:var(--green-100,#dcfce7);color:var(--green-800,#166534);border-radius:6px;padding:1px 7px;font-size:11px;font-weight:600;">Ready to promote</span>` : '';
-    const pct = (typeof p.progress === 'number') ? Math.round(p.progress * 100) + '%' : '—';
-    const att = (typeof p.attended === 'number') ? p.attended : '—';
-    return `<div style="border:1px solid var(--grey-200,#e4e4e7);border-radius:8px;padding:10px;margin-bottom:8px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;"><b style="font-size:13px;">${escapeHtml(p.name || 'Programme')}</b>${ready}</div>
-      <div style="font-size:12px;color:var(--grey-600,#52525b);margin-top:4px;">Current grade: <b>${escapeHtml(p.gradeName || '—')}</b></div>
-      <div style="font-size:12px;color:var(--grey-500,#71717a);margin-top:2px;">Progress ${pct} · Attended ${att}${p.promoted ? (' · Last promoted ' + escapeHtml(p.promoted)) : ''}</div></div>`;
-  }).join('');
-}
-function _aquilaProgPrint() {
-  const m = state._aqProg && state._aqProg.selected; if (!m) return;
-  const w = window.open('', '_blank', 'width=900,height=700');
-  if (!w) { alert('Allow pop-ups for this site to print.'); return; }
-  w.document.write(_aquilaProgPrintHtml(m)); w.document.close();
-  setTimeout(() => { w.focus(); w.print(); }, 400);
-}
-function _aquilaProgPrintHtml(m) {
-  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const school = (typeof KRMAS_SCHOOLS !== 'undefined') ? KRMAS_SCHOOLS.find((s) => s.id === state.schoolId) : null;
-  const schoolName = school ? school.name : state.schoolId;
-  const today = new Date();
-  const ps = Array.isArray(m.programmes) ? m.programmes : [];
-  const rows = ps.map((p) => {
-    const pct = (typeof p.progress === 'number') ? Math.round(p.progress * 100) + '%' : '—';
-    const att = (typeof p.attended === 'number') ? p.attended : '—';
-    return `<tr><td style="padding:7px 8px;border-bottom:1px solid #eee;">${esc(p.name || '—')}</td>
-      <td style="padding:7px 8px;border-bottom:1px solid #eee;">${esc(p.gradeName || '—')}</td>
-      <td style="padding:7px 8px;border-bottom:1px solid #eee;">${pct}</td>
-      <td style="padding:7px 8px;border-bottom:1px solid #eee;">${att}</td>
-      <td style="padding:7px 8px;border-bottom:1px solid #eee;">${p.readyToPromote ? 'Yes' : '—'}</td></tr>`;
-  }).join('');
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Aquila progression — ${esc(_aquilaFullName(m))}</title>
-<style>
-  body { font-family:'Helvetica Neue',Arial,sans-serif; max-width:800px; margin:0 auto; padding:30px; color:#1a1a1a; line-height:1.5; }
-  .header { border-bottom:4px solid #d62828; padding-bottom:16px; margin-bottom:24px; }
-  .header h1 { font-family:'Arial Black',sans-serif; text-transform:uppercase; letter-spacing:0.05em; margin:0 0 4px; font-size:24px; }
-  .header .sub { font-size:12px; color:#555; text-transform:uppercase; letter-spacing:0.06em; font-weight:600; }
-  .meta-grid { display:grid; grid-template-columns:120px 1fr; gap:4px 16px; font-size:13px; margin-bottom:24px; padding:14px; background:#f5f5f3; border-left:4px solid #d62828; }
-  .meta-grid .lbl { color:#555; text-transform:uppercase; letter-spacing:0.05em; font-size:10px; font-weight:700; padding-top:2px; }
-  table { width:100%; border-collapse:collapse; font-size:13px; }
-  th { text-align:left; padding:8px; border-bottom:1px solid #ddd; font-size:11px; text-transform:uppercase; letter-spacing:0.05em; background:#f5f5f3; }
-  footer { margin-top:28px; padding-top:12px; border-top:1px solid #ddd; font-size:10px; color:#888; text-align:center; }
-  @media print { body { padding:14mm; } @page { size:A4; margin:0; } }
-</style></head><body>
-<div class="header"><h1>KRMAS Student Progression</h1><div class="sub">${esc(schoolName)} · Making Good People Better</div></div>
-<div class="meta-grid">
-  <div class="lbl">Student</div><div>${esc(_aquilaFullName(m))}</div>
-  <div class="lbl">Date of birth</div><div>${esc(m.dob || '—')}</div>
-  <div class="lbl">Age</div><div>${m.age != null ? esc(m.age) + ' years' : '—'}</div>
-  <div class="lbl">Reference</div><div>${esc(m.reference || '—')}</div>
-  <div class="lbl">Report date</div><div>${today.toLocaleDateString('en-AU', { day: '2-digit', month: 'long', year: 'numeric' })}</div>
-</div>
-<table><thead><tr><th>Programme</th><th>Current grade</th><th>Progress</th><th>Attended</th><th>Ready</th></tr></thead>
-<tbody>${rows || '<tr><td colspan="5" style="padding:10px;color:#666;font-style:italic;">No programme enrolments.</td></tr>'}</tbody></table>
-<footer>Live snapshot from Aquila CRM · ${today.toLocaleString()}<br>Reflects the current grade, progress and attendance recorded in Aquila at time of printing — not a projection.</footer>
-</body></html>`;
+// Find-or-create a local student from an Aquila member (same name+DOB fold as
+// saveStudent), so the progression plan attaches to a real student record.
+async function _aquilaCreateOrFindStudent(m) {
+  const name = _aquilaFullName(m);
+  const dob = m.dob ? String(m.dob).slice(0, 10) : '';
+  const norm = name.trim().toLowerCase();
+  const match = Object.values(state.students || {}).find((s) => {
+    if ((s.name || '').trim().toLowerCase() !== norm) return false;
+    return !s.dob || !dob || s.dob === dob;
+  });
+  const id = match ? match.id : ('STU-' + Date.now().toString(36).toUpperCase());
+  const existing = state.students[id] || {};
+  state.students[id] = {
+    ...existing,
+    id, name,
+    dob: dob || existing.dob || '',
+    schoolId: state.schoolId,
+    source: existing.source || 'aquila',
+    memberNum: existing.memberNum || m.reference || null,
+    updatedAt: new Date().toISOString(),
+    updatedBy: state.user ? state.user.name : 'unknown',
+  };
+  await saveStudents();
+  return id;
 }
 
 // ---------- Student progression planner ----------
@@ -5268,7 +5236,7 @@ function renderStudents() {
   // Aquila live lookups (only for Aquila schools whose key exposes member data)
   if (aquilaCanProgression()) {
     html += `<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
-      <button class="btn" style="flex:1;min-width:150px;" onclick="openAquilaProgLookup()">🔗 Aquila progression</button>
+      <button class="btn" style="flex:1;min-width:150px;" onclick="openAquilaProgPicker()">🔗 Aquila progression</button>
       <button class="btn" style="flex:1;min-width:150px;" onclick="openAquilaStudentLookup()">🔗 Aquila lookup</button>
     </div>`;
   }
