@@ -4850,24 +4850,111 @@ async function _aquilaProgPick(idx) {
     P.busy = false; P.error = (e && e.message) || 'Could not add the student.'; _aquilaProgPickerResults();
   }
 }
-// Map an Aquila programme name -> KRMAS program (normalised; unambiguous only).
+// Normalise a programme/grade name for matching: lowercase, punctuation→space.
+function _aquilaNorm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
+
+// Explicit Aquila → KRMAS translation, taken from the school's Aquila programme
+// "Grade" lists. Keyed by KRMAS program id.
+//   programmes : normalised Aquila programme-name variants → this KRMAS program
+//   grades     : normalised Aquila grade string → KRMAS rank id (null = white /
+//                no-badge / pre-grade, i.e. leave the card on "— Not started —")
+// Aquila uses Japanese kyu/dan names and other wording that doesn't string-match
+// the KRMAS rank labels, so the mapping is spelled out rather than guessed.
+const AQUILA_GRADE_MAP = {
+  karate: {
+    programmes: ['kr karate'],
+    grades: {
+      'ju kyu white belt': null,
+      'ku kyu yellow belt': 'k-y', 'hachi kyu orange belt': 'k-o', 'shichi kyu blue belt': 'k-b',
+      'roku kyu purple belt': 'k-p', 'go kyu green belt': 'k-g', 'yon kyu brown white belt': 'k-bw',
+      'san kyu brown belt': 'k-b3', 'ni kyu brown black belt': 'k-bb', 'ik kyu black white belt': 'k-bw1',
+      'sho dan 1st black belt': 'k-1d', 'ni dan 2nd black belt': 'k-2d', 'san dan 3rd black belt': 'k-3d',
+      'yon dan 4th black belt': 'k-4d', 'go dan 5th black belt': 'k-5d', 'roku dan 6th black belt': 'k-6d',
+      'shichi dan 7th black belt': 'k-7d', 'hachi dan 8th black belt': 'k-8d', 'ku dan 9th black belt': 'k-9d'
+    }
+  },
+  muayThai: {
+    programmes: ['kr muay thai'],
+    grades: {
+      'no badge': null,
+      'yellow level 1': 'mt-y1', 'yellow level 2': 'mt-y2', 'blue level 1': 'mt-b1', 'blue level 2': 'mt-b2',
+      'purple level 1': 'mt-p1', 'purple level 2': 'mt-p2', 'green level 1': 'mt-g1', 'green level 2': 'mt-g2',
+      'red': 'mt-r', 'black level 1': 'mt-bk1', 'black level 2': 'mt-bk2', 'black level 3': 'mt-bk3', 'black level 4': 'mt-bk4'
+    }
+  },
+  mmaSanda: {
+    programmes: ['kr mma sanda'],
+    grades: {
+      'no badge': null,
+      'yellow level 1': 'mma-y1', 'yellow level 2': 'mma-y2', 'blue level 1': 'mma-b1', 'blue level 2': 'mma-b2',
+      'purple level 1': 'mma-p1', 'purple level 2': 'mma-p2', 'green level 1': 'mma-g1', 'green level 2': 'mma-g2',
+      'red': 'mma-r', 'black level 1': 'mma-bk1', 'black level 2': 'mma-bk2', 'black level 3': 'mma-bk3', 'black level 4': 'mma-bk4'
+    }
+  },
+  juniorMuayThai: {
+    programmes: ['kr junior muay thai'],
+    grades: {
+      'jnr no badge': null,
+      'jnr yellow level 1': 'jmt-y1', 'jnr yellow level 2': 'jmt-y2', 'jnr yellow level 3': 'jmt-y3', 'jnr yellow level 4': 'jmt-y4',
+      'jnr blue level 1': 'jmt-b1', 'jnr blue level 2': 'jmt-b2', 'jnr blue level 3': 'jmt-b3', 'jnr blue level 4': 'jmt-b4',
+      'jnr purple level 1': 'jmt-p1', 'jnr purple level 2': 'jmt-p2', 'jnr purple level 3': 'jmt-p3', 'jnr purple level 4': 'jmt-p4',
+      'jnr green level 1': 'jmt-g1', 'jnr green level 2': 'jmt-g2', 'jnr green level 3': 'jmt-g3'
+    }
+  },
+  littleNinjas: {
+    programmes: ['kr little ninjas'],
+    grades: {
+      'ju kyu white belt': null,
+      'kari ku kyu yellow white belt': 'ln-yw', 'ku kyu yellow belt': 'ln-y',
+      'kari hachi kyu orange white belt': 'ln-ow', 'hachi kyu orange belt': 'ln-o',
+      'kari shichi kyu blue white belt': 'ln-bw', 'shichi kyu blue belt': 'ln-b',
+      'kari roku kyu purple white belt': 'ln-pw', 'roku kyu purple belt': 'ln-p',
+      'kari go kyu green white belt': 'ln-gw', 'go kyu green belt': 'ln-g',
+      'yon kyu green black belt': 'ln-gb', 'san kyu red white belt': 'ln-rw', 'ni kyu red belt': 'ln-r',
+      'kari ik kyu red black belt': 'ln-rb', 'ik kyu black red grad n belt': 'ln-grad'
+    }
+  },
+  miniLittleNinjas: {
+    programmes: ['kr mini ninjas', 'kr mini little ninjas'],
+    grades: {
+      'level 0 white belt': null,
+      'level 1 white yellow belt': 'mln-l1', 'level 2 white orange belt': 'mln-l2', 'level 3 white blue belt': 'mln-l3',
+      'level 4 white purple belt': 'mln-l4', 'level 5 white green': 'mln-l5', 'level 6 white brown belt': 'mln-l6',
+      'level 7 white red belt': 'mln-l7'
+    }
+  }
+};
+
+// Map an Aquila programme name -> KRMAS program. Explicit alias table first, then
+// a normalised-name fallback (unambiguous only).
 function _aquilaProgMatchProgram(aqName) {
-  const norm = (s) => String(s || '').toLowerCase().replace(/^kr\s+/, '').replace(/[^a-z0-9]+/g, ' ').trim();
-  const t = norm(aqName); if (!t) return null;
-  let p = PROGRESSION_PROGRAMS.find((pp) => norm(pp.name) === t);
+  const t = _aquilaNorm(aqName); if (!t) return null;
+  for (const progId of Object.keys(AQUILA_GRADE_MAP)) {
+    if ((AQUILA_GRADE_MAP[progId].programmes || []).includes(t)) return progressionProgramById(progId);
+  }
+  const strip = (s) => s.replace(/^kr\s+/, '');
+  const t2 = strip(t);
+  let p = PROGRESSION_PROGRAMS.find((pp) => strip(_aquilaNorm(pp.name)) === t2);
   if (p) return p;
-  const ms = PROGRESSION_PROGRAMS.filter((pp) => { const n = norm(pp.name); return n.includes(t) || t.includes(n); });
+  const ms = PROGRESSION_PROGRAMS.filter((pp) => { const n = strip(_aquilaNorm(pp.name)); return n.includes(t2) || t2.includes(n); });
   return ms.length === 1 ? ms[0] : null;
 }
-// Map an Aquila grade name -> rank index in that program (exact, else unambiguous
-// contains). Returns -1 rather than guess a wrong rank.
+// Map an Aquila grade name -> rank index within a KRMAS program. Explicit table
+// first (null = pre-grade → not started), then exact-label / unambiguous-contains
+// fallback. Returns -1 for "no rank" rather than ever guessing a wrong one.
 function _aquilaProgMatchRank(prog, aqGrade) {
-  const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-  const t = norm(aqGrade); if (!t || !prog) return -1;
-  let i = prog.ranks.findIndex((r) => norm(r.label) === t);
+  const t = _aquilaNorm(aqGrade); if (!t || !prog) return -1;
+  const entry = AQUILA_GRADE_MAP[prog.id];
+  if (entry && entry.grades && Object.prototype.hasOwnProperty.call(entry.grades, t)) {
+    const rankId = entry.grades[t];
+    if (rankId === null) return -1;                         // white / no badge → not started
+    const i = prog.ranks.findIndex((r) => r.id === rankId);
+    if (i >= 0) return i;
+  }
+  let i = prog.ranks.findIndex((r) => _aquilaNorm(r.label) === t);
   if (i >= 0) return i;
   const ms = [];
-  prog.ranks.forEach((r, idx) => { const n = norm(r.label); if (n.includes(t) || t.includes(n)) ms.push(idx); });
+  prog.ranks.forEach((r, idx) => { const n = _aquilaNorm(r.label); if (n.includes(t) || t.includes(n)) ms.push(idx); });
   return ms.length === 1 ? ms[0] : -1;
 }
 // After the planner opens for a fresh plan, pre-fill each program card's current
