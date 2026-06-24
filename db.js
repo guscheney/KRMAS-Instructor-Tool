@@ -1505,6 +1505,83 @@ const DB = (() => {
     return true;
   }
 
+  // ── Aquila CRM integration (read-only; Supabase-only) ──────────────
+  // Invoke the `aquila` edge function WITHOUT throwing on a soft {error} body,
+  // so callers can branch on data.error / data.valid. (validate + members return
+  // domain outcomes like aquila_not_configured as HTTP 200 + {error}; transport,
+  // auth and server faults still throw.)
+  async function aquilaInvoke(body) {
+    const sb = sbClient(); if (!sb) throw new Error('Supabase unavailable');
+    const { data, error } = await sb.functions.invoke('aquila', { body });
+    if (error) {
+      let msg = (error && error.message) || 'Request failed';
+      try { if (error.context && error.context.json) { const j = await error.context.json(); if (j && j.error) msg = j.error; } } catch (e) {}
+      throw new Error(msg);
+    }
+    return data || {};
+  }
+  // Non-secret integration config row (readable by ANY school member via RLS).
+  async function aquilaLoadIntegration(schoolId) {
+    const sb = sbClient(); if (!sb) return null;
+    try {
+      const { data, error } = await sb.from('school_integrations')
+        .select('location_id, location_name, account_id, roles, connected_at, connected_by')
+        .eq('school_id', schoolId).eq('integration_type', 'aquila').maybeSingle();
+      if (error) throw error;
+      if (!data) return null;
+      return {
+        locationId: data.location_id, locationName: data.location_name, accountId: data.account_id,
+        roles: Array.isArray(data.roles) ? data.roles : [],
+        connectedAt: data.connected_at, connectedBy: data.connected_by,
+      };
+    } catch (e) { console.warn('[DB] aquilaLoadIntegration:', e.message); return null; }
+  }
+  function _leadFromRow(r) {
+    return {
+      id: r.id, schoolId: r.school_id, aquilaMemberId: r.aquila_member_id,
+      firstName: r.first_name, lastName: r.last_name, dob: r.dob,
+      ageAtEnrolment: r.age_at_enrolment, email: r.email, mobile: r.mobile,
+      gradesSnapshot: r.grades_snapshot || [], enrolledOn: r.enrolled_on,
+      status: r.status, notes: r.notes, createdBy: r.created_by,
+    };
+  }
+  function _leadToRow(rec) {
+    const row = {
+      school_id: rec.schoolId, aquila_member_id: rec.aquilaMemberId || null,
+      first_name: rec.firstName || '', last_name: rec.lastName || '',
+      dob: rec.dob || null, age_at_enrolment: (rec.ageAtEnrolment ?? null),
+      email: rec.email || null, mobile: rec.mobile || null,
+      grades_snapshot: rec.gradesSnapshot || [], status: rec.status || 'active',
+      notes: rec.notes || null, updated_at: new Date().toISOString(),
+    };
+    if (rec.id) row.id = rec.id;
+    if (rec.enrolledOn) row.enrolled_on = rec.enrolledOn;
+    if (rec.createdBy) row.created_by = rec.createdBy;
+    return row;
+  }
+  async function aquilaLoadLeadership(schoolId) {
+    const sb = sbClient(); if (!sb) return [];
+    try {
+      const { data, error } = await sb.from('leadership_enrolments')
+        .select('*').eq('school_id', schoolId).order('created_at', { ascending: false });
+      if (error) throw error;
+      return (data || []).map(_leadFromRow);
+    } catch (e) { console.warn('[DB] aquilaLoadLeadership:', e.message); return []; }
+  }
+  async function aquilaSaveLeadership(rec) {
+    const sb = sbClient(); if (!sb) throw new Error('Supabase unavailable');
+    const { data, error } = await sb.from('leadership_enrolments')
+      .upsert(_leadToRow(rec), { onConflict: 'id' }).select().maybeSingle();
+    if (error) { console.warn('[DB] aquilaSaveLeadership:', error.message); throw new Error(error.message); }
+    return data ? _leadFromRow(data) : null;
+  }
+  async function aquilaDeleteLeadership(id) {
+    const sb = sbClient(); if (!sb) throw new Error('Supabase unavailable');
+    const { error } = await sb.from('leadership_enrolments').delete().eq('id', id);
+    if (error) { console.warn('[DB] aquilaDeleteLeadership:', error.message); throw new Error(error.message); }
+    return true;
+  }
+
   // ── Public API ────────────────────────────────────────────────────
   return {
     get isSupabase() { return isSB(); },
@@ -1837,6 +1914,17 @@ const DB = (() => {
     saveLastLogins:   (schoolId, d) => set('last-login:' + schoolId, d),
     loadGrading:      (schoolId) => get('grading:' + schoolId),
     saveGrading:      (schoolId, d) => set('grading:' + schoolId, d),
+    // Aquila CRM integration (read-only bridge via the `aquila` edge function)
+    aquila: {
+      validate:   (apiKey)   => aquilaInvoke({ action: 'validate', api_key: apiKey }),
+      connect:    (cfg)      => aquilaInvoke({ action: 'connect', ...cfg }),
+      disconnect: (schoolId) => aquilaInvoke({ action: 'disconnect', school_id: schoolId }),
+      members:    (schoolId) => aquilaInvoke({ action: 'members', school_id: schoolId }),
+    },
+    loadAquilaIntegration: (schoolId) => aquilaLoadIntegration(schoolId),
+    loadLeadership:        (schoolId) => aquilaLoadLeadership(schoolId),
+    saveLeadership:        (rec)      => aquilaSaveLeadership(rec),
+    deleteLeadership:      (id)       => aquilaDeleteLeadership(id),
 
     // ── Inventory / shop ──
     loadShop:         ()                   => loadShop(),

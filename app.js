@@ -32,6 +32,7 @@ const state = {
   students: {},
   progressions: {},
   pathways: {},
+  aquilaIntegration: null,   // non-secret Aquila config for the current school (null = not connected)
   pinInput: '',
   editingKey: null,
   planningKey: null,
@@ -2868,7 +2869,7 @@ function selectSchool(id) {
 // incidents, posts, students or gradings in memory.
 async function loadCurrentSchoolData() {
   await loadEdits(); await loadPlans(); await loadIncidents();
-  await loadStudents(); await loadProgressions(); await loadPathways(); await loadPinOverrides(); await loadGrading(); await loadNotices(); await loadFeedData(); await loadGroupsData(); await loadClassAssignmentsData(); await loadCalendarData();
+  await loadStudents(); await loadProgressions(); await loadPathways(); await loadPinOverrides(); await loadGrading(); await loadNotices(); await loadFeedData(); await loadGroupsData(); await loadClassAssignmentsData(); await loadCalendarData(); await loadAquilaIntegration();
   await reconcileStudents();
   state.lastLogins = (await DB.loadLastLogins(state.schoolId)) || {};
   state.documents = await DB.loadDocuments(state.schoolId);
@@ -4541,6 +4542,369 @@ async function syncFlushOnline() {
 window.addEventListener('online', syncFlushOnline);
 window.addEventListener('offline', updateSyncStatus);
 
+// ====================================================================
+// Aquila CRM integration — client (read-only). Supabase-only; per-school opt-in.
+// ====================================================================
+// state.aquilaIntegration = the (non-secret) config row for the CURRENT school,
+// loaded on bootSchool. The member dataset lives in a module-level cache (never
+// persisted), shared by the progression view and the leadership picker.
+let _aquilaCache = null;                    // { schoolId, members, programmes, fetchedAt }
+const AQUILA_TTL_MS = 60 * 60 * 1000;       // 1 hour
+
+async function loadAquilaIntegration() {
+  try { state.aquilaIntegration = DB.isSupabase ? await DB.loadAquilaIntegration(state.schoolId) : null; }
+  catch (e) { state.aquilaIntegration = null; }
+}
+function schoolHasAquila() {
+  return !!(DB.isSupabase && state.aquilaIntegration && state.aquilaIntegration.locationId);
+}
+function aquilaRoles() { return (state.aquilaIntegration && state.aquilaIntegration.roles) || []; }
+// Progression reads the assessments endpoint, which requires Development_Read.
+function aquilaCanProgression() { return schoolHasAquila() && aquilaRoles().includes('Development_Read'); }
+
+// Fetch (or reuse cached) member dataset for the current school. Returns
+// { schoolId, members, programmes, fetchedAt } or { error } on a domain failure.
+async function aquilaMembers(opts) {
+  opts = opts || {};
+  const sid = state.schoolId;
+  const fresh = _aquilaCache && _aquilaCache.schoolId === sid &&
+    (Date.now() - _aquilaCache.fetchedAt) < AQUILA_TTL_MS;
+  if (fresh && !opts.force) return _aquilaCache;
+  let data;
+  try { data = await DB.aquila.members(sid); }
+  catch (e) { return { error: (e && e.message) || 'aquila_unavailable' }; }
+  if (data && data.error) return { error: data.error };
+  _aquilaCache = {
+    schoolId: sid,
+    members: Array.isArray(data.members) ? data.members : [],
+    programmes: Array.isArray(data.programmes) ? data.programmes : [],
+    fetchedAt: Date.now(),
+    serverFetchedAt: data.fetchedAt || null,
+  };
+  return _aquilaCache;
+}
+function aquilaCacheClear() { _aquilaCache = null; }
+
+// Case-insensitive partial search over a members[] array (firstName / lastName /
+// "first last"). Empty query returns the first 50 so the picker isn't blank.
+function aquilaSearch(members, query) {
+  members = Array.isArray(members) ? members : [];
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return members.slice(0, 50);
+  return members.filter(m => {
+    const first = String(m.firstName || '').toLowerCase();
+    const last = String(m.lastName || '').toLowerCase();
+    return first.includes(q) || last.includes(q) || (first + ' ' + last).trim().includes(q);
+  });
+}
+// Compact "programme: grade · …" summary for a member (search-result context).
+function aquilaGradeSummary(m) {
+  const ps = Array.isArray(m && m.programmes) ? m.programmes : [];
+  if (!ps.length) return '';
+  return ps.map(p => `${p.name || '?'}: ${p.gradeName || '—'}`).join(' · ');
+}
+// Build a grades_snapshot for a leadership enrolment from a live Aquila member.
+function aquilaGradesSnapshot(m) {
+  const ps = Array.isArray(m && m.programmes) ? m.programmes : [];
+  return ps.map(p => ({ programme: p.name || null, grade: p.gradeName || null, promoted: p.promoted || null }));
+}
+function _aquilaSchoolName(sid) {
+  sid = sid || state.schoolId;
+  const c = state.customSchools && state.customSchools[sid];
+  if (c && c.name) return c.name;
+  try { if (typeof KRMAS_SCHOOLS !== 'undefined') { const m = KRMAS_SCHOOLS.find(s => s.id === sid); if (m) return m.name; } } catch (e) {}
+  return sid;
+}
+
+// ---------- Aquila settings (Admin → Integrations) ----------
+function openAquilaSettings() {
+  if (!hasRole('admin')) { alert('Only an admin can manage Aquila.'); return; }
+  if (!DB.isSupabase) { alert('Aquila requires the Supabase backend.'); return; }
+  if (!canEditSchool(state.schoolId)) { alert('You can only manage your own school.'); return; }
+  state._aquilaDraft = { step: schoolHasAquila() ? 'connected' : 'enter', apiKey: '', validation: null, locIdx: 0, error: '', busy: false };
+  renderAquilaSettings();
+  openModal('modalAquila');
+}
+
+function renderAquilaSettings() {
+  const el = document.getElementById('aquilaBody'); if (!el) return;
+  const d = state._aquilaDraft || {};
+  const intg = state.aquilaIntegration;
+  const schoolName = _aquilaSchoolName(state.schoolId);
+  let h = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+      <div class="section-sub" style="margin:0;">🔗 Aquila CRM — ${escapeHtml(schoolName)}</div>
+      <button class="btn" onclick="closeModal('modalAquila')" style="padding:4px 10px;">✕</button></div>`;
+  if (d.error) h += `<div style="background:var(--red-50,#fde8e8);color:var(--red-700,#b42318);border-radius:8px;padding:8px 10px;margin:6px 0;font-size:13px;">${escapeHtml(d.error)}</div>`;
+
+  if (d.step === 'connected' && intg) {
+    const roles = (intg.roles || []).join(', ') || '—';
+    const when = intg.connectedAt ? new Date(intg.connectedAt).toLocaleString('en-AU') : '—';
+    const devOk = (intg.roles || []).includes('Development_Read');
+    h += `<p style="font-size:13px;color:var(--grey-600,#52525b);margin:4px 0 10px;">Connected — pulling read-only student data from Aquila.</p>
+      <div style="background:var(--grey-100,#f4f4f5);border-radius:10px;padding:12px;font-size:13px;line-height:1.7;">
+        <div><b>Location:</b> ${escapeHtml(intg.locationName || intg.locationId || '—')}</div>
+        <div><b>Roles:</b> ${escapeHtml(roles)}</div>
+        <div><b>Connected:</b> ${escapeHtml(when)}</div></div>`;
+    if (!devOk) h += `<div style="background:var(--amber-50,#fef3cd);color:var(--amber-800,#7a5b00);border-radius:8px;padding:8px 10px;margin-top:8px;font-size:12px;">This key lacks the <b>Development_Read</b> role, so student progression won't load. Rotate to a key that has it.</div>`;
+    h += `<div style="display:flex;gap:8px;margin-top:14px;">
+        <button class="btn" onclick="_aquilaStartRotate()" style="flex:1;">Update / rotate key</button>
+        <button class="btn" onclick="_aquilaDisconnect()" style="flex:1;color:var(--red-700,#b42318);">Disconnect</button></div>`;
+  } else if (d.step === 'pick' && d.validation) {
+    const locs = d.validation.locations || [];
+    h += `<p style="font-size:13px;color:var(--grey-600,#52525b);margin:4px 0 10px;">Key valid for <b>${escapeHtml(d.validation.userName || 'this account')}</b>. Choose the location to connect to ${escapeHtml(schoolName)}:</p>
+      <div style="display:flex;flex-direction:column;gap:6px;">`;
+    locs.forEach((l, i) => {
+      h += `<label style="display:flex;gap:8px;align-items:flex-start;border:1px solid var(--grey-200,#e4e4e7);border-radius:8px;padding:10px;cursor:pointer;">
+        <input type="radio" name="aqloc" value="${i}" ${i === (d.locIdx || 0) ? 'checked' : ''} onchange="state._aquilaDraft.locIdx=${i}">
+        <span style="font-size:13px;"><b>${escapeHtml(l.name || l.id)}</b><br><span style="color:var(--grey-500,#71717a);">${escapeHtml(l.accountName || '')} · roles: ${escapeHtml((l.roles || []).join(', ') || '—')}</span></span></label>`;
+    });
+    h += `</div><div style="display:flex;gap:8px;margin-top:14px;">
+        <button class="btn" onclick="_aquilaCancel()" style="flex:1;">Back</button>
+        <button class="btn btn-primary" onclick="_aquilaSave()" style="flex:1;" ${d.busy ? 'disabled' : ''}>${d.busy ? 'Saving…' : 'Save & connect'}</button></div>`;
+  } else {
+    const rotating = d.step === 'rotate';
+    h += `<p style="font-size:13px;color:var(--grey-600,#52525b);margin:4px 0 10px;">${rotating ? 'Paste a new Aquila API key — the old one is replaced.' : 'Connect this school to Aquila. Create an API key in Aquila under Settings → Profile → API Keys (it needs the <b>Development_Read</b> role).'}</p>
+      <input id="aquilaKeyInput" type="password" autocomplete="off" placeholder="Aquila API key" value="${escapeHtml(d.apiKey || '')}" style="width:100%;padding:10px;border:1px solid var(--grey-300,#d4d4d8);border-radius:8px;font-size:14px;box-sizing:border-box;" oninput="state._aquilaDraft.apiKey=this.value">
+      <div style="display:flex;gap:8px;margin-top:14px;">`;
+    if (rotating || schoolHasAquila()) h += `<button class="btn" onclick="_aquilaCancel()" style="flex:1;">Cancel</button>`;
+    h += `<button class="btn btn-primary" onclick="_aquilaValidate()" style="flex:1;" ${d.busy ? 'disabled' : ''}>${d.busy ? 'Checking…' : 'Validate key'}</button></div>`;
+  }
+  el.innerHTML = h;
+}
+
+async function _aquilaValidate() {
+  const d = state._aquilaDraft; d.error = '';
+  const key = (d.apiKey || '').trim();
+  if (!key) { d.error = 'Enter an API key.'; renderAquilaSettings(); return; }
+  d.busy = true; renderAquilaSettings();
+  try {
+    const res = await DB.aquila.validate(key);
+    d.busy = false;
+    if (!res || res.valid !== true) {
+      d.error = (res && res.error === 'invalid_api_key') ? 'That API key was rejected by Aquila.'
+              : (res && res.error) ? ('Aquila: ' + res.error) : 'Could not validate the key.';
+      renderAquilaSettings(); return;
+    }
+    d.validation = res; d.locIdx = 0;
+    if (res.locations && res.locations.length) { d.step = 'pick'; }
+    else { d.step = (schoolHasAquila() ? 'connected' : 'enter'); d.error = 'This key has no locations.'; }
+    renderAquilaSettings();
+  } catch (e) { d.busy = false; d.error = (e && e.message) || 'Validation failed.'; renderAquilaSettings(); }
+}
+
+async function _aquilaSave() {
+  const d = state._aquilaDraft; d.error = '';
+  const loc = (d.validation.locations || [])[d.locIdx || 0];
+  if (!loc) { d.error = 'Pick a location.'; renderAquilaSettings(); return; }
+  d.busy = true; renderAquilaSettings();
+  try {
+    await DB.aquila.connect({
+      school_id: state.schoolId, api_key: (d.apiKey || '').trim(),
+      location_id: loc.id, account_id: loc.accountId || null,
+      location_name: loc.name || null, roles: loc.roles || [],
+    });
+    aquilaCacheClear();
+    await loadAquilaIntegration();
+    d.busy = false; d.step = 'connected'; d.apiKey = ''; d.validation = null;
+    renderAquilaSettings();
+  } catch (e) { d.busy = false; d.error = (e && e.message) || 'Save failed.'; renderAquilaSettings(); }
+}
+
+function _aquilaStartRotate() { const d = state._aquilaDraft; d.step = 'rotate'; d.apiKey = ''; d.error = ''; renderAquilaSettings(); }
+function _aquilaCancel() {
+  const d = state._aquilaDraft; d.error = ''; d.apiKey = ''; d.validation = null;
+  d.step = schoolHasAquila() ? 'connected' : 'enter';
+  renderAquilaSettings();
+}
+async function _aquilaDisconnect() {
+  if (!confirm('Disconnect Aquila for this school? Leadership enrolments are kept.')) return;
+  const d = state._aquilaDraft; d.error = ''; d.busy = true; renderAquilaSettings();
+  try {
+    await DB.aquila.disconnect(state.schoolId);
+    aquilaCacheClear();
+    await loadAquilaIntegration();
+    d.busy = false; d.step = 'enter';
+    renderAquilaSettings();
+  } catch (e) { d.busy = false; d.error = (e && e.message) || 'Disconnect failed.'; renderAquilaSettings(); }
+}
+
+// ====================================================================
+// Aquila live lookups (read-only; never saved). Both pull the cached member
+// dataset (aquilaMembers) and search it (aquilaSearch). Member data comes from
+// the assessments endpoint, so both require Development_Read → aquilaCanProgression().
+// ====================================================================
+function _aquilaErrText(code) {
+  return code === 'aquila_not_configured'    ? 'Aquila is not configured for this school.'
+       : code === 'invalid_api_key'          ? 'Aquila rejected the stored API key — an admin may need to rotate it in Integrations.'
+       : code === 'insufficient_permissions' ? 'The stored Aquila key lacks the Development_Read role, so student data is unavailable.'
+       : code === 'decrypt_failed'           ? 'The stored key could not be read. Ask an admin to reconnect Aquila.'
+       : 'Aquila is currently unavailable. Please try again shortly.';
+}
+function _aquilaFullName(m) { return (((m && m.firstName) || '') + ' ' + ((m && m.lastName) || '')).trim() || '—'; }
+
+// ---------- F: leadership live student lookup (search → list, that's it) ----------
+function openAquilaStudentLookup() {
+  if (!schoolHasAquila()) { alert('Aquila is not connected for this school.'); return; }
+  state._aqLookup = { query: '', data: null, error: '', loading: true };
+  renderAquilaLookup();
+  openModal('modalAquilaLookup');
+  aquilaMembers().then((res) => {
+    state._aqLookup.loading = false;
+    if (res && res.error) state._aqLookup.error = _aquilaErrText(res.error); else state._aqLookup.data = res;
+    renderAquilaLookup();
+  });
+}
+function renderAquilaLookup() {
+  const el = document.getElementById('aquilaLookupBody'); if (!el) return;
+  const L = state._aqLookup || {};
+  el.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+      <div class="section-sub" style="margin:0;">🔗 Aquila student lookup</div>
+      <button class="btn" onclick="closeModal('modalAquilaLookup')" style="padding:4px 10px;">✕</button></div>
+    <input type="search" id="aqLookupSearch" placeholder="Search live Aquila students by name…" value="${escapeHtml(L.query || '')}"
+      oninput="state._aqLookup.query=this.value; _aquilaLookupResults();"
+      style="width:100%;padding:9px 12px;border:1px solid var(--grey-300,#d4d4d8);border-radius:8px;font-size:13px;box-sizing:border-box;margin-bottom:10px;">
+    <div id="aqLookupResults"></div>`;
+  _aquilaLookupResults();
+}
+function _aquilaLookupResults() {
+  const box = document.getElementById('aqLookupResults'); if (!box) return;
+  const L = state._aqLookup || {};
+  if (L.loading) { box.innerHTML = `<div style="color:var(--grey-500,#71717a);font-size:13px;padding:8px 0;">Loading live roster…</div>`; return; }
+  if (L.error) { box.innerHTML = `<div style="background:var(--red-50,#fde8e8);color:var(--red-700,#b42318);border-radius:8px;padding:8px 10px;font-size:13px;">${escapeHtml(L.error)}</div>`; return; }
+  const members = (L.data && L.data.members) || [];
+  const hits = aquilaSearch(members, L.query);
+  if (!hits.length) { box.innerHTML = `<div style="color:var(--grey-500,#71717a);font-size:13px;padding:8px 0;">No matching students.</div>`; return; }
+  box.innerHTML = `<div style="font-size:11px;color:var(--grey-500,#71717a);margin-bottom:6px;">${hits.length} student${hits.length === 1 ? '' : 's'}${L.query ? '' : ' (showing first 50)'}</div>` +
+    hits.map((m) => {
+      const grades = escapeHtml(aquilaGradeSummary(m) || 'No grades recorded');
+      const contact = [m.email, m.mobile].filter(Boolean).map(escapeHtml).join(' · ');
+      return `<div style="border:1px solid var(--grey-200,#e4e4e7);border-radius:8px;padding:10px;margin-bottom:6px;">
+        <div style="font-weight:600;font-size:13px;">${escapeHtml(_aquilaFullName(m))}</div>
+        <div style="font-size:12px;color:var(--grey-600,#52525b);margin-top:2px;">${grades}</div>
+        ${contact ? `<div style="font-size:11px;color:var(--grey-500,#71717a);margin-top:3px;">${contact}</div>` : ''}</div>`;
+    }).join('');
+}
+
+// ---------- E: progression live lookup (search → select → detail + branded print) ----------
+function openAquilaProgLookup() {
+  if (!schoolHasAquila()) { alert('Aquila is not connected for this school.'); return; }
+  if (!aquilaCanProgression()) { alert('The Aquila key for this school lacks the Development_Read role, so progression data is unavailable.'); return; }
+  state._aqProg = { query: '', data: null, error: '', loading: true, selected: null };
+  renderAquilaProg();
+  openModal('modalAquilaProg');
+  aquilaMembers().then((res) => {
+    state._aqProg.loading = false;
+    if (res && res.error) state._aqProg.error = _aquilaErrText(res.error); else state._aqProg.data = res;
+    renderAquilaProg();
+  });
+}
+function renderAquilaProg() {
+  const el = document.getElementById('aquilaProgBody'); if (!el) return;
+  const P = state._aqProg || {};
+  let h = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+      <div class="section-sub" style="margin:0;">🔗 Aquila progression lookup</div>
+      <button class="btn" onclick="closeModal('modalAquilaProg')" style="padding:4px 10px;">✕</button></div>`;
+  if (P.selected) {
+    h += _aquilaProgDetailHtml(P.selected) +
+      `<div style="display:flex;gap:8px;margin-top:14px;">
+        <button class="btn" onclick="state._aqProg.selected=null; renderAquilaProg();" style="flex:1;">← Back to search</button>
+        <button class="btn btn-primary" onclick="_aquilaProgPrint()" style="flex:1;">🖨 Print</button></div>`;
+    el.innerHTML = h; return;
+  }
+  h += `<input type="search" id="aqProgSearch" placeholder="Search live Aquila students by name…" value="${escapeHtml(P.query || '')}"
+      oninput="state._aqProg.query=this.value; _aquilaProgResults();"
+      style="width:100%;padding:9px 12px;border:1px solid var(--grey-300,#d4d4d8);border-radius:8px;font-size:13px;box-sizing:border-box;margin-bottom:10px;">
+    <div id="aqProgResults"></div>`;
+  el.innerHTML = h;
+  _aquilaProgResults();
+}
+function _aquilaProgResults() {
+  const box = document.getElementById('aqProgResults'); if (!box) return;
+  const P = state._aqProg || {};
+  if (P.loading) { box.innerHTML = `<div style="color:var(--grey-500,#71717a);font-size:13px;padding:8px 0;">Loading live roster…</div>`; return; }
+  if (P.error) { box.innerHTML = `<div style="background:var(--red-50,#fde8e8);color:var(--red-700,#b42318);border-radius:8px;padding:8px 10px;font-size:13px;">${escapeHtml(P.error)}</div>`; return; }
+  const members = (P.data && P.data.members) || [];
+  const hits = aquilaSearch(members, P.query);
+  if (!hits.length) { box.innerHTML = `<div style="color:var(--grey-500,#71717a);font-size:13px;padding:8px 0;">No matching students.</div>`; return; }
+  box.innerHTML = `<div style="font-size:11px;color:var(--grey-500,#71717a);margin-bottom:6px;">${hits.length} student${hits.length === 1 ? '' : 's'}${P.query ? '' : ' (showing first 50)'} · tap to view</div>` +
+    hits.map((m) => {
+      const idx = members.indexOf(m);
+      const grades = escapeHtml(aquilaGradeSummary(m) || 'No grades recorded');
+      return `<div onclick="_aquilaProgSelect(${idx})" style="border:1px solid var(--grey-200,#e4e4e7);border-radius:8px;padding:10px;margin-bottom:6px;cursor:pointer;">
+        <div style="font-weight:600;font-size:13px;">${escapeHtml(_aquilaFullName(m))} <span style="float:right;color:var(--grey-400,#a1a1aa);">›</span></div>
+        <div style="font-size:12px;color:var(--grey-600,#52525b);margin-top:2px;">${grades}</div></div>`;
+    }).join('');
+}
+function _aquilaProgSelect(idx) {
+  const P = state._aqProg; const members = (P && P.data && P.data.members) || [];
+  if (P) { P.selected = members[idx] || null; renderAquilaProg(); }
+}
+function _aquilaProgDetailHtml(m) {
+  const ps = Array.isArray(m.programmes) ? m.programmes : [];
+  const sub = [m.dob ? ('DOB ' + m.dob) : '', (m.age != null ? (m.age + 'y') : ''), m.reference || ''].filter(Boolean).map(escapeHtml).join(' · ');
+  let h = `<div style="background:var(--grey-100,#f4f4f5);border-radius:10px;padding:12px;margin-bottom:10px;">
+      <div style="font-weight:700;font-size:15px;">${escapeHtml(_aquilaFullName(m))}</div>
+      ${sub ? `<div style="font-size:12px;color:var(--grey-500,#71717a);margin-top:2px;">${sub}</div>` : ''}</div>`;
+  if (!ps.length) return h + `<div style="font-size:13px;color:var(--grey-500,#71717a);">No programme enrolments in Aquila.</div>`;
+  return h + ps.map((p) => {
+    const ready = p.readyToPromote ? `<span style="background:var(--green-100,#dcfce7);color:var(--green-800,#166534);border-radius:6px;padding:1px 7px;font-size:11px;font-weight:600;">Ready to promote</span>` : '';
+    const pct = (typeof p.progress === 'number') ? Math.round(p.progress * 100) + '%' : '—';
+    const att = (typeof p.attended === 'number') ? p.attended : '—';
+    return `<div style="border:1px solid var(--grey-200,#e4e4e7);border-radius:8px;padding:10px;margin-bottom:8px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;"><b style="font-size:13px;">${escapeHtml(p.name || 'Programme')}</b>${ready}</div>
+      <div style="font-size:12px;color:var(--grey-600,#52525b);margin-top:4px;">Current grade: <b>${escapeHtml(p.gradeName || '—')}</b></div>
+      <div style="font-size:12px;color:var(--grey-500,#71717a);margin-top:2px;">Progress ${pct} · Attended ${att}${p.promoted ? (' · Last promoted ' + escapeHtml(p.promoted)) : ''}</div></div>`;
+  }).join('');
+}
+function _aquilaProgPrint() {
+  const m = state._aqProg && state._aqProg.selected; if (!m) return;
+  const w = window.open('', '_blank', 'width=900,height=700');
+  if (!w) { alert('Allow pop-ups for this site to print.'); return; }
+  w.document.write(_aquilaProgPrintHtml(m)); w.document.close();
+  setTimeout(() => { w.focus(); w.print(); }, 400);
+}
+function _aquilaProgPrintHtml(m) {
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const school = (typeof KRMAS_SCHOOLS !== 'undefined') ? KRMAS_SCHOOLS.find((s) => s.id === state.schoolId) : null;
+  const schoolName = school ? school.name : state.schoolId;
+  const today = new Date();
+  const ps = Array.isArray(m.programmes) ? m.programmes : [];
+  const rows = ps.map((p) => {
+    const pct = (typeof p.progress === 'number') ? Math.round(p.progress * 100) + '%' : '—';
+    const att = (typeof p.attended === 'number') ? p.attended : '—';
+    return `<tr><td style="padding:7px 8px;border-bottom:1px solid #eee;">${esc(p.name || '—')}</td>
+      <td style="padding:7px 8px;border-bottom:1px solid #eee;">${esc(p.gradeName || '—')}</td>
+      <td style="padding:7px 8px;border-bottom:1px solid #eee;">${pct}</td>
+      <td style="padding:7px 8px;border-bottom:1px solid #eee;">${att}</td>
+      <td style="padding:7px 8px;border-bottom:1px solid #eee;">${p.readyToPromote ? 'Yes' : '—'}</td></tr>`;
+  }).join('');
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Aquila progression — ${esc(_aquilaFullName(m))}</title>
+<style>
+  body { font-family:'Helvetica Neue',Arial,sans-serif; max-width:800px; margin:0 auto; padding:30px; color:#1a1a1a; line-height:1.5; }
+  .header { border-bottom:4px solid #d62828; padding-bottom:16px; margin-bottom:24px; }
+  .header h1 { font-family:'Arial Black',sans-serif; text-transform:uppercase; letter-spacing:0.05em; margin:0 0 4px; font-size:24px; }
+  .header .sub { font-size:12px; color:#555; text-transform:uppercase; letter-spacing:0.06em; font-weight:600; }
+  .meta-grid { display:grid; grid-template-columns:120px 1fr; gap:4px 16px; font-size:13px; margin-bottom:24px; padding:14px; background:#f5f5f3; border-left:4px solid #d62828; }
+  .meta-grid .lbl { color:#555; text-transform:uppercase; letter-spacing:0.05em; font-size:10px; font-weight:700; padding-top:2px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; padding:8px; border-bottom:1px solid #ddd; font-size:11px; text-transform:uppercase; letter-spacing:0.05em; background:#f5f5f3; }
+  footer { margin-top:28px; padding-top:12px; border-top:1px solid #ddd; font-size:10px; color:#888; text-align:center; }
+  @media print { body { padding:14mm; } @page { size:A4; margin:0; } }
+</style></head><body>
+<div class="header"><h1>KRMAS Student Progression</h1><div class="sub">${esc(schoolName)} · Making Good People Better</div></div>
+<div class="meta-grid">
+  <div class="lbl">Student</div><div>${esc(_aquilaFullName(m))}</div>
+  <div class="lbl">Date of birth</div><div>${esc(m.dob || '—')}</div>
+  <div class="lbl">Age</div><div>${m.age != null ? esc(m.age) + ' years' : '—'}</div>
+  <div class="lbl">Reference</div><div>${esc(m.reference || '—')}</div>
+  <div class="lbl">Report date</div><div>${today.toLocaleDateString('en-AU', { day: '2-digit', month: 'long', year: 'numeric' })}</div>
+</div>
+<table><thead><tr><th>Programme</th><th>Current grade</th><th>Progress</th><th>Attended</th><th>Ready</th></tr></thead>
+<tbody>${rows || '<tr><td colspan="5" style="padding:10px;color:#666;font-style:italic;">No programme enrolments.</td></tr>'}</tbody></table>
+<footer>Live snapshot from Aquila CRM · ${today.toLocaleString()}<br>Reflects the current grade, progress and attendance recorded in Aquila at time of printing — not a projection.</footer>
+</body></html>`;
+}
+
 // ---------- Student progression planner ----------
 
 function ppParseDate(v) {
@@ -4900,6 +5264,14 @@ function renderStudents() {
   html += `<div style="margin-bottom: 14px;">
     ${can.editPlans() ? `<button class="btn btn-primary" style="width:100%;" onclick="newStudent()">+ Add student</button>` : ''}
   </div>`;
+
+  // Aquila live lookups (only for Aquila schools whose key exposes member data)
+  if (aquilaCanProgression()) {
+    html += `<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+      <button class="btn" style="flex:1;min-width:150px;" onclick="openAquilaProgLookup()">🔗 Aquila progression</button>
+      <button class="btn" style="flex:1;min-width:150px;" onclick="openAquilaStudentLookup()">🔗 Aquila lookup</button>
+    </div>`;
+  }
 
   // Candidates summary (if any flagged)
   if (allFlaggedCount > 0) {
@@ -11595,6 +11967,9 @@ function renderAdmin() {
     ] },
     { title: 'Communication', items: [
       { icon: '📢', label: 'Notices board',        fn: 'openNoticesBoard()' },
+    ] },
+    { title: 'Integrations', items: [
+      ...(DB.isSupabase ? [{ icon: '🔗', label: 'Aquila CRM', fn: 'openAquilaSettings()' }] : []),
     ] },
     { title: 'System', items: [
       { icon: '🔑', label: 'Roles & permissions',  fn: 'openRolesMatrix()', sup: true },
