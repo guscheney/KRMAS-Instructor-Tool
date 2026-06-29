@@ -133,6 +133,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   ck('forecast view renders a table', /Make/.test(fcHtml) && /On hand/.test(fcHtml));
   ck('forecast suggested run present', ev('computeSuggestedRun(20, 10, 15, 8)') === 75);
 
+  // ship panel shows finished-goods on-hand next to each line (guard transparency)
+  window.eval("state.supplyView='queue'; state.supplyEdit={orderId:'o2',mode:'ship'}; renderShop();");
+  let shipHtml = window.document.getElementById('mainContent').innerHTML;
+  ck('ship panel shows on-hand for the line (20 on hand)', /20 on hand/.test(shipHtml));
+  ck('ship panel warns about blocking over-ship', /blocked/i.test(shipHtml));
+  window.eval("state.supplyEdit=null;");
+
   // ── render: Orders tab (school admin) ──
   window.eval(`
     state.user = { id:'a', role:'admin', isSupplyAdmin:false, schools:['edgeworth'] };
@@ -185,6 +192,22 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   ck('editor renders Save draft + submit', /Save draft/.test(edHtml) && /submit/i.test(edHtml));
   window.eval('orderEditRemoveLine(0);');
   ck('orderEditRemoveLine removes the line', ev('state.orderEdit.lines.length') === 0);
+
+  // ── supplier editor: internal-supplier checkbox (the missing-UI fix) ──
+  window.eval("state.user={id:'s',role:'superadmin'}; state.userSchools=[]; state.shopView='suppliers';");
+  window.eval("state.shopEdit={kind:'supplier',data:{id:'sup1',name:'Apparel Co',isInternal:true}}; renderShop();");
+  let supEdInternal = window.document.getElementById('mainContent').innerHTML;
+  ck('supplier editor has internal checkbox', /id="shopSupInternal"/.test(supEdInternal));
+  ck('internal supplier: checkbox checked', /id="shopSupInternal"[^>]*checked/.test(supEdInternal));
+  ck('internal checkbox reflects in DOM', window.document.getElementById('shopSupInternal') && window.document.getElementById('shopSupInternal').checked === true);
+  window.eval("state.shopEdit={kind:'supplier',data:{id:'ext',name:'Belts Inc',isInternal:false}}; renderShop();");
+  let supEdExt = window.document.getElementById('mainContent').innerHTML;
+  ck('external supplier: checkbox present but unchecked', /id="shopSupInternal"/.test(supEdExt) && !/id="shopSupInternal"[^>]*checked/.test(supEdExt));
+  // suppliers list shows INTERNAL badge
+  window.eval("state.shopEdit=null; renderShop();");
+  let supList = window.document.getElementById('mainContent').innerHTML;
+  ck('suppliers list badges the internal supplier', /INTERNAL/.test(supList));
+  ck('save handler reads the internal checkbox', typeof window.eval('shopSaveSupplier') === 'function');
 
   console.log('\n════════════════════════════════════');
   console.log('  jsdom supply-chain: PASS=' + pass + ' FAIL=' + fail);

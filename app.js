@@ -14389,10 +14389,14 @@ function supplyQueueCard(o, compact) {
       <div style="font-size:11px;color:var(--grey-500);margin-bottom:6px;">Quantities to ship (posts out of finished-goods stock):</div>`;
     (o.lines || []).forEach(l => {
       const def = l.qtyConfirmed > 0 ? l.qtyConfirmed : l.qtyOrdered;
+      const oh = (supplyStockRow(state.supplyActingSupplier, l.itemId, l.size) || {}).qty || 0;
+      const short = def > oh;
       html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;font-size:12px;">
         <span style="flex:1;">${escapeHtml(l.itemName)}${l.size ? ' sz ' + escapeHtml(l.size) : ''}</span>
-        <input type="number" min="0" id="sups_${l.id}" value="${def}" style="padding:4px 6px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;width:64px;"></div>`;
+        <span style="font-size:11px;color:${short ? 'var(--red,#D22C12)' : 'var(--grey-500)'};white-space:nowrap;">${oh} on hand</span>
+        <input type="number" min="0" id="sups_${l.id}" value="${def}" style="padding:4px 6px;border:1px solid ${short ? 'var(--red,#D22C12)' : 'var(--grey-200)'};border-radius:var(--r-sm);font-size:12px;width:64px;"></div>`;
     });
+    html += `<div style="font-size:11px;color:var(--grey-500);margin:2px 0 6px;">Shipping more than on hand is blocked — top up finished-goods stock on the Stock tab first.</div>`;
     html += `<div style="display:flex;gap:7px;margin-top:8px;"><button class="btn btn-black" onclick="supplyShipSubmit('${o.id}')" style="padding:6px 12px;font-size:12px;">Mark shipped</button>
       <button class="btn" onclick="supplyCancelEdit()" style="padding:6px 12px;font-size:12px;">Cancel</button></div></div>`;
   } else if (!compact) {
@@ -15845,6 +15849,7 @@ function renderShopSuppliers() {
   for (const s of state.shop.suppliers) {
     html += `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:8px 12px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:8px;">
       <div><strong style="font-size:14px;">${escapeHtml(s.name)}</strong>
+        ${s.isInternal ? `<span style="display:inline-block;margin-left:6px;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:700;background:#2563eb1a;color:#2563eb;vertical-align:middle;">🏭 INTERNAL</span>` : ''}
         ${s.contactEmail ? `<span style="font-size:11px;color:var(--grey-500);"> · ${escapeHtml(s.contactEmail)}</span>` : ''}
         ${s.contactPhone ? `<span style="font-size:11px;color:var(--grey-500);"> · ${escapeHtml(s.contactPhone)}</span>` : ''}</div>
       <span style="display:flex;gap:6px;flex-shrink:0;">
@@ -15890,6 +15895,10 @@ function renderShopSupplierEditor() {
     <label style="${lbl}">Phone</label><input id="shopSupPhone" value="${escapeHtml(d.contactPhone || '')}" style="${inp}">
     <label style="${lbl}">Website</label><input id="shopSupWeb" value="${escapeHtml(d.website || '')}" style="${inp}">
     <label style="${lbl}">Notes</label><textarea id="shopSupNotes" style="${inp}min-height:60px;">${escapeHtml(d.notes || '')}</textarea>
+    <label style="display:flex;align-items:flex-start;gap:9px;cursor:pointer;margin-top:14px;padding:11px;border:1px solid var(--grey-200);border-radius:var(--r-sm);background:var(--grey-50,#f8f8f8);">
+      <input type="checkbox" id="shopSupInternal" ${d.isInternal ? 'checked' : ''} style="width:auto;margin:2px 0 0;flex-shrink:0;">
+      <span style="font-size:13px;"><strong>🏭 Our own sub-business (internal supplier)</strong><br><span style="color:var(--grey-500);font-size:11px;">Turns on the supply chain: schools can place orders to this supplier, and supply admins get the Supply console + a finished-goods stock location.</span></span>
+    </label>
     <div style="display:flex;gap:8px;margin-top:18px;">
       <button class="btn btn-black" onclick="shopSaveSupplier()" style="padding:9px 16px;">Save</button>
       <button class="btn" onclick="shopCancelEdit()" style="padding:9px 16px;">Cancel</button></div></div>`;
@@ -15904,6 +15913,7 @@ async function shopSaveSupplier() {
     contactPhone: g('shopSupPhone').value.trim() || null,
     website: g('shopSupWeb').value.trim() || null,
     notes: g('shopSupNotes').value.trim() || null,
+    isInternal: !!(g('shopSupInternal') && g('shopSupInternal').checked),
   });
   if (!draft.name) { alert('Give the supplier a name.'); return; }
   try {
