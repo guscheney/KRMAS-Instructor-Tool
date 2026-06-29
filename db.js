@@ -1364,8 +1364,8 @@ const DB = (() => {
   // DB columns <-> camelCase objects the same way students do.
   function _itemFromRow(r){ return { id:r.id, name:r.name, categoryId:r.category_id, supplierId:r.supplier_id, unitCost:r.unit_cost, unit:r.unit, sku:r.sku, sized:!!r.sized, sizeSetId:r.size_set_id, gradeRef:r.grade_ref, imageUrl:r.image_url||null, archived:!!r.archived }; }
   function _itemToRow(it){ const r={ name:it.name||'', category_id:it.categoryId||null, supplier_id:it.supplierId||null, unit_cost:(it.unitCost===''||it.unitCost==null)?null:Number(it.unitCost), unit:it.unit||null, sku:it.sku||null, sized:!!it.sized, size_set_id:it.sized?(it.sizeSetId||null):null, grade_ref:it.gradeRef||null, image_url:it.imageUrl||null, archived:!!it.archived, updated_at:new Date().toISOString() }; if(it.id) r.id=it.id; return r; }
-  function _supFromRow(r){ return { id:r.id, name:r.name, contactEmail:r.contact_email, contactPhone:r.contact_phone, website:r.website, notes:r.notes }; }
-  function _supToRow(s){ const r={ name:s.name||'', contact_email:s.contactEmail||null, contact_phone:s.contactPhone||null, website:s.website||null, notes:s.notes||null }; if(s.id) r.id=s.id; return r; }
+  function _supFromRow(r){ return { id:r.id, name:r.name, contactEmail:r.contact_email, contactPhone:r.contact_phone, website:r.website, notes:r.notes, isInternal:!!r.is_internal }; }
+  function _supToRow(s){ const r={ name:s.name||'', contact_email:s.contactEmail||null, contact_phone:s.contactPhone||null, website:s.website||null, notes:s.notes||null, is_internal:!!s.isInternal }; if(s.id) r.id=s.id; return r; }
   function _setFromRow(r){ return { id:r.id, name:r.name, sizes:Array.isArray(r.sizes)?r.sizes:(r.sizes||[]), sort:r.sort||0 }; }
   function _setToRow(s){ const r={ name:s.name||'', sizes:Array.isArray(s.sizes)?s.sizes:[], sort:s.sort||0 }; if(s.id) r.id=s.id; return r; }
   function _catFromRow(r){ return { id:r.id, name:r.name, sort:r.sort||0 }; }
@@ -1444,6 +1444,91 @@ const DB = (() => {
     const { data,error } = await sb.from('inventory_movements').select('*').in('kind',['transfer_in','transfer_out']).order('created_at',{ ascending:false }).limit(limit||100);
     if(error){ console.warn('[DB] loadTransfers:', error.message); return []; }
     return (data||[]).map(r=>({ id:r.id, schoolId:r.school_id, itemId:r.item_id, size:r.size||'', delta:r.delta, kind:r.kind, note:r.note, refType:r.ref_type, refId:r.ref_id, createdBy:r.created_by, createdAt:r.created_at }));
+  }
+  // ── supply chain (internal-supplier orders) ──
+  // Deterministic finished-goods location id for an internal supplier (mirrors
+  // the supply_loc() SQL function). Used as a stock "school_id".
+  function supplyLoc(supplierId){ return '__supply__:' + supplierId; }
+  function _orderFromRow(r){ return { id:r.id, schoolId:r.school_id, supplierId:r.supplier_id, status:r.status, etaDate:r.eta_date||null, shippedDate:r.shipped_date||null, trackingNumber:r.tracking_number||null, carrier:r.carrier||null, receivedDate:r.received_date||null, notes:r.notes||null, submittedAt:r.submitted_at||null, createdBy:r.created_by||null, createdAt:r.created_at, updatedAt:r.updated_at, lines:[] }; }
+  function _orderLineFromRow(r){ return { id:r.id, orderId:r.order_id, itemId:r.item_id, itemName:r.item_name, size:r.size||'', qtyOrdered:r.qty_ordered||0, qtyConfirmed:r.qty_confirmed||0, qtyShipped:r.qty_shipped||0, qtyReceived:r.qty_received||0, forWhom:r.for_whom||null, lineEta:r.line_eta||null, lineStatus:r.line_status||null }; }
+  // Load supply orders the caller can see (RLS does the scoping: a school sees its
+  // own; a supply admin sees all). Lines are fetched and stitched in by order id.
+  async function loadSupplyOrders(opts){
+    const sb=sbClient(); if(!sb) return [];
+    let q=sb.from('supply_orders').select('*').order('created_at',{ ascending:false });
+    if(opts && opts.status) q=q.eq('status',opts.status);
+    if(opts && opts.supplierId) q=q.eq('supplier_id',opts.supplierId);
+    if(opts && typeof opts.limit==='number') q=q.limit(opts.limit);
+    const { data,error } = await q;
+    if(error){ console.warn('[DB] loadSupplyOrders:', error.message); return []; }
+    const orders=(data||[]).map(_orderFromRow);
+    if(!orders.length) return orders;
+    const ids=orders.map(o=>o.id);
+    const { data:ld,error:le } = await sb.from('supply_order_lines').select('*').in('order_id',ids);
+    if(le){ console.warn('[DB] loadSupplyOrders lines:', le.message); return orders; }
+    const byId={}; orders.forEach(o=>{ byId[o.id]=o; });
+    (ld||[]).forEach(r=>{ const o=byId[r.order_id]; if(o) o.lines.push(_orderLineFromRow(r)); });
+    return orders;
+  }
+  // Create/update a DRAFT (school side). lines: [{itemId,itemName,size,qty,forWhom}].
+  // Returns the order id.
+  async function supplyOrderSave(orderId,schoolId,supplierId,notes,lines){
+    const sb=sbClient(); if(!sb) throw new Error('Supabase unavailable');
+    const payload=(lines||[]).map(l=>({ item_id:l.itemId||null, item_name:l.itemName||'', size:l.size||'', qty:Math.max(0,(l.qty|0)), for_whom:l.forWhom||null }));
+    const { data,error } = await sb.rpc('supply_order_save',{ p_order:orderId||null, p_school:schoolId, p_supplier:supplierId, p_notes:notes||null, p_lines:payload });
+    if(error){ console.warn('[DB] supplyOrderSave:', error.message); throw new Error(error.message); }
+    return data;  // order id
+  }
+  async function supplyOrderSubmit(orderId){
+    const sb=sbClient(); if(!sb) throw new Error('Supabase unavailable');
+    const { error } = await sb.rpc('supply_order_submit',{ p_order:orderId });
+    if(error){ console.warn('[DB] supplyOrderSubmit:', error.message); throw new Error(error.message); }
+    return true;
+  }
+  // Supply side. confirmLines: optional [{lineId, qty}] to adjust confirmed qtys.
+  async function supplyOrderConfirm(orderId,etaDate,confirmLines){
+    const sb=sbClient(); if(!sb) throw new Error('Supabase unavailable');
+    const pl=confirmLines ? confirmLines.map(l=>({ line_id:l.lineId, qty:Math.max(0,(l.qty|0)) })) : null;
+    const { error } = await sb.rpc('supply_order_confirm',{ p_order:orderId, p_eta:etaDate||null, p_lines:pl });
+    if(error){ console.warn('[DB] supplyOrderConfirm:', error.message); throw new Error(error.message); }
+    return true;
+  }
+  async function supplyOrderSetStatus(orderId,status){
+    const sb=sbClient(); if(!sb) throw new Error('Supabase unavailable');
+    const { error } = await sb.rpc('supply_order_set_status',{ p_order:orderId, p_status:status });
+    if(error){ console.warn('[DB] supplyOrderSetStatus:', error.message); throw new Error(error.message); }
+    return true;
+  }
+  // Supply side. Ships + posts stock OUT of the supplier location. shipLines:
+  // optional [{lineId, qty}] for partial fulfilment.
+  async function supplyOrderShip(orderId,tracking,carrier,etaDate,shipLines){
+    const sb=sbClient(); if(!sb) throw new Error('Supabase unavailable');
+    const pl=shipLines ? shipLines.map(l=>({ line_id:l.lineId, qty:Math.max(0,(l.qty|0)) })) : null;
+    const { error } = await sb.rpc('supply_order_ship',{ p_order:orderId, p_tracking:tracking||null, p_carrier:carrier||null, p_eta:etaDate||null, p_lines:pl });
+    if(error){ console.warn('[DB] supplyOrderShip:', error.message); throw new Error(error.message); }
+    return true;
+  }
+  // School side. Confirms receipt + posts stock INTO the school. recvLines:
+  // optional [{lineId, qty}] for short deliveries.
+  async function supplyOrderReceive(orderId,recvLines){
+    const sb=sbClient(); if(!sb) throw new Error('Supabase unavailable');
+    const pl=recvLines ? recvLines.map(l=>({ line_id:l.lineId, qty:Math.max(0,(l.qty|0)) })) : null;
+    const { error } = await sb.rpc('supply_order_receive',{ p_order:orderId, p_lines:pl });
+    if(error){ console.warn('[DB] supplyOrderReceive:', error.message); throw new Error(error.message); }
+    return true;
+  }
+  async function supplyOrderCancel(orderId){
+    const sb=sbClient(); if(!sb) throw new Error('Supabase unavailable');
+    const { error } = await sb.rpc('supply_order_cancel',{ p_order:orderId });
+    if(error){ console.warn('[DB] supplyOrderCancel:', error.message); throw new Error(error.message); }
+    return true;
+  }
+  // Supply-admin user ids (for targeting Web Push at the supply team on submit).
+  async function supplyAdminIds(){
+    const sb=sbClient(); if(!sb) return [];
+    const { data,error } = await sb.rpc('supply_admin_ids');
+    if(error){ console.warn('[DB] supplyAdminIds:', error.message); return []; }
+    return (data||[]).map(r=> (typeof r==='string'? r : (r&&r.supply_admin_ids)||r)).filter(Boolean);
   }
   // ── stocktake sessions (open → count → close) ──
   function _sessionFromRow(r){ return { id:r.id, schoolId:r.school_id, status:r.status, note:r.note, createdBy:r.created_by, createdAt:r.created_at, closedBy:r.closed_by, closedAt:r.closed_at }; }
@@ -1935,6 +2020,16 @@ const DB = (() => {
     loadMovements:    (sid,itemId,lim)     => loadMovements(sid,itemId,lim),
     transferStock:    (f,t,itemId,sz,q,n)  => transferStock(f,t,itemId,sz,q,n),
     loadTransfers:    (lim)                => loadTransfers(lim),
+    supplyLoc:           (supplierId)       => supplyLoc(supplierId),
+    loadSupplyOrders:    (opts)             => loadSupplyOrders(opts),
+    supplyOrderSave:     (oid,sid,sup,n,ls) => supplyOrderSave(oid,sid,sup,n,ls),
+    supplyOrderSubmit:   (oid)              => supplyOrderSubmit(oid),
+    supplyOrderConfirm:  (oid,eta,ls)       => supplyOrderConfirm(oid,eta,ls),
+    supplyOrderSetStatus:(oid,st)           => supplyOrderSetStatus(oid,st),
+    supplyOrderShip:     (oid,trk,car,eta,ls) => supplyOrderShip(oid,trk,car,eta,ls),
+    supplyOrderReceive:  (oid,ls)           => supplyOrderReceive(oid,ls),
+    supplyOrderCancel:   (oid)              => supplyOrderCancel(oid),
+    supplyAdminIds:      ()                 => supplyAdminIds(),
     createStocktakeSession: (sid,note)     => createStocktakeSession(sid,note),
     loadStocktakeSessions:  (sid)          => loadStocktakeSessions(sid),
     loadStocktakeCounts:    (sessId)       => loadStocktakeCounts(sessId),
@@ -1951,6 +2046,7 @@ const DB = (() => {
     saveItem:         (i)                  => _saveCatalogue('inventory_items',_itemFromRow,_itemToRow,i),
     deleteItem:       (id)                 => _delCatalogue('inventory_items',id),
     setShopAdmin:     (userId,val)         => { const sb=sbClient(); return sb ? sb.rpc('set_shop_admin',{ target:userId, val:!!val }) : Promise.reject(new Error('Supabase unavailable')); },
+    setSupplyAdmin:   (userId,val)         => { const sb=sbClient(); return sb ? sb.rpc('set_supply_admin',{ target:userId, val:!!val }) : Promise.reject(new Error('Supabase unavailable')); },
     loadOnboardingTemplate: (schoolId) => get('onboarding-template:' + schoolId),
     saveOnboardingTemplate: (schoolId, d) => set('onboarding-template:' + schoolId, d),
 

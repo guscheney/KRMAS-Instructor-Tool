@@ -59,8 +59,12 @@ const state = {
   editingCandidateIdx: null,
   stocktake: {},
   // ── Inventory / shop ──
-  shopView: 'stock',                 // stock | reorder | catalogue | suppliers
+  shopView: 'stock',                 // stock | reorder | catalogue | suppliers | orders | supply
   shop: { categories: [], sizeSets: [], suppliers: [], items: [] },
+  supplyOrders: [],                  // supply orders the caller can see (RLS-scoped)
+  supplyView: 'queue',               // supply-admin sub-tab: queue | demand | forecast | dashboard
+  supplyActingSupplier: null,        // which internal supplier the supply admin is acting as
+  orderEdit: null,                   // in-progress school draft order being built
   shopStock: [],                     // stock rows for shopStockSchool
   shopMovements: [],                 // recent ledger movements for shopStockSchool
   shopTransfers: [],                 // recent inter-school transfer movements (network)
@@ -200,8 +204,9 @@ const can = {
   // Shop: catalogue/suppliers/categories/sizes = shop admin or superadmin.
   // A school's stock = superadmin, any shop admin, or an admin of that school.
   manageShop:        () => hasRole('superadmin') || !!(state.user && state.user.isShopAdmin),
-  seeShop:           () => hasRole('superadmin') || hasRole('admin') || !!(state.user && state.user.isShopAdmin),
-  editStock:         (sid) => hasRole('superadmin') || !!(state.user && state.user.isShopAdmin) || (hasRole('admin') && (state.userSchools || []).includes(sid)),
+  supplyAdmin:       () => hasRole('superadmin') || !!(state.user && state.user.isSupplyAdmin),
+  seeShop:           () => hasRole('superadmin') || hasRole('admin') || !!(state.user && state.user.isShopAdmin) || !!(state.user && state.user.isSupplyAdmin),
+  editStock:         (sid) => hasRole('superadmin') || !!(state.user && state.user.isShopAdmin) || (hasRole('admin') && (state.userSchools || []).includes(sid)) || (!!(state.user && state.user.isSupplyAdmin) && typeof sid === 'string' && sid.indexOf('__supply__:') === 0),
   // Audits: action-level gating via the matrix (admins are auto-true in hasPerm; a
   // superadmin can additionally grant instructors). Cross-school = superadmin; RLS enforces.
   viewAudits:        () => hasPerm('audits','view'),
@@ -7674,6 +7679,8 @@ async function renderUserManager() {
   catch (e) { list.innerHTML = '<div style="color:var(--red);font-size:13px;padding:8px;">Could not load logins: ' + escapeHtml((e && e.message) || '') + '</div>'; return; }
   state._shopAdminByUid = {};
   users.forEach(u => { state._shopAdminByUid[u.id] = !!u.is_shop_admin; });
+  state._supplyAdminByUid = {};
+  users.forEach(u => { state._supplyAdminByUid[u.id] = !!u.is_supply_admin; });
   if (!users.length) { list.innerHTML = '<div style="font-size:13px;color:var(--grey-500);padding:8px;">No login accounts yet. Invite someone above.</div>'; return; }
   const me = state.user && state.user.id;
   const schools = (typeof KRMAS_SCHOOLS !== 'undefined') ? KRMAS_SCHOOLS : [];
@@ -7789,6 +7796,10 @@ function openUserEditor(instrId) {
   const canShop = !!(state.user && state.user.role === 'superadmin' && instr && instr.uid);
   if (saRow) saRow.style.display = canShop ? '' : 'none';
   if (saChk) saChk.checked = canShop && !!(state._shopAdminByUid && state._shopAdminByUid[instr.uid]);
+  const supRow = document.getElementById('userSupplyAdminRow');
+  const supChk = document.getElementById('userSupplyAdmin');
+  if (supRow) supRow.style.display = canShop ? '' : 'none';
+  if (supChk) supChk.checked = canShop && !!(state._supplyAdminByUid && state._supplyAdminByUid[instr.uid]);
   renderUserSchoolsChecklist(instr);
   openModal('modalUserEditor');
 }
@@ -7914,6 +7925,18 @@ async function saveUser() {
     if (want !== had) {
       try { await DB.setShopAdmin(instr.uid, want); if (state._shopAdminByUid) state._shopAdminByUid[instr.uid] = want; }
       catch (e) { alert('Could not update shop admin: ' + (e.message || e)); }
+    }
+  }
+
+  // Supply admin (superadmin only, requires a login). Distinct hat from shop admin.
+  // Persisted via the set_supply_admin RPC.
+  if (state.user && state.user.role === 'superadmin' && instr.uid) {
+    const chk = document.getElementById('userSupplyAdmin');
+    const want = !!(chk && chk.checked);
+    const had  = !!(state._supplyAdminByUid && state._supplyAdminByUid[instr.uid]);
+    if (want !== had) {
+      try { await DB.setSupplyAdmin(instr.uid, want); if (state._supplyAdminByUid) state._supplyAdminByUid[instr.uid] = want; }
+      catch (e) { alert('Could not update supply admin: ' + (e.message || e)); }
     }
   }
 
@@ -8476,7 +8499,7 @@ async function enterAppWithSession(session) {
     return;
   }
   _enteredOnce = true;
-  state.user = { id: session.user.id, name: prof.display_name || session.user.email, role: prof.role, email: session.user.email || null, isShopAdmin: !!prof.is_shop_admin };
+  state.user = { id: session.user.id, name: prof.display_name || session.user.email, role: prof.role, email: session.user.email || null, isShopAdmin: !!prof.is_shop_admin, isSupplyAdmin: !!prof.is_supply_admin };
   // Multi-school membership (instructors may belong to more than one school). Falls
   // back to the single home school for everyone else. Drives the school-pill filter.
   state.user.schools = (Array.isArray(prof.schools) && prof.schools.length)
@@ -13915,6 +13938,9 @@ async function loadShopData() {
   catch (e) { console.warn('loadShop:', e && e.message); state.shop = { categories: [], sizeSets: [], suppliers: [], items: [] }; state.shopLoadError = true; }
   const sid = state.shopStockSchool || state.schoolId || (state.userSchools || [])[0] || null;
   if (sid) await loadShopStock(sid);
+  if ((state.shop.suppliers || []).some(s => s.isInternal)) {
+    try { state.supplyOrders = await DB.loadSupplyOrders(); } catch (e) { console.warn('loadSupplyOrders:', e && e.message); state.supplyOrders = []; }
+  }
 }
 async function loadShopStock(sid) {
   state.shopStockSchool = sid;
@@ -13967,11 +13993,26 @@ function setShopView(v) {
   if (v === 'value') {
     DB.loadStockValue().then(r => { state.stockValue = r; if (state.shopView === 'value') renderShop(); }).catch(() => {});
   }
+  if (v === 'orders' || v === 'supply') {
+    if (v === 'supply' && !state.supplyActingSupplier) {
+      const first = (state.shop.suppliers || []).find(s => s.isInternal);
+      state.supplyActingSupplier = first ? first.id : null;
+    }
+    if (v === 'supply' && state.supplyActingSupplier) {
+      loadSupplyContext(state.supplyActingSupplier).then(() => { if (state.shopView === 'supply') renderShop(); }).catch(() => {});
+    }
+    DB.loadSupplyOrders().then(o => { state.supplyOrders = o || []; if (state.shopView === v) renderShop(); }).catch(() => {});
+  }
 }
 function shopCancelEdit() { state.shopEdit = null; renderShop(); }
 
 // ── small lookups ──
 function shopSchoolName(sid) {
+  if (sid && sid.indexOf('__supply__:') === 0) {
+    const supId = sid.slice('__supply__:'.length);
+    const sup = (state.shop.suppliers || []).find(x => x.id === supId);
+    return (sup ? sup.name : 'Supply') + ' (finished goods)';
+  }
   const s = (typeof KRMAS_SCHOOLS !== 'undefined') && KRMAS_SCHOOLS.find(x => x.id === sid);
   return s ? s.name : (sid || '—');
 }
@@ -14019,8 +14060,12 @@ function renderShop() {
   if (!can.seeShop()) { main.innerHTML = '<div class="empty"><h2>No access</h2><p>The shop is for shop admins and school admins.</p></div>'; return; }
   if (!state.shopStockSchool) state.shopStockSchool = state.schoolId || (state.userSchools || [])[0] || null;
 
-  const tabs = [{ id: 'stock', label: 'Stock' }, { id: 'reorder', label: 'Reorder list' }, { id: 'special', label: 'Special orders' }, { id: 'stocktake', label: 'Stocktake' }, { id: 'value', label: 'Value' }];
+  const tabs = [{ id: 'stock', label: 'Stock' }, { id: 'reorder', label: 'Reorder list' }];
+  const hasInternalSupplier = (state.shop.suppliers || []).some(s => s.isInternal);
+  if (hasInternalSupplier && orderableSchools().length) tabs.push({ id: 'orders', label: 'Orders' });
+  tabs.push({ id: 'special', label: 'Special orders' }, { id: 'stocktake', label: 'Stocktake' }, { id: 'value', label: 'Value' });
   if (can.manageShop()) { tabs.push({ id: 'transfers', label: 'Transfers' }); tabs.push({ id: 'catalogue', label: 'Catalogue' }); tabs.push({ id: 'suppliers', label: 'Suppliers' }); }
+  if (can.supplyAdmin()) tabs.push({ id: 'supply', label: '🏭 Supply' });
   if (!tabs.find(t => t.id === state.shopView)) state.shopView = 'stock';
 
   let html = `<div style="padding:16px;max-width:920px;margin:0 auto;">
@@ -14035,9 +14080,550 @@ function renderShop() {
   else if (state.shopView === 'transfers') html += renderShopTransfers();
   else if (state.shopView === 'catalogue') html += renderShopCatalogue();
   else if (state.shopView === 'suppliers') html += renderShopSuppliers();
+  else if (state.shopView === 'orders')    html += renderShopOrders();
+  else if (state.shopView === 'supply')    html += renderShopSupply();
   html += `</div>`;
   main.innerHTML = html;
   updateShopNavBadge();
+}
+
+// ============================================================================
+// SUPPLY CHAIN (internal-supplier orders)
+// Schools place orders to the network's own sub-business (an "internal" supplier);
+// supply admins review, confirm, produce, ship (with ETA + tracking), and the
+// ordering school confirms receipt — which posts finished goods into school stock.
+// Logistics only: no money/cost is tracked in the app. Finished-goods on-hand is
+// the normal stock grid at the supplier's location.
+// ============================================================================
+const SUPPLY_STATUS = {
+  draft:         ['Draft',          'var(--grey-500)'],
+  submitted:     ['Submitted',      '#2563eb'],
+  confirmed:     ['Confirmed',      '#2563eb'],
+  in_production: ['In production',  'var(--warn,#d97706)'],
+  shipped:       ['Shipped',        'var(--warn,#d97706)'],
+  arrived:       ['Arrived',        'var(--ok,#16a34a)'],
+  received:      ['Received',       'var(--ok,#16a34a)'],
+  cancelled:     ['Cancelled',      'var(--red,#D22C12)'],
+};
+function supplyStatusBadge(s) {
+  const c = SUPPLY_STATUS[s] || [s, 'var(--grey-500)'];
+  return `<span style="display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:700;background:${c[1]}1a;color:${c[1]};">${escapeHtml(c[0])}</span>`;
+}
+function supplyInternalSuppliers() { return (state.shop.suppliers || []).filter(s => s.isInternal); }
+// Schools this user may actually place/receive orders for (admins of those schools,
+// shop admins, or superadmins). Excludes supply locations and view-only access.
+function orderableSchools() {
+  if (hasRole('superadmin') || (state.user && state.user.isShopAdmin)) return (typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS.map(s => s.id) : []);
+  return (state.userSchools || []).filter(s => can.editStock(s));
+}
+function supplyItemName(id) { const it = (state.shop.items || []).find(x => x.id === id); return it ? it.name : '(item)'; }
+function supplyFmtDate(d) { if (!d) return '—'; try { const s = String(d); return new Date(s.length <= 10 ? s + 'T00:00:00' : s).toLocaleDateString(); } catch (e) { return String(d); } }
+function supplyTodayStr() { return new Date().toISOString().slice(0, 10); }
+function supplyItemsForSupplier(supId) { return shopActiveItems().filter(i => i.supplierId === supId); }
+// Outstanding (still-owed) units on a line: ordered (or confirmed, once set) minus received.
+function supplyLineOutstanding(l) { const base = l.qtyConfirmed > 0 ? l.qtyConfirmed : l.qtyOrdered; return Math.max(0, base - (l.qtyReceived || 0)); }
+
+// Load finished-goods stock + recent movements at an internal supplier's location.
+async function loadSupplyContext(supplierId) {
+  if (!supplierId) { state.supplyStock = []; state.supplyMovements = []; return; }
+  const loc = DB.supplyLoc(supplierId);
+  try { state.supplyStock = await DB.loadSchoolStock(loc); } catch (e) { state.supplyStock = []; }
+  try { state.supplyMovements = await DB.loadMovements(loc, null, 400); } catch (e) { state.supplyMovements = []; }
+}
+function supplyStockRow(supplierId, itemId, size) {
+  return (state.supplyStock || []).find(r => r.itemId === itemId && (r.size || '') === (size || '')) || null;
+}
+
+// ── pure forecast / demand / dashboard math (unit-testable) ──
+// Suggested production run for one apparel SKU: cover open demand on the
+// sub-business plus expected consumption over the horizon, less what's on hand.
+function computeSuggestedRun(onHand, velocityPerWeek, openDemand, horizonWeeks) {
+  const projected = Math.max(0, openDemand || 0) + Math.ceil(Math.max(0, velocityPerWeek || 0) * Math.max(0, horizonWeeks || 0));
+  return Math.max(0, projected - Math.max(0, onHand || 0));
+}
+// Weekly outflow velocity from the supplier ledger (shipments out) over a window.
+function computeVelocityPerWeek(movements, itemId, size, windowDays, nowTs) {
+  const now = nowTs || Date.now();
+  const cutoff = now - (windowDays || 90) * 86400000;
+  let out = 0;
+  (movements || []).forEach(m => {
+    if (m.itemId !== itemId || (m.size || '') !== (size || '')) return;
+    if (m.delta >= 0) return;                      // only outflows (shipments to schools)
+    const t = new Date(m.createdAt).getTime();
+    if (isNaN(t) || t < cutoff) return;
+    out += -m.delta;
+  });
+  const weeks = (windowDays || 90) / 7;
+  return weeks > 0 ? out / weeks : 0;
+}
+// Aggregate still-owed demand on a supplier, per item+size, with a per-school split.
+function supplyDemandRows(supplierId) {
+  const rows = {}; // key item|size -> {itemId, size, total, bySchool:{}}
+  (state.supplyOrders || []).forEach(o => {
+    if (o.supplierId !== supplierId) return;
+    if (['draft', 'received', 'cancelled'].indexOf(o.status) !== -1) return;
+    (o.lines || []).forEach(l => {
+      const out = supplyLineOutstanding(l);
+      if (out <= 0) return;
+      const k = (l.itemId || l.itemName) + '|' + (l.size || '');
+      const r = rows[k] || (rows[k] = { itemId: l.itemId, itemName: l.itemName, size: l.size || '', total: 0, bySchool: {} });
+      r.total += out;
+      r.bySchool[o.schoolId] = (r.bySchool[o.schoolId] || 0) + out;
+    });
+  });
+  return Object.values(rows).sort((a, b) => b.total - a.total);
+}
+// Dashboard metrics for a supplier (open pipeline, overdue, on-time %, avg lead time).
+function supplyDashboard(supplierId) {
+  const orders = (state.supplyOrders || []).filter(o => o.supplierId === supplierId);
+  const today = supplyTodayStr();
+  const openStatuses = ['submitted', 'confirmed', 'in_production', 'shipped', 'arrived'];
+  const open = orders.filter(o => openStatuses.indexOf(o.status) !== -1);
+  let pipeline = 0; open.forEach(o => (o.lines || []).forEach(l => { pipeline += supplyLineOutstanding(l); }));
+  const overdue = open.filter(o => o.etaDate && o.etaDate < today);
+  const received = orders.filter(o => o.status === 'received');
+  const withEta = received.filter(o => o.etaDate && o.receivedDate);
+  const onTime = withEta.filter(o => o.receivedDate <= o.etaDate).length;
+  const onTimePct = withEta.length ? Math.round((onTime / withEta.length) * 100) : null;
+  let leadSum = 0, leadN = 0;
+  received.forEach(o => {
+    if (!o.submittedAt || !o.receivedDate) return;
+    const a = new Date(o.submittedAt).getTime(), b = new Date(o.receivedDate + 'T00:00:00').getTime();
+    if (isNaN(a) || isNaN(b) || b < a) return;
+    leadSum += Math.round((b - a) / 86400000); leadN++;
+  });
+  return {
+    openCount: open.length, pipeline, overdueCount: overdue.length,
+    onTimePct, avgLeadDays: leadN ? Math.round(leadSum / leadN) : null,
+    receivedCount: received.length, totalCount: orders.length,
+  };
+}
+
+// ── SCHOOL: Orders view ──────────────────────────────────────────────────
+function renderShopOrders() {
+  if (state.orderEdit) return renderOrderEditor();
+  const internal = supplyInternalSuppliers();
+  if (!internal.length) return `<div class="empty"><h2>No supplier connected</h2><p>Orders open up once a shop admin marks a supplier as your network's own (internal) supplier on the Suppliers tab.</p></div>`;
+  const orderable = orderableSchools();
+  const orders = (state.supplyOrders || []).filter(o => orderable.indexOf(o.schoolId) !== -1);
+  const multiSchool = orderable.length > 1;
+
+  let html = `<div style="margin:12px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+    <p style="font-size:13px;color:var(--grey-500);margin:0;flex:1;min-width:200px;">Order apparel from your network supplier. Track each order through to delivery, then confirm receipt to add the stock to your shop.</p>
+    ${orderable.length ? `<button class="btn btn-black" onclick="shopOrderNew()" style="padding:8px 14px;">+ New order</button>` : ''}
+  </div>`;
+
+  if (!orders.length) { html += `<div class="empty"><h2>No orders yet</h2><p>Create your first order to get started.</p></div>`; return html; }
+
+  orders.forEach(o => {
+    const sup = shopSupplier(o.supplierId);
+    const canAct = orderable.indexOf(o.schoolId) !== -1;
+    const lineCount = (o.lines || []).length;
+    const totalUnits = (o.lines || []).reduce((s, l) => s + (l.qtyOrdered || 0), 0);
+    html += `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:13px;margin-bottom:11px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+        <div><strong style="font-size:14px;">${escapeHtml(sup ? sup.name : 'Supplier')}</strong>
+          ${multiSchool ? ` <span style="font-size:12px;color:var(--grey-500);">· ${escapeHtml(shopSchoolName(o.schoolId))}</span>` : ''}
+          <div style="font-size:11px;color:var(--grey-500);margin-top:2px;">${lineCount} line${lineCount === 1 ? '' : 's'} · ${totalUnits} unit${totalUnits === 1 ? '' : 's'}${o.notes ? ' · ' + escapeHtml(o.notes) : ''}</div>
+        </div>
+        ${supplyStatusBadge(o.status)}
+      </div>`;
+    // lifecycle facts
+    if (['confirmed', 'in_production', 'shipped', 'arrived', 'received'].indexOf(o.status) !== -1 || o.etaDate || o.trackingNumber) {
+      html += `<div style="font-size:12px;color:var(--grey-600);margin-top:7px;display:flex;gap:14px;flex-wrap:wrap;">
+        ${o.etaDate ? `<span>ETA <strong>${supplyFmtDate(o.etaDate)}</strong></span>` : ''}
+        ${o.trackingNumber ? `<span>Tracking <strong>${escapeHtml(o.trackingNumber)}</strong>${o.carrier ? ' (' + escapeHtml(o.carrier) + ')' : ''}</span>` : ''}
+        ${o.shippedDate ? `<span>Shipped ${supplyFmtDate(o.shippedDate)}</span>` : ''}
+        ${o.receivedDate ? `<span>Received ${supplyFmtDate(o.receivedDate)}</span>` : ''}
+      </div>`;
+    }
+    // lines
+    html += `<div style="margin-top:8px;font-size:12px;font-family:'JetBrains Mono',monospace;line-height:1.7;border-top:1px solid var(--grey-100);padding-top:7px;">`;
+    (o.lines || []).forEach(l => {
+      const recvShown = (o.status === 'received') ? ` → received ${l.qtyReceived}` : (l.qtyShipped > 0 ? ` → shipped ${l.qtyShipped}` : (l.qtyConfirmed > 0 && l.qtyConfirmed !== l.qtyOrdered ? ` → confirmed ${l.qtyConfirmed}` : ''));
+      html += `<div>${escapeHtml(l.itemName)}${l.size ? ' — sz ' + escapeHtml(l.size) : ''}: <strong>${l.qtyOrdered}</strong>${recvShown}${l.forWhom ? ` <span style="color:var(--grey-500);">· for ${escapeHtml(l.forWhom)}</span>` : ''}</div>`;
+    });
+    html += `</div>`;
+    // actions
+    if (canAct) {
+      html += `<div style="margin-top:10px;display:flex;gap:7px;flex-wrap:wrap;">`;
+      if (o.status === 'draft') {
+        html += `<button class="btn btn-black" onclick="shopOrderSubmit('${o.id}')" style="padding:6px 12px;font-size:12px;">Submit</button>
+                 <button class="btn" onclick="shopOrderEditDraft('${o.id}')" style="padding:6px 12px;font-size:12px;">Edit</button>
+                 <button class="btn" onclick="shopOrderCancel('${o.id}')" style="padding:6px 12px;font-size:12px;">Delete</button>`;
+      } else if (o.status === 'shipped' || o.status === 'arrived') {
+        html += `<button class="btn btn-black" onclick="shopOrderReceive('${o.id}')" style="padding:6px 12px;font-size:12px;">✓ Confirm receipt</button>`;
+      } else if (['submitted', 'confirmed', 'in_production'].indexOf(o.status) !== -1) {
+        html += `<button class="btn" onclick="shopOrderCancel('${o.id}')" style="padding:6px 12px;font-size:12px;">Cancel order</button>`;
+      }
+      html += `</div>`;
+    }
+    html += `</div>`;
+  });
+  return html;
+}
+
+function renderOrderEditor() {
+  const e = state.orderEdit;
+  const internal = supplyInternalSuppliers();
+  const schools = orderableSchools();
+  const items = supplyItemsForSupplier(e.supplierId);
+  let html = `<div style="margin:12px 0;"><button class="btn" onclick="shopOrderCancelEdit()" style="padding:6px 12px;font-size:12px;">← Back</button></div>
+    <h2 style="font-family:'Oswald',sans-serif;font-size:17px;text-transform:uppercase;letter-spacing:.03em;margin:0 0 12px;">${e.id ? 'Edit order' : 'New order'}</h2>`;
+  html += `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+    <label style="font-size:12px;">Supplier<br><select onchange="orderEditSetSupplier(this.value)" style="padding:6px 8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;margin-top:3px;">
+      ${internal.map(s => `<option value="${escapeHtml(s.id)}"${s.id === e.supplierId ? ' selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}</select></label>
+    ${schools.length > 1 ? `<label style="font-size:12px;">For school<br><select onchange="orderEditSetSchool(this.value)" style="padding:6px 8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;margin-top:3px;">
+      ${schools.map(s => `<option value="${escapeHtml(s)}"${s === e.schoolId ? ' selected' : ''}>${escapeHtml(shopSchoolName(s))}</option>`).join('')}</select></label>` : ''}
+  </div>`;
+  html += `<div style="margin-bottom:10px;"><button class="btn" onclick="orderEditSeedFromReorder()" style="padding:6px 12px;font-size:12px;">⤵ Seed from reorder list</button>
+    <span style="font-size:11px;color:var(--grey-500);margin-left:6px;">Pre-fills low apparel lines below target.</span></div>`;
+
+  // lines
+  html += `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);overflow:hidden;margin-bottom:10px;">`;
+  if (!e.lines.length) html += `<div style="padding:14px;font-size:13px;color:var(--grey-500);">No lines yet. Add one below.</div>`;
+  e.lines.forEach((l, i) => {
+    const it = items.find(x => x.id === l.itemId);
+    const sizes = it ? shopItemSizes(it) : [''];
+    html += `<div style="display:flex;gap:6px;align-items:center;padding:8px 10px;${i ? 'border-top:1px solid var(--grey-100);' : ''}flex-wrap:wrap;">
+      <select onchange="orderEditSetLine(${i},'itemId',this.value)" style="padding:5px 7px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;flex:1;min-width:130px;">
+        <option value="">Pick item…</option>
+        ${items.map(x => `<option value="${escapeHtml(x.id)}"${x.id === l.itemId ? ' selected' : ''}>${escapeHtml(x.name)}</option>`).join('')}</select>
+      <select onchange="orderEditSetLine(${i},'size',this.value)" style="padding:5px 7px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;width:80px;"${it && it.sized ? '' : ' disabled'}>
+        ${sizes.map(sz => `<option value="${escapeHtml(sz)}"${sz === l.size ? ' selected' : ''}>${sz === '' ? '—' : escapeHtml(sz)}</option>`).join('')}</select>
+      <input type="number" min="0" value="${l.qty || 0}" onchange="orderEditSetLine(${i},'qty',this.value)" style="padding:5px 7px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;width:64px;" aria-label="Quantity">
+      <input type="text" value="${escapeHtml(l.forWhom || '')}" placeholder="Who it's for (optional)" onchange="orderEditSetLine(${i},'forWhom',this.value)" style="padding:5px 7px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;flex:1;min-width:120px;">
+      <button class="btn" onclick="orderEditRemoveLine(${i})" style="padding:4px 9px;font-size:12px;" aria-label="Remove line">✕</button>
+    </div>`;
+  });
+  html += `</div>
+    <button class="btn" onclick="orderEditAddLine()" style="padding:6px 12px;font-size:12px;margin-bottom:12px;">+ Add line</button>`;
+  html += `<div style="margin-bottom:12px;"><label style="font-size:12px;">Order note (optional)<br>
+    <textarea onchange="orderEditSetNote(this.value)" rows="2" style="width:100%;max-width:480px;padding:7px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;margin-top:3px;">${escapeHtml(e.notes || '')}</textarea></label></div>`;
+  html += `<div style="display:flex;gap:8px;flex-wrap:wrap;">
+    <button class="btn" onclick="shopOrderSaveDraft(false)" style="padding:8px 16px;">Save draft</button>
+    <button class="btn btn-black" onclick="shopOrderSaveDraft(true)" style="padding:8px 16px;">Save &amp; submit</button>
+  </div>`;
+  return html;
+}
+
+// ── SUPPLY ADMIN: Supply tab ─────────────────────────────────────────────
+function renderShopSupply() {
+  const internal = supplyInternalSuppliers();
+  if (!internal.length) return `<div class="empty"><h2>No internal supplier</h2><p>Mark your sub-business as an internal supplier on the Suppliers tab to use the supply console.</p></div>`;
+  if (!state.supplyActingSupplier || !internal.find(s => s.id === state.supplyActingSupplier)) state.supplyActingSupplier = internal[0].id;
+  const supId = state.supplyActingSupplier;
+
+  let html = `<div style="margin:12px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">`;
+  if (internal.length > 1) {
+    html += `<label style="font-size:12px;">Supplier<br><select onchange="supplySetActingSupplier(this.value)" style="padding:6px 8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;margin-top:3px;">
+      ${internal.map(s => `<option value="${escapeHtml(s.id)}"${s.id === supId ? ' selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}</select></label>`;
+  } else {
+    html += `<strong style="font-size:14px;">${escapeHtml(internal[0].name)}</strong>`;
+  }
+  html += `<span style="font-size:11px;color:var(--grey-500);margin-left:auto;">Finished-goods stock lives on the Stock tab under "${escapeHtml(internal.find(s => s.id === supId).name)} (finished goods)".</span></div>`;
+
+  const sub = [{ id: 'queue', label: 'Queue' }, { id: 'demand', label: 'Demand' }, { id: 'forecast', label: 'Forecast' }, { id: 'dashboard', label: 'Dashboard' }];
+  if (!sub.find(s => s.id === state.supplyView)) state.supplyView = 'queue';
+  html += `<div class="grading-tabs shop-tabs" style="margin-bottom:6px;">${sub.map(s => `<button class="grading-tab ${state.supplyView === s.id ? 'active' : ''}" onclick="setSupplyView('${s.id}')">${escapeHtml(s.label)}</button>`).join('')}</div>`;
+
+  if (state.supplyView === 'queue') html += renderSupplyQueue(supId);
+  else if (state.supplyView === 'demand') html += renderSupplyDemand(supId);
+  else if (state.supplyView === 'forecast') html += renderSupplyForecast(supId);
+  else if (state.supplyView === 'dashboard') html += renderSupplyDashboard(supId);
+  return html;
+}
+
+function renderSupplyQueue(supId) {
+  const orders = (state.supplyOrders || []).filter(o => o.supplierId === supId && o.status !== 'draft');
+  const active = orders.filter(o => ['received', 'cancelled'].indexOf(o.status) === -1);
+  const done = orders.filter(o => ['received', 'cancelled'].indexOf(o.status) !== -1);
+  let html = '';
+  if (!active.length) html += `<div class="empty" style="padding:24px;"><h2>Queue clear</h2><p>No open orders right now.</p></div>`;
+  active.forEach(o => { html += supplyQueueCard(o); });
+  if (done.length) {
+    html += `<h3 style="font-family:'Oswald',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin:20px 0 8px;">History</h3>`;
+    done.slice(0, 20).forEach(o => { html += supplyQueueCard(o, true); });
+  }
+  return html;
+}
+
+function supplyQueueCard(o, compact) {
+  const editing = state.supplyEdit && state.supplyEdit.orderId === o.id;
+  let html = `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:13px;margin-bottom:11px;${compact ? 'opacity:.7;' : ''}">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+      <div><strong style="font-size:14px;">${escapeHtml(shopSchoolName(o.schoolId))}</strong>
+        <div style="font-size:11px;color:var(--grey-500);margin-top:2px;">${(o.lines || []).length} line(s)${o.submittedAt ? ' · submitted ' + supplyFmtDate(o.submittedAt.slice(0, 10)) : ''}${o.notes ? ' · ' + escapeHtml(o.notes) : ''}</div></div>
+      ${supplyStatusBadge(o.status)}
+    </div>`;
+  if (o.etaDate || o.trackingNumber) {
+    html += `<div style="font-size:12px;color:var(--grey-600);margin-top:6px;display:flex;gap:14px;flex-wrap:wrap;">
+      ${o.etaDate ? `<span>ETA <strong>${supplyFmtDate(o.etaDate)}</strong></span>` : ''}
+      ${o.trackingNumber ? `<span>Tracking <strong>${escapeHtml(o.trackingNumber)}</strong>${o.carrier ? ' (' + escapeHtml(o.carrier) + ')' : ''}</span>` : ''}</div>`;
+  }
+  html += `<div style="margin-top:8px;font-size:12px;font-family:'JetBrains Mono',monospace;line-height:1.7;border-top:1px solid var(--grey-100);padding-top:7px;">`;
+  (o.lines || []).forEach(l => {
+    html += `<div>${escapeHtml(l.itemName)}${l.size ? ' — sz ' + escapeHtml(l.size) : ''}: ordered <strong>${l.qtyOrdered}</strong>${l.qtyConfirmed > 0 && l.qtyConfirmed !== l.qtyOrdered ? `, confirmed ${l.qtyConfirmed}` : ''}${l.qtyShipped > 0 ? `, shipped ${l.qtyShipped}` : ''}${l.forWhom ? ` <span style="color:var(--grey-500);">· for ${escapeHtml(l.forWhom)}</span>` : ''}</div>`;
+  });
+  html += `</div>`;
+
+  // inline confirm / ship editors
+  if (editing && state.supplyEdit.mode === 'confirm') {
+    html += `<div style="margin-top:10px;padding:10px;background:var(--grey-50,#f8f8f8);border-radius:var(--r-sm);">
+      <label style="font-size:12px;display:block;margin-bottom:8px;">ETA date <input type="date" id="supEta" value="${o.etaDate || ''}" style="padding:5px 7px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;margin-left:6px;"></label>
+      <div style="font-size:11px;color:var(--grey-500);margin-bottom:6px;">Adjust confirmed quantities if you can't fill the full order:</div>`;
+    (o.lines || []).forEach(l => {
+      html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;font-size:12px;">
+        <span style="flex:1;">${escapeHtml(l.itemName)}${l.size ? ' sz ' + escapeHtml(l.size) : ''} <span style="color:var(--grey-500);">(ordered ${l.qtyOrdered})</span></span>
+        <input type="number" min="0" id="supc_${l.id}" value="${l.qtyConfirmed > 0 ? l.qtyConfirmed : l.qtyOrdered}" style="padding:4px 6px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;width:64px;"></div>`;
+    });
+    html += `<div style="display:flex;gap:7px;margin-top:8px;"><button class="btn btn-black" onclick="supplyConfirmSubmit('${o.id}')" style="padding:6px 12px;font-size:12px;">Confirm order</button>
+      <button class="btn" onclick="supplyCancelEdit()" style="padding:6px 12px;font-size:12px;">Cancel</button></div></div>`;
+  } else if (editing && state.supplyEdit.mode === 'ship') {
+    html += `<div style="margin-top:10px;padding:10px;background:var(--grey-50,#f8f8f8);border-radius:var(--r-sm);">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+        <label style="font-size:12px;">Tracking # <input type="text" id="supTrk" value="${escapeHtml(o.trackingNumber || '')}" style="padding:5px 7px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;margin-left:4px;width:140px;"></label>
+        <label style="font-size:12px;">Carrier <input type="text" id="supCar" value="${escapeHtml(o.carrier || '')}" placeholder="AusPost…" style="padding:5px 7px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;margin-left:4px;width:110px;"></label>
+        <label style="font-size:12px;">ETA <input type="date" id="supShipEta" value="${o.etaDate || ''}" style="padding:5px 7px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;margin-left:4px;"></label>
+      </div>
+      <div style="font-size:11px;color:var(--grey-500);margin-bottom:6px;">Quantities to ship (posts out of finished-goods stock):</div>`;
+    (o.lines || []).forEach(l => {
+      const def = l.qtyConfirmed > 0 ? l.qtyConfirmed : l.qtyOrdered;
+      html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;font-size:12px;">
+        <span style="flex:1;">${escapeHtml(l.itemName)}${l.size ? ' sz ' + escapeHtml(l.size) : ''}</span>
+        <input type="number" min="0" id="sups_${l.id}" value="${def}" style="padding:4px 6px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;width:64px;"></div>`;
+    });
+    html += `<div style="display:flex;gap:7px;margin-top:8px;"><button class="btn btn-black" onclick="supplyShipSubmit('${o.id}')" style="padding:6px 12px;font-size:12px;">Mark shipped</button>
+      <button class="btn" onclick="supplyCancelEdit()" style="padding:6px 12px;font-size:12px;">Cancel</button></div></div>`;
+  } else if (!compact) {
+    html += `<div style="margin-top:10px;display:flex;gap:7px;flex-wrap:wrap;">`;
+    if (o.status === 'submitted') html += `<button class="btn btn-black" onclick="supplyStartConfirm('${o.id}')" style="padding:6px 12px;font-size:12px;">Confirm</button>`;
+    if (o.status === 'confirmed') html += `<button class="btn" onclick="supplySetStatus('${o.id}','in_production')" style="padding:6px 12px;font-size:12px;">Start production</button>`;
+    if (o.status === 'confirmed' || o.status === 'in_production') html += `<button class="btn btn-black" onclick="supplyStartShip('${o.id}')" style="padding:6px 12px;font-size:12px;">Ship…</button>`;
+    if (o.status === 'shipped') html += `<button class="btn" onclick="supplySetStatus('${o.id}','arrived')" style="padding:6px 12px;font-size:12px;">Mark arrived</button>`;
+    if (['submitted', 'confirmed', 'in_production'].indexOf(o.status) !== -1) html += `<button class="btn" onclick="supplyCancelOrder('${o.id}')" style="padding:6px 12px;font-size:12px;">Cancel</button>`;
+    if (o.status === 'shipped' || o.status === 'arrived') html += `<span style="font-size:11px;color:var(--grey-500);align-self:center;">Awaiting the school to confirm receipt.</span>`;
+    html += `</div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
+function renderSupplyDemand(supId) {
+  const rows = supplyDemandRows(supId);
+  let html = `<p style="font-size:13px;color:var(--grey-500);margin:6px 0 12px;">Outstanding units across all open orders — your batch production picture.</p>`;
+  if (!rows.length) return html + `<div class="empty"><h2>No open demand</h2><p>Nothing outstanding to produce right now.</p></div>`;
+  html += `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);overflow:hidden;">`;
+  rows.forEach((r, i) => {
+    const schools = Object.keys(r.bySchool).map(s => `${shopSchoolName(s)} ${r.bySchool[s]}`).join(' · ');
+    html += `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;${i ? 'border-top:1px solid var(--grey-100);' : ''}">
+      <div style="min-width:0;"><strong style="font-size:13px;">${escapeHtml(r.itemName)}</strong>${r.size ? ` <span style="color:var(--grey-500);font-size:12px;">sz ${escapeHtml(r.size)}</span>` : ''}
+        <div style="font-size:11px;color:var(--grey-500);">${escapeHtml(schools)}</div></div>
+      <span style="font-family:'JetBrains Mono',monospace;font-weight:700;font-size:15px;">${r.total}</span></div>`;
+  });
+  html += `</div>`;
+  return html;
+}
+
+function renderSupplyForecast(supId) {
+  const horizon = state.supplyHorizonWeeks || 8;
+  const items = supplyItemsForSupplier(supId);
+  const demand = {}; supplyDemandRows(supId).forEach(r => { demand[(r.itemId || r.itemName) + '|' + r.size] = r.total; });
+  const rows = [];
+  items.forEach(it => {
+    shopItemSizes(it).forEach(sz => {
+      const stk = supplyStockRow(supId, it.id, sz);
+      const onHand = stk ? stk.qty : 0;
+      const vel = computeVelocityPerWeek(state.supplyMovements, it.id, sz, 90, Date.now());
+      const open = demand[(it.id) + '|' + (sz || '')] || 0;
+      const run = computeSuggestedRun(onHand, vel, open, horizon);
+      if (onHand || vel || open || run) rows.push({ name: it.name, size: sz, onHand, vel, open, run });
+    });
+  });
+  rows.sort((a, b) => b.run - a.run);
+  let html = `<div style="margin:6px 0 12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+    <p style="font-size:13px;color:var(--grey-500);margin:0;flex:1;min-width:200px;">Suggested production runs from recent outflow, on-hand finished goods, and open orders.</p>
+    <label style="font-size:12px;">Horizon
+      <select onchange="state.supplyHorizonWeeks=parseInt(this.value,10);renderShop()" style="padding:5px 7px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;margin-left:5px;">
+        ${[4, 8, 12, 16].map(w => `<option value="${w}"${w === horizon ? ' selected' : ''}>${w} wks</option>`).join('')}</select></label></div>`;
+  if (!rows.length) return html + `<div class="empty"><h2>Nothing to forecast</h2><p>No stock, sales history, or open orders yet for this supplier's apparel.</p></div>`;
+  html += `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);overflow:hidden;">
+    <div style="display:flex;gap:8px;padding:8px 12px;background:var(--grey-50,#f8f8f8);font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--grey-500);font-weight:700;">
+      <span style="flex:1;">Item</span><span style="width:60px;text-align:right;">On hand</span><span style="width:64px;text-align:right;">Out/wk</span><span style="width:56px;text-align:right;">Open</span><span style="width:64px;text-align:right;">Make</span></div>`;
+  rows.forEach((r, i) => {
+    html += `<div style="display:flex;gap:8px;align-items:center;padding:8px 12px;border-top:1px solid var(--grey-100);font-size:12px;">
+      <span style="flex:1;min-width:0;"><strong>${escapeHtml(r.name)}</strong>${r.size ? ` <span style="color:var(--grey-500);">sz ${escapeHtml(r.size)}</span>` : ''}</span>
+      <span style="width:60px;text-align:right;font-family:'JetBrains Mono',monospace;">${r.onHand}</span>
+      <span style="width:64px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--grey-500);">${r.vel.toFixed(1)}</span>
+      <span style="width:56px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--grey-500);">${r.open}</span>
+      <span style="width:64px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:${r.run > 0 ? 'var(--warn,#d97706)' : 'var(--grey-400)'};">${r.run}</span></div>`;
+  });
+  html += `</div>`;
+  return html;
+}
+
+function renderSupplyDashboard(supId) {
+  const d = supplyDashboard(supId);
+  const card = (label, val, sub, color) => `<div style="flex:1;min-width:130px;border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:13px;">
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--grey-500);font-weight:700;">${label}</div>
+    <div style="font-size:24px;font-weight:800;font-family:'Oswald',sans-serif;margin-top:4px;${color ? 'color:' + color + ';' : ''}">${val}</div>
+    ${sub ? `<div style="font-size:11px;color:var(--grey-500);margin-top:2px;">${sub}</div>` : ''}</div>`;
+  let html = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0;">
+    ${card('Open orders', d.openCount, d.totalCount + ' total')}
+    ${card('Pipeline units', d.pipeline, 'still to deliver')}
+    ${card('Overdue', d.overdueCount, 'past ETA', d.overdueCount > 0 ? 'var(--red,#D22C12)' : '')}
+    ${card('On-time', d.onTimePct == null ? '—' : d.onTimePct + '%', d.receivedCount + ' delivered')}
+    ${card('Avg lead time', d.avgLeadDays == null ? '—' : d.avgLeadDays + 'd', 'submit → receive')}
+  </div>`;
+  // demand by school
+  const bySchool = {};
+  (state.supplyOrders || []).filter(o => o.supplierId === supId && ['draft', 'received', 'cancelled'].indexOf(o.status) === -1)
+    .forEach(o => { let t = 0; (o.lines || []).forEach(l => t += supplyLineOutstanding(l)); if (t) bySchool[o.schoolId] = (bySchool[o.schoolId] || 0) + t; });
+  const schoolRows = Object.keys(bySchool).map(s => ({ s, n: bySchool[s] })).sort((a, b) => b.n - a.n);
+  if (schoolRows.length) {
+    html += `<h3 style="font-family:'Oswald',sans-serif;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin:18px 0 8px;">Open demand by school</h3>
+      <div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);overflow:hidden;">`;
+    schoolRows.forEach((r, i) => {
+      html += `<div style="display:flex;justify-content:space-between;padding:8px 12px;${i ? 'border-top:1px solid var(--grey-100);' : ''}font-size:13px;"><span>${escapeHtml(shopSchoolName(r.s))}</span><span style="font-family:'JetBrains Mono',monospace;font-weight:700;">${r.n}</span></div>`;
+    });
+    html += `</div>`;
+  }
+  return html;
+}
+
+// ── action handlers: school side ──
+function shopOrderNew() {
+  const internal = supplyInternalSuppliers();
+  const os = orderableSchools();
+  if (!os.length) { toast && toast('You can only place orders for a school you administer'); return; }
+  const sid = os.indexOf(state.shopStockSchool) !== -1 ? state.shopStockSchool : os[0];
+  state.orderEdit = { id: null, schoolId: sid, supplierId: internal[0] ? internal[0].id : null, notes: '', lines: [] };
+  renderShop();
+}
+function shopOrderEditDraft(id) {
+  const o = (state.supplyOrders || []).find(x => x.id === id); if (!o) return;
+  state.orderEdit = { id: o.id, schoolId: o.schoolId, supplierId: o.supplierId, notes: o.notes || '', lines: (o.lines || []).map(l => ({ itemId: l.itemId, size: l.size || '', qty: l.qtyOrdered, forWhom: l.forWhom || '' })) };
+  renderShop();
+}
+function shopOrderCancelEdit() { state.orderEdit = null; renderShop(); }
+function orderEditSetSupplier(v) { state.orderEdit.supplierId = v; state.orderEdit.lines = []; renderShop(); }
+function orderEditSetSchool(v) { state.orderEdit.schoolId = v; renderShop(); }
+function orderEditSetNote(v) { state.orderEdit.notes = v; }
+function orderEditAddLine() { state.orderEdit.lines.push({ itemId: '', size: '', qty: 1, forWhom: '' }); renderShop(); }
+function orderEditRemoveLine(i) { state.orderEdit.lines.splice(i, 1); renderShop(); }
+function orderEditSetLine(i, field, val) {
+  const l = state.orderEdit.lines[i]; if (!l) return;
+  if (field === 'qty') l.qty = Math.max(0, parseInt(val, 10) || 0);
+  else if (field === 'itemId') { l.itemId = val; const it = supplyItemsForSupplier(state.orderEdit.supplierId).find(x => x.id === val); const sizes = it ? shopItemSizes(it) : ['']; l.size = sizes[0] || ''; renderShop(); }
+  else l[field] = val;
+}
+function orderEditSeedFromReorder() {
+  const e = state.orderEdit; const sid = e.schoolId;
+  const supItems = supplyItemsForSupplier(e.supplierId);
+  // use the viewed school's stock; if a different school is selected, fetch lazily
+  const useRows = (state.shopStockSchool === sid) ? state.shopStock : null;
+  const stockRow = (itemId, size) => {
+    const rows = useRows || state.shopStock || [];
+    return rows.find(r => r.itemId === itemId && (r.size || '') === (size || '')) || null;
+  };
+  let added = 0;
+  supItems.forEach(it => {
+    shopItemSizes(it).forEach(sz => {
+      const r = stockRow(it.id, sz);
+      if (r && r.reorderLevel > 0 && r.qty <= r.reorderLevel) {
+        const need = (r.targetLevel || 0) > 0 ? Math.max(0, r.targetLevel - r.qty) : Math.max(0, r.reorderLevel - r.qty);
+        if (need > 0 && !e.lines.find(l => l.itemId === it.id && l.size === sz)) { e.lines.push({ itemId: it.id, size: sz, qty: need, forWhom: '' }); added++; }
+      }
+    });
+  });
+  if (!added) toast && toast(state.shopStockSchool === sid ? 'Nothing below reorder level for this supplier' : 'Open this school on the Stock tab first to seed its reorder list');
+  renderShop();
+}
+async function shopOrderSaveDraft(submit) {
+  const e = state.orderEdit; if (!e) return;
+  const lines = (e.lines || []).filter(l => l.itemId && l.qty > 0).map(l => ({ itemId: l.itemId, itemName: supplyItemName(l.itemId), size: l.size || '', qty: l.qty, forWhom: l.forWhom || null }));
+  if (submit && !lines.length) { alert('Add at least one line before submitting.'); return; }
+  try {
+    const oid = await DB.supplyOrderSave(e.id, e.schoolId, e.supplierId, e.notes || null, lines);
+    if (submit) { await DB.supplyOrderSubmit(oid); notifySupplyAdmins(e.schoolId, lines.length); }
+    state.orderEdit = null;
+    toast && toast(submit ? 'Order submitted' : 'Draft saved');
+    state.supplyOrders = await DB.loadSupplyOrders(); renderShop();
+  } catch (err) { alert('Could not save order: ' + (err.message || err)); }
+}
+async function shopOrderSubmit(id) {
+  const o = (state.supplyOrders || []).find(x => x.id === id);
+  try { await DB.supplyOrderSubmit(id); if (o) notifySupplyAdmins(o.schoolId, (o.lines || []).length); toast && toast('Order submitted'); state.supplyOrders = await DB.loadSupplyOrders(); renderShop(); }
+  catch (err) { alert('Could not submit: ' + (err.message || err)); }
+}
+async function shopOrderCancel(id) {
+  if (!confirm('Cancel this order?')) return;
+  try { await DB.supplyOrderCancel(id); toast && toast('Order cancelled'); state.supplyOrders = await DB.loadSupplyOrders(); renderShop(); }
+  catch (err) { alert('Could not cancel: ' + (err.message || err)); }
+}
+async function shopOrderReceive(id) {
+  const o = (state.supplyOrders || []).find(x => x.id === id);
+  if (!confirm('Confirm receipt? This adds the shipped quantities to your shop stock.')) return;
+  try {
+    await DB.supplyOrderReceive(id, null);
+    if (o) DB.supplyAdminIds().then(ids => { if (ids && ids.length) DB.sendPushNotification({ title: 'Order received', body: shopSchoolName(o.schoolId) + ' confirmed receipt', tag: 'supply', url: '#shop', targetUserIds: ids }); }).catch(() => {});
+    toast && toast('Receipt confirmed — stock updated');
+    state.supplyOrders = await DB.loadSupplyOrders();
+    if (o && state.shopStockSchool === o.schoolId) await loadShopStock(o.schoolId);
+    renderShop();
+  } catch (err) { alert('Could not confirm receipt: ' + (err.message || err)); }
+}
+function notifySupplyAdmins(schoolId, n) {
+  DB.supplyAdminIds().then(ids => { if (ids && ids.length) DB.sendPushNotification({ title: 'New supply order', body: shopSchoolName(schoolId) + ' submitted an order (' + n + ' line' + (n === 1 ? '' : 's') + ')', tag: 'supply', url: '#shop', targetUserIds: ids }); }).catch(() => {});
+}
+
+// ── action handlers: supply side ──
+function setSupplyView(v) { state.supplyView = v; state.supplyEdit = null; renderShop(); }
+async function supplySetActingSupplier(id) { state.supplyActingSupplier = id; state.supplyEdit = null; renderShop(); await loadSupplyContext(id); if (state.shopView === 'supply') renderShop(); }
+function supplyStartConfirm(id) { state.supplyEdit = { orderId: id, mode: 'confirm' }; renderShop(); }
+function supplyStartShip(id) { state.supplyEdit = { orderId: id, mode: 'ship' }; renderShop(); }
+function supplyCancelEdit() { state.supplyEdit = null; renderShop(); }
+function notifySchool(o, title, body) { if (o && o.schoolId) DB.sendPushNotification({ title, body, tag: 'supply', url: '#shop', schoolId: o.schoolId }); }
+async function supplyConfirmSubmit(id) {
+  const o = (state.supplyOrders || []).find(x => x.id === id); if (!o) return;
+  const eta = (document.getElementById('supEta') || {}).value || null;
+  const lines = (o.lines || []).map(l => { const el = document.getElementById('supc_' + l.id); return { lineId: l.id, qty: el ? Math.max(0, parseInt(el.value, 10) || 0) : l.qtyOrdered }; });
+  try {
+    await DB.supplyOrderConfirm(id, eta, lines);
+    notifySchool(o, 'Order confirmed', 'Your order was confirmed' + (eta ? ', ETA ' + supplyFmtDate(eta) : ''));
+    state.supplyEdit = null; toast && toast('Order confirmed');
+    state.supplyOrders = await DB.loadSupplyOrders(); renderShop();
+  } catch (err) { alert('Could not confirm: ' + (err.message || err)); }
+}
+async function supplyShipSubmit(id) {
+  const o = (state.supplyOrders || []).find(x => x.id === id); if (!o) return;
+  const trk = (document.getElementById('supTrk') || {}).value || null;
+  const car = (document.getElementById('supCar') || {}).value || null;
+  const eta = (document.getElementById('supShipEta') || {}).value || null;
+  const lines = (o.lines || []).map(l => { const el = document.getElementById('sups_' + l.id); const def = l.qtyConfirmed > 0 ? l.qtyConfirmed : l.qtyOrdered; return { lineId: l.id, qty: el ? Math.max(0, parseInt(el.value, 10) || 0) : def }; });
+  try {
+    await DB.supplyOrderShip(id, trk, car, eta, lines);
+    notifySchool(o, 'Order shipped', 'Your order is on its way' + (trk ? ' · ' + trk : '') + (eta ? ' · ETA ' + supplyFmtDate(eta) : ''));
+    state.supplyEdit = null; toast && toast('Marked shipped — stock posted out');
+    state.supplyOrders = await DB.loadSupplyOrders();
+    await loadSupplyContext(state.supplyActingSupplier);
+    renderShop();
+  } catch (err) { alert('Could not ship: ' + (err.message || err)); }
+}
+async function supplySetStatus(id, status) {
+  const o = (state.supplyOrders || []).find(x => x.id === id);
+  try {
+    await DB.supplyOrderSetStatus(id, status);
+    if (status === 'arrived') notifySchool(o, 'Order arrived', 'Your order has arrived — confirm receipt to add it to stock');
+    toast && toast('Updated');
+    state.supplyOrders = await DB.loadSupplyOrders(); renderShop();
+  } catch (err) { alert('Could not update: ' + (err.message || err)); }
+}
+async function supplyCancelOrder(id) {
+  if (!confirm('Cancel this order?')) return;
+  const o = (state.supplyOrders || []).find(x => x.id === id);
+  try { await DB.supplyOrderCancel(id); notifySchool(o, 'Order cancelled', 'Your supply order was cancelled'); toast && toast('Cancelled'); state.supplyOrders = await DB.loadSupplyOrders(); renderShop(); }
+  catch (err) { alert('Could not cancel: ' + (err.message || err)); }
 }
 
 // ── Stock filter / sort (stage 1) ──────────────────────────────────────────
@@ -14176,6 +14762,13 @@ function renderShopStock() {
   const schoolOpts = can.manageShop()
     ? ((typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS : []).map(s => ({ id: s.id, name: s.name })))
     : ((state.userSchools || []).map(id => ({ id, name: shopSchoolName(id) })));
+  // Supply admins also manage finished-goods stock held at each internal supplier's location.
+  if (can.supplyAdmin()) {
+    (state.shop.suppliers || []).filter(s => s.isInternal).forEach(s => {
+      const locId = DB.supplyLoc(s.id);
+      if (!schoolOpts.find(o => o.id === locId)) schoolOpts.push({ id: locId, name: s.name + ' (finished goods)' });
+    });
+  }
   const schoolCtl = schoolOpts.length > 1
     ? `<select onchange="shopSwitchSchool(this.value)" aria-label="School" style="padding:6px 8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;max-width:210px;">
         ${schoolOpts.map(s => `<option value="${escapeHtml(s.id)}"${s.id === sid ? ' selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}</select>`
