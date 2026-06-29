@@ -15115,6 +15115,16 @@ function openSpecialOrder(id) {
   const supSel = document.getElementById('soSupplier');
   if (supSel) supSel.innerHTML = `<option value="">\u2014 none \u2014</option>` + (state.shop.suppliers || []).map(s => `<option value="${escapeHtml(s.id)}" ${o && o.supplier_id === s.id ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('');
   auditSetVal('soStudent', o ? o.student_name : '');
+  // Aquila member picker: only when the shop's school is this user's Aquila-connected
+  // school (member data + config are scoped to state.schoolId). Otherwise manual entry.
+  const soAqOn = schoolHasAquila() && sid === state.schoolId;
+  const soAqBtn = document.getElementById('soAquilaBtn');
+  if (soAqBtn) soAqBtn.style.display = soAqOn ? '' : 'none';
+  const soAqBox = document.getElementById('soAquilaPicker');
+  if (soAqBox) soAqBox.style.display = 'none';
+  state._soAquila = null; state._soAquilaHits = null;
+  const soStuInp = document.getElementById('soStudent');
+  if (soStuInp) soStuInp.placeholder = soAqOn ? 'Type a name, or use Find in Aquila' : "Student's name";
   auditSetVal('soStatus', o ? o.status : 'need_to_order');
   auditSetVal('soNotes', o ? (o.notes || '') : '');
   soPopulateSizes(o ? o.item_id : '', o ? o.size : '');
@@ -15157,6 +15167,42 @@ async function saveSpecialOrder() {
   closeModal('modalSpecialOrder');
   state.specialOrders = await DB.specialOrders.list(sid);
   renderShop();
+}
+// ── Aquila member picker for special orders (reuses the shared member dataset) ──
+function soToggleAquilaPicker() {
+  const box = document.getElementById('soAquilaPicker'); if (!box) return;
+  const opening = box.style.display === 'none';
+  box.style.display = opening ? '' : 'none';
+  if (!opening) return;
+  state._soAquila = { members: [], query: '', loading: true };
+  soRenderAquilaResults();
+  const s = document.getElementById('soAquilaSearch'); if (s) { s.value = ''; try { s.focus(); } catch (e) {} }
+  aquilaMembers().then((res) => {
+    if (res && res.error) state._soAquila = { members: [], query: '', error: res.error };
+    else state._soAquila = { members: (res && res.members) || [], query: '' };
+    soRenderAquilaResults();
+  }).catch(() => { state._soAquila = { members: [], query: '', error: 'aquila_unavailable' }; soRenderAquilaResults(); });
+}
+function soAquilaSearchInput(q) { if (state._soAquila) { state._soAquila.query = q; soRenderAquilaResults(); } }
+function soRenderAquilaResults() {
+  const el = document.getElementById('soAquilaResults'); if (!el) return;
+  const st = state._soAquila || { members: [] };
+  if (st.loading) { el.innerHTML = `<div style="font-size:12px;color:var(--grey-500);padding:8px;">Loading members…</div>`; return; }
+  if (st.error) { el.innerHTML = `<div style="font-size:12px;color:var(--red,#D22C12);padding:8px;">Couldn't reach Aquila — type the name manually.</div>`; return; }
+  const hits = aquilaSearch(st.members, st.query).slice(0, 50);
+  state._soAquilaHits = hits;
+  if (!hits.length) { el.innerHTML = `<div style="font-size:12px;color:var(--grey-500);padding:8px;">No matches — type the name manually.</div>`; return; }
+  el.innerHTML = hits.map((m, i) => {
+    const name = ((m.firstName || '') + ' ' + (m.lastName || '')).trim() || '(no name)';
+    const sub = aquilaGradeSummary(m);
+    return `<button type="button" class="btn btn-ghost" style="display:block;width:100%;text-align:left;padding:7px 9px;margin-bottom:3px;font-size:13px;" onclick="soPickAquilaMember(${i})"><strong>${escapeHtml(name)}</strong>${sub ? `<span style="display:block;font-size:11px;color:var(--grey-500);">${escapeHtml(sub)}</span>` : ''}</button>`;
+  }).join('');
+}
+function soPickAquilaMember(i) {
+  const m = (state._soAquilaHits || [])[i]; if (!m) return;
+  const name = ((m.firstName || '') + ' ' + (m.lastName || '')).trim();
+  const inp = document.getElementById('soStudent'); if (inp) inp.value = name;
+  const box = document.getElementById('soAquilaPicker'); if (box) box.style.display = 'none';
 }
 async function updateSpecialOrderStatus(id, status) {
   const sid = state.shopStockSchool;

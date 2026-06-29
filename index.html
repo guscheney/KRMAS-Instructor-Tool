@@ -263,6 +263,11 @@
     <div class="form-row">
       <label>For (student name)</label>
       <input id="soStudent" placeholder="Student's name">
+      <button type="button" class="btn btn-ghost" id="soAquilaBtn" style="display:none;margin-top:6px;font-size:12px;padding:6px 12px;" onclick="soToggleAquilaPicker()">🔗 Find in Aquila</button>
+      <div id="soAquilaPicker" style="display:none;margin-top:8px;border:1px solid var(--grey-200,#e4e4e7);border-radius:8px;padding:8px;">
+        <input id="soAquilaSearch" placeholder="Search Aquila members…" oninput="soAquilaSearchInput(this.value)" style="width:100%;padding:8px;border:1px solid var(--grey-200,#e4e4e7);border-radius:6px;font-size:13px;box-sizing:border-box;">
+        <div id="soAquilaResults" style="max-height:200px;overflow-y:auto;margin-top:6px;"></div>
+      </div>
     </div>
     <div class="form-row">
       <label>Size</label>
