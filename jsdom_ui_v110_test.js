@@ -96,6 +96,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   key('Escape');
   ck('Escape does NOT close the PIN lock', doc.getElementById('modalPinLock').classList.contains('open'));
   window.eval("closeModal('modalPinLock');");
+
+  // Escape must run wrapper cleanup, not bare closeModal (audit fix)
+  window.eval(`
+    window._pdfDelegateRan = false;
+    window.closePdfViewer = function(){ window._pdfDelegateRan = true; closeModal('modalPdfViewer'); };
+    openModal('modalPdfViewer');
+  `);
+  key('Escape');
+  ck('Escape on PDF viewer runs the close wrapper', ev('window._pdfDelegateRan') === true && !doc.getElementById('modalPdfViewer').classList.contains('open'));
+  ck('branding modal registered for delegated close', /modalBranding/.test(appSrc.match(/_modalCloseDelegate = \{[\s\S]*?\};/)[0]));
+  ck('qf student actions use JSON-escaped ids', /openStudent\(\$\{JSON\.stringify\(id\)\}\)/.test(appSrc));
   // Ctrl+K opens quick-find
   key('k', { ctrlKey: true });
   ck('Ctrl+K opens quick-find', doc.getElementById('modalQuickFind').classList.contains('open'));

@@ -1562,6 +1562,11 @@ function _modalFocusIn(el) {
 }
 // Modals that must never be dismissed with Escape (security locks).
 const _modalNoEscape = { modalPinLock: true };
+// Modals whose close must run through a wrapper (cleanup Escape must not skip).
+const _modalCloseDelegate = {
+  modalPdfViewer: () => closePdfViewer(),
+  modalBranding:  () => closeBrandingPanel(),
+};
 function _topOpenModal() {
   let top = null, z = -1;
   document.querySelectorAll('.modal-bg.open').forEach(m => {
@@ -1573,7 +1578,12 @@ function _topOpenModal() {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     const top = _topOpenModal();
-    if (top && !_modalNoEscape[top.id]) { e.preventDefault(); closeModal(top.id); }
+    if (top && !_modalNoEscape[top.id]) {
+      e.preventDefault();
+      const delegate = _modalCloseDelegate[top.id];
+      if (delegate) { try { delegate(); } catch (err) { closeModal(top.id); } }
+      else closeModal(top.id);
+    }
     return;
   }
   if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === 'k') {
@@ -1612,7 +1622,7 @@ function qfBuildIndex() {
   // students by name (any signed-in user — same visibility as the Students view)
   if (state.user) {
     for (const [id, stu] of Object.entries(state.students || {})) {
-      if (stu && stu.name) add('student', '🧑', stu.name, `openStudent('${id}')`);
+      if (stu && stu.name) add('student', '🧑', stu.name, `openStudent(${JSON.stringify(id)})`);
     }
   }
   // shop: suppliers + supply orders (only where the shop is visible)
