@@ -1483,6 +1483,197 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 }
 
+// ==================================================================
+// v110 — shared UI primitives (audit-driven)
+// ==================================================================
+
+// ---------- loading / empty states ----------
+function uiLoading(label) {
+  return `<div class="ui-loading"><span class="ui-spin"></span><span>${escapeHtml(label || 'Loading…')}</span></div>`;
+}
+function uiEmpty(icon, title, hint) {
+  return `<div class="ui-empty"><span class="ui-empty-icon">${icon || '·'}</span>` +
+    (title ? `<span class="ui-empty-title">${escapeHtml(title)}</span>` : '') +
+    (hint ? `<span>${escapeHtml(hint)}</span>` : '') + `</div>`;
+}
+
+// ---------- admin menu data (shared by the Admin view + quick-find) ----------
+function adminMenuSections(isSuperAdmin) {
+  return [
+    { title: 'People & schools', items: [
+      { icon: '👥', label: 'User management',      fn: 'openInstructorManager()' },
+      { icon: '📥', label: 'Import users',         fn: 'openBulkImport()' },
+      { icon: '🏷', label: 'Groups',               fn: 'openGroupsAdmin()' },
+      { icon: '📋', label: 'Class assignments',    fn: 'openClassAssignments()' },
+      { icon: '🏫', label: 'Schools / locations',  fn: 'openSchoolManager()' },
+      { icon: '🎓', label: 'Onboarding',           fn: 'openOnboardingAdmin()' },
+      { icon: '🌐', label: 'All schools overview', fn: 'openAllSchoolsOverview()', sup: true },
+    ] },
+    { title: 'Scheduling & events', items: [
+      { icon: '🚫', label: 'Closures / holidays',  fn: 'openClosuresAdmin()' },
+      { icon: '🎯', label: 'Class type mapping',   fn: 'openClassTypeMapper()' },
+      { icon: '🎨', label: 'Event types',          fn: 'openEventTypes()' },
+      { icon: '📅', label: 'Import events',        fn: 'openEventImport()' },
+      { icon: '🏷️', label: 'Class types',          fn: 'openClassTypesEditor()', sup: true },
+    ] },
+    { title: 'Records & compliance', items: [
+      { icon: '📊', label: 'Dashboard',            fn: 'openDashboard()' },
+      { icon: '📋', label: 'Reports',              fn: 'openReports()' },
+      { icon: '🛡', label: 'Compliance',           fn: 'openComplianceDashboard()' },
+      { icon: '📝', label: 'Audit log',            fn: 'openAuditLog()' },
+      { icon: '📤', label: 'Export roster',        fn: 'exportWeekRoster()' },
+    ] },
+    { title: 'Communication', items: [
+      { icon: '📢', label: 'Notices board',        fn: 'openNoticesBoard()' },
+    ] },
+    { title: 'Integrations', items: [
+      ...(DB.isSupabase ? [{ icon: '🔗', label: 'Aquila CRM', fn: 'openAquilaSettings()' }] : []),
+    ] },
+    { title: 'System', items: [
+      { icon: '🔑', label: 'Roles & permissions',  fn: 'openRolesMatrix()', sup: true },
+      { icon: '🎨', label: 'Branding',             fn: 'openBrandingPanel()', sup: true },
+      { icon: '📄', label: 'Upload docs',          fn: 'openDocUpload()', sup: true },
+      ...(isSuperAdmin && !DB.isSupabase ? [{ icon: '☁', label: 'Migrate to Supabase', fn: 'runMigration()', sup: true }] : []),
+    ] },
+  ];
+}
+
+// Filter the rendered admin grid in place (keeps input focus; no re-render).
+function adminMenuFilter(q) {
+  q = (q || '').trim().toLowerCase();
+  document.querySelectorAll('[data-menu-sec]').forEach(sec => {
+    let any = false;
+    sec.querySelectorAll('[data-menu-item]').forEach(btn => {
+      const hit = !q || (btn.getAttribute('data-menu-item') || '').includes(q);
+      btn.style.display = hit ? '' : 'none';
+      if (hit) any = true;
+    });
+    sec.style.display = any ? '' : 'none';
+  });
+}
+
+// ---------- modal a11y: focus in on open, restore on close, Escape closes ----------
+const _modalPrevFocus = {};
+function _modalFocusIn(el) {
+  try {
+    const t = el.querySelector('[autofocus], input:not([type=hidden]):not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled])');
+    if (t) t.focus();
+  } catch (e) {}
+}
+// Modals that must never be dismissed with Escape (security locks).
+const _modalNoEscape = { modalPinLock: true };
+function _topOpenModal() {
+  let top = null, z = -1;
+  document.querySelectorAll('.modal-bg.open').forEach(m => {
+    const mz = parseInt(m.style.zIndex || '0', 10) || 0;
+    if (mz >= z) { z = mz; top = m; }
+  });
+  return top;
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const top = _topOpenModal();
+    if (top && !_modalNoEscape[top.id]) { e.preventDefault(); closeModal(top.id); }
+    return;
+  }
+  if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === 'k') {
+    e.preventDefault();
+    openQuickFind();
+  }
+});
+
+// ---------- global quick-find (Ctrl/⌘K or the header 🔎) ----------
+function qfBuildIndex() {
+  const out = [];
+  const seen = {};
+  const add = (kind, icon, label, run, extra) => {
+    const k = kind + '|' + label;
+    if (seen[k]) return; seen[k] = 1;
+    out.push({ kind, icon, label, run, extra: extra || '' });
+  };
+  // views (role-gated where the nav is)
+  add('view', '🏠', 'Home',   "setView('feed')");
+  add('view', '▤',  'Roster', "setView('roster')");
+  add('view', '🥋', 'Teach',  "setView('teach')");
+  add('view', '⋯',  'More',   "setView('more')");
+  if (state.user && can.seeShop())    add('view', '📦', 'Inventory / shop', "setView('shop')");
+  if (state.user && can.viewAudits()) add('view', '✅', 'Audits', "setView('audits')");
+  if (state.user) add('view', '🎓', 'Students', "setView('students')");
+  // admin tools (same gates as the Admin view)
+  if (state.user && can.manageInstructors()) {
+    const isSup = can.switchAnySchool();
+    for (const sec of adminMenuSections(isSup)) {
+      for (const it of sec.items) {
+        if (it.sup && !isSup) continue;
+        add('admin', it.icon, it.label, it.fn, sec.title);
+      }
+    }
+  }
+  // students by name (any signed-in user — same visibility as the Students view)
+  if (state.user) {
+    for (const [id, stu] of Object.entries(state.students || {})) {
+      if (stu && stu.name) add('student', '🧑', stu.name, `openStudent('${id}')`);
+    }
+  }
+  // shop: suppliers + supply orders (only where the shop is visible)
+  if (state.user && can.seeShop()) {
+    for (const s of ((state.shop && state.shop.suppliers) || [])) {
+      if (s && s.name) add('supplier', s.isInternal ? '🏭' : '🚚', s.name, `setView('shop'); setShopView('suppliers')`);
+    }
+    for (const o of (state.supplyOrders || [])) {
+      const label = `Order — ${shopSchoolName(o.schoolId)} (${o.status})`;
+      add('order', '🧾', label, `setView('shop'); setShopView('orders')`, (o.lines || []).length + ' lines');
+    }
+  }
+  return out;
+}
+function openQuickFind() {
+  state._qf = { q: '', idx: 0, items: qfBuildIndex() };
+  openModal('modalQuickFind');
+  const inp = document.getElementById('qfInput');
+  if (inp) { inp.value = ''; try { inp.focus(); } catch (e) {} }
+  qfRender();
+}
+function qfInputChange(q) { if (state._qf) { state._qf.q = q; state._qf.idx = 0; qfRender(); } }
+function qfMatches() {
+  const st = state._qf || { q: '', items: [] };
+  const q = (st.q || '').trim().toLowerCase();
+  if (!q) {
+    // default: views + admin tools only (students/orders would swamp the list)
+    return st.items.filter(i => i.kind === 'view' || i.kind === 'admin').slice(0, 12);
+  }
+  const starts = [], contains = [];
+  for (const i of st.items) {
+    const l = i.label.toLowerCase();
+    if (l.startsWith(q)) starts.push(i);
+    else if (l.includes(q)) contains.push(i);
+  }
+  return starts.concat(contains).slice(0, 30);
+}
+function qfRender() {
+  const box = document.getElementById('qfResults'); if (!box) return;
+  const st = state._qf || {}; const hits = qfMatches();
+  st._hits = hits;
+  if (!hits.length) { box.innerHTML = uiEmpty('🔎', 'No matches', 'Try a student, tool, supplier or view name.'); return; }
+  box.innerHTML = hits.map((h, i) =>
+    `<button type="button" class="qf-result ${i === (st.idx || 0) ? 'qf-active' : ''}" onclick="qfRun(${i})">
+       <span class="qf-ico">${h.icon}</span><span>${escapeHtml(h.label)}</span>
+       <span class="qf-kind">${escapeHtml(h.extra || h.kind)}</span></button>`).join('');
+}
+function qfKey(e) {
+  const st = state._qf; if (!st) return;
+  const n = (st._hits || []).length;
+  if (e.key === 'ArrowDown') { e.preventDefault(); st.idx = Math.min((st.idx || 0) + 1, Math.max(0, n - 1)); qfRender(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); st.idx = Math.max((st.idx || 0) - 1, 0); qfRender(); }
+  else if (e.key === 'Enter') { e.preventDefault(); qfRun(st.idx || 0); }
+}
+function qfRun(i) {
+  const st = state._qf || {}; const h = (st._hits || [])[i];
+  if (!h) return;
+  closeModal('modalQuickFind');
+  try { window.eval(h.run); } catch (e) { console.warn('quick-find action failed:', e && e.message); }
+}
+
 // ---------- Week / day navigation ----------
 function selectDay(dow) {
   state.selectedDay = dow;
@@ -3796,12 +3987,21 @@ function openModal(id)  {
   _modalZ += 1;
   el.style.zIndex = _modalZ;
   el.classList.add('open');
+  // v110 a11y: dialog semantics + move focus in, remembering where it was.
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-modal', 'true');
+  _modalPrevFocus[id] = document.activeElement;
+  setTimeout(() => { if (el.classList.contains('open')) _modalFocusIn(el); }, 0);
 }
 function closeModal(id) {
   const el = document.getElementById(id);
   if (!el) return;
   el.classList.remove('open');
   el.style.zIndex = '';
+  // v110 a11y: hand focus back to whatever opened the dialog.
+  const prev = _modalPrevFocus[id];
+  delete _modalPrevFocus[id];
+  if (prev && prev.focus && document.contains(prev)) { try { prev.focus(); } catch (e) {} }
   if (!document.querySelector('.modal-bg.open')) _modalZ = 100; // reset when all modals closed
 }
 
@@ -12094,54 +12294,21 @@ function renderAdmin() {
 
   let html = `<h1 class="section-head">Admin</h1>`;
 
-  // Grouped admin sections (replaces the old flat grid).
-  const sections = [
-    { title: 'People & schools', items: [
-      { icon: '👥', label: 'User management',      fn: 'openInstructorManager()' },
-      { icon: '📥', label: 'Import users',         fn: 'openBulkImport()' },
-      { icon: '🏷', label: 'Groups',               fn: 'openGroupsAdmin()' },
-      { icon: '📋', label: 'Class assignments',    fn: 'openClassAssignments()' },
-      { icon: '🏫', label: 'Schools / locations',  fn: 'openSchoolManager()' },
-      { icon: '🎓', label: 'Onboarding',           fn: 'openOnboardingAdmin()' },
-      { icon: '🌐', label: 'All schools overview', fn: 'openAllSchoolsOverview()', sup: true },
-    ] },
-    { title: 'Scheduling & events', items: [
-      { icon: '🚫', label: 'Closures / holidays',  fn: 'openClosuresAdmin()' },
-      { icon: '🎯', label: 'Class type mapping',   fn: 'openClassTypeMapper()' },
-      { icon: '🎨', label: 'Event types',          fn: 'openEventTypes()' },
-      { icon: '📅', label: 'Import events',        fn: 'openEventImport()' },
-      { icon: '🏷️', label: 'Class types',          fn: 'openClassTypesEditor()', sup: true },
-    ] },
-    { title: 'Records & compliance', items: [
-      { icon: '📊', label: 'Dashboard',            fn: 'openDashboard()' },
-      { icon: '📋', label: 'Reports',              fn: 'openReports()' },
-      { icon: '🛡', label: 'Compliance',           fn: 'openComplianceDashboard()' },
-      { icon: '📝', label: 'Audit log',            fn: 'openAuditLog()' },
-      { icon: '📤', label: 'Export roster',        fn: 'exportWeekRoster()' },
-    ] },
-    { title: 'Communication', items: [
-      { icon: '📢', label: 'Notices board',        fn: 'openNoticesBoard()' },
-    ] },
-    { title: 'Integrations', items: [
-      ...(DB.isSupabase ? [{ icon: '🔗', label: 'Aquila CRM', fn: 'openAquilaSettings()' }] : []),
-    ] },
-    { title: 'System', items: [
-      { icon: '🔑', label: 'Roles & permissions',  fn: 'openRolesMatrix()', sup: true },
-      { icon: '🎨', label: 'Branding',             fn: 'openBrandingPanel()', sup: true },
-      { icon: '📄', label: 'Upload docs',          fn: 'openDocUpload()', sup: true },
-      ...(isSuperAdmin && !DB.isSupabase ? [{ icon: '☁', label: 'Migrate to Supabase', fn: 'runMigration()', sup: true }] : []),
-    ] },
-  ];
+  // Grouped admin sections — shared with quick-find (see adminMenuSections).
+  const sections = adminMenuSections(isSuperAdmin);
+  html += `<input id="adminMenuSearch" type="search" placeholder="Filter admin tools…" autocomplete="off"
+      style="width:100%;padding:9px 12px;border:1px solid var(--grey-300);border-radius:var(--r-sm);font-size:13px;box-sizing:border-box;margin:2px 0 4px;font-family:var(--font-body);"
+      oninput="adminMenuFilter(this.value)">`;
   for (const sec of sections) {
     const items = sec.items.filter(it => !it.sup || isSuperAdmin);
     if (!items.length) continue;
-    html += `<div class="section-sub" style="margin-top:14px;">${sec.title}</div>`;
+    html += `<div data-menu-sec><div class="section-sub" style="margin-top:14px;">${sec.title}</div>`;
     html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px;">`;
     for (const b of items) {
-      html += `<button class="btn" onclick="${b.fn}" style="width:100%;display:flex;align-items:center;gap:8px;justify-content:flex-start;padding:12px 14px;font-size:13px;">
+      html += `<button class="btn" data-menu-item="${escapeHtml(b.label.toLowerCase())}" onclick="${b.fn}" style="width:100%;display:flex;align-items:center;gap:8px;justify-content:flex-start;padding:12px 14px;font-size:13px;">
         <span style="font-size:18px;">${b.icon}</span><span>${b.label}</span></button>`;
     }
-    html += `</div>`;
+    html += `</div></div>`;
   }
   html += `<div style="height:6px;"></div>`;
 
@@ -13980,18 +14147,24 @@ function shopStockSkeletonHtml() {
   return h;
 }
 function setShopView(v) {
-  state.shopView = v; state.shopEdit = null; renderShop();
+  state.shopView = v; state.shopEdit = null;
+  state.shopTabLoading = null;
+  // Mark the tab as loading so its renderer shows a spinner instead of a
+  // stale/incorrect "No … yet" while the fetch is in flight (v110).
+  const done = (tab) => { if (state.shopTabLoading === tab) state.shopTabLoading = null; };
+  if (v === 'special' || v === 'transfers' || v === 'stocktake' || v === 'value' || v === 'orders' || v === 'supply') state.shopTabLoading = v;
+  renderShop();
   if (v === 'special') {
-    DB.specialOrders.list(state.shopStockSchool).then(o => { state.specialOrders = o || []; if (state.shopView === 'special') renderShop(); }).catch(() => {});
+    DB.specialOrders.list(state.shopStockSchool).then(o => { state.specialOrders = o || []; }).catch(() => {}).finally(() => { done('special'); if (state.shopView === 'special') renderShop(); });
   }
   if (v === 'transfers' && can.manageShop()) {
-    DB.loadTransfers(60).then(t => { state.shopTransfers = t; if (state.shopView === 'transfers') renderShop(); }).catch(() => {});
+    DB.loadTransfers(60).then(t => { state.shopTransfers = t; }).catch(() => {}).finally(() => { done('transfers'); if (state.shopView === 'transfers') renderShop(); });
   }
   if (v === 'stocktake') {
-    DB.loadStocktakeSessions(state.shopStockSchool).then(s => { state.stocktakeSessions = s; if (state.shopView === 'stocktake') renderShop(); }).catch(() => {});
+    DB.loadStocktakeSessions(state.shopStockSchool).then(s => { state.stocktakeSessions = s; }).catch(() => {}).finally(() => { done('stocktake'); if (state.shopView === 'stocktake') renderShop(); });
   }
   if (v === 'value') {
-    DB.loadStockValue().then(r => { state.stockValue = r; if (state.shopView === 'value') renderShop(); }).catch(() => {});
+    DB.loadStockValue().then(r => { state.stockValue = r; }).catch(() => {}).finally(() => { done('value'); if (state.shopView === 'value') renderShop(); });
   }
   if (v === 'orders' || v === 'supply') {
     if (v === 'supply' && !state.supplyActingSupplier) {
@@ -14001,7 +14174,7 @@ function setShopView(v) {
     if (v === 'supply' && state.supplyActingSupplier) {
       loadSupplyContext(state.supplyActingSupplier).then(() => { if (state.shopView === 'supply') renderShop(); }).catch(() => {});
     }
-    DB.loadSupplyOrders().then(o => { state.supplyOrders = o || []; if (state.shopView === v) renderShop(); }).catch(() => {});
+    DB.loadSupplyOrders().then(o => { state.supplyOrders = o || []; }).catch(() => {}).finally(() => { done(v); if (state.shopView === v) renderShop(); });
   }
 }
 function shopCancelEdit() { state.shopEdit = null; renderShop(); }
@@ -14072,7 +14245,10 @@ function renderShop() {
     <h1 style="font-family:'Oswald',sans-serif;font-size:20px;text-transform:uppercase;letter-spacing:.04em;margin:0 0 10px;display:flex;align-items:center;gap:7px;"><span style="font-size:17px;">📦</span> Inventory</h1>
     <div class="grading-tabs shop-tabs">${tabs.map(t => `<button class="grading-tab ${state.shopView === t.id ? 'active' : ''}" onclick="setShopView('${t.id}')">${escapeHtml(t.label)}</button>`).join('')}</div>`;
 
-  if      (state.shopView === 'stock')     html += renderShopStock();
+  if (state.shopTabLoading && state.shopTabLoading === state.shopView) {
+    html += uiLoading('Loading ' + (tabs.find(t => t.id === state.shopView) || { label: '' }).label.toLowerCase().replace('🏭 ', '') + '…');
+  }
+  else if (state.shopView === 'stock')     html += renderShopStock();
   else if (state.shopView === 'reorder')   html += renderShopReorder();
   else if (state.shopView === 'special')   html += renderShopSpecial();
   else if (state.shopView === 'stocktake') html += renderShopStocktake();
@@ -16733,7 +16909,7 @@ function renderAuditDetail(main) {
   html += `<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">`;
   if (canResume) html += `<button class="btn btn-primary" style="flex:1;min-width:120px;" onclick="openAuditConductor('${a.id}')">Resume audit</button>`;
   if (can.addAudits()) html += `<button class="btn btn-black" style="flex:1;min-width:120px;" onclick="openActionModal('${a.id}','${a.school_id}','')">+ Add action</button>`;
-  if (a.status === 'draft' && isAuditor) html += `<button class="btn btn-warn" onclick="deleteDraftAudit('${a.id}')">Delete draft</button>`;
+  if (a.status === 'draft' && isAuditor) html += `<button class="btn btn-danger" onclick="deleteDraftAudit('${a.id}')">Delete draft</button>`;
   html += `</div>`;
   html += `<div class="section-sub">Section breakdown</div>`;
   snap.forEach(sec => {
@@ -17546,7 +17722,7 @@ function _colorRow(label, path, val, defVal, hint) {
       + '<span style="font-size:12px;font-weight:600;color:var(--black-2);">' + escapeHtml(label) + '</span>'
       + (defVal ? '<button onclick="brandResetField(\'' + path + '\')" title="Reset to default" style="border:none;background:none;color:var(--grey-400);font-size:13px;cursor:pointer;padding:0 2px;line-height:1;">↺</button>' : '')
     + '</div>'
-    + (hint ? '<div style="font-size:10.5px;color:var(--grey-400);margin:-1px 0 5px;line-height:1.3;">' + escapeHtml(hint) + '</div>' : '')
+    + (hint ? '<div style="font-size:11px;color:var(--grey-400);margin:-1px 0 5px;line-height:1.3;">' + escapeHtml(hint) + '</div>' : '')
     + '<div style="display:flex;align-items:center;gap:8px;">'
       + '<input type="color" value="' + safe + '" oninput="brandSet(\'' + path + '\', this.value); var t=document.getElementById(\'tx-' + id + '\'); if(t)t.value=this.value;" style="width:44px;height:32px;padding:0;border:1px solid var(--grey-200);border-radius:var(--r-sm);background:none;cursor:pointer;flex-shrink:0;">'
       + '<input id="tx-' + id + '" type="text" value="' + escapeHtml(val || '') + '" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value))brandSet(\'' + path + '\', this.value);" style="width:104px;padding:7px 9px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;font-family:var(--font-mono);">'
@@ -17854,7 +18030,7 @@ function renderBrandPreview() {
 
 // ---- per-tab content ----
 function _brandLab(t) { return '<label style="font-size:12px;font-weight:600;color:var(--black-2);display:block;margin:10px 0 3px;">' + t + '</label>'; }
-function _brandHint(t) { return '<div style="font-size:10.5px;color:var(--grey-400);margin:-1px 0 4px;line-height:1.35;">' + t + '</div>'; }
+function _brandHint(t) { return '<div style="font-size:11px;color:var(--grey-400);margin:-1px 0 4px;line-height:1.35;">' + t + '</div>'; }
 function _brandGrp(t) { return '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--grey-400);margin:16px 0 8px;">' + t + '</div>'; }
 
 function _brandTabPresets(d) {
@@ -17941,7 +18117,7 @@ function _brandTabImages(d) {
   const tile = (field, label, accept, prev, note) =>
     '<div style="border:1px solid var(--grey-200);border-radius:var(--r-md);padding:10px;margin-bottom:8px;">'
     + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">'
-      + '<div><div style="font-size:12px;font-weight:600;color:var(--black-2);">' + label + '</div>' + (note ? '<div style="font-size:10.5px;color:var(--grey-400);">' + note + '</div>' : '') + '</div>'
+      + '<div><div style="font-size:12px;font-weight:600;color:var(--black-2);">' + label + '</div>' + (note ? '<div style="font-size:11px;color:var(--grey-400);">' + note + '</div>' : '') + '</div>'
       + prev
     + '</div>'
     + '<div style="display:flex;gap:6px;margin-top:8px;">'

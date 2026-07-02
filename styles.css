@@ -1006,3 +1006,70 @@
     font-size: 16px !important;
   }
 }
+
+/* ==================================================================
+   v110 — design-token repair + shared UI primitives (audit-driven).
+   1) Missing variables that app.js already references (12 refs were
+      silently dropped by the browser; defining them fixes those with
+      zero JS churn). --ink aliases --black.
+   2) .btn-sm — used on ~85 buttons since early builds but never
+      defined until now.
+   3) .btn-warn becomes a real (amber) warning; destructive actions
+      use .btn-danger (red — matches what deletes rendered before).
+   4) Semantic utilities + shared empty/loading states + focus ring.
+   ================================================================== */
+:root {
+  --grey-50:  #fafafa;
+  --grey-600: #52525b;
+  --ink:      var(--black);
+  --red-50:   #fde8e8;
+  --red-700:  #b42318;
+  --amber-50: #fef3cd;
+  --amber-600:#b45309;
+  --amber-700:#92400e;
+  --amber-800:#7a5b00;
+}
+
+.btn-sm { padding: 5px 10px; font-size: 11px; letter-spacing: 0.04em; gap: 4px; }
+
+.btn-warn { background: var(--amber-600); border-color: var(--amber-600); color: var(--white); }
+.btn-warn:active { background: var(--amber-700); }
+.btn-danger { background: var(--red); border-color: var(--red); color: var(--white); }
+.btn-danger:active { background: var(--red-2); }
+
+.hint  { font-size: 11px; color: var(--grey-500); }
+.muted { color: var(--grey-500); }
+
+/* shared empty state — compact (in-list) variant of .empty */
+.ui-empty {
+  text-align: center; padding: 26px 16px; color: var(--grey-500);
+  font-size: 13px; line-height: 1.55;
+}
+.ui-empty .ui-empty-icon  { font-size: 26px; display: block; margin-bottom: 6px; }
+.ui-empty .ui-empty-title { font-weight: 700; color: var(--grey-600); display: block; margin-bottom: 2px; }
+
+/* shared loading state */
+.ui-loading {
+  display: flex; align-items: center; gap: 9px; justify-content: center;
+  padding: 22px 14px; color: var(--grey-500); font-size: 13px;
+}
+.ui-spin {
+  width: 15px; height: 15px; border-radius: 50%;
+  border: 2px solid var(--grey-200); border-top-color: var(--grey-500);
+  animation: uiSpin .7s linear infinite; flex: none;
+}
+@keyframes uiSpin { to { transform: rotate(360deg); } }
+
+/* keyboard focus ring (mouse clicks unaffected) */
+:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+
+/* quick-find palette */
+.qf-result {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 10px 12px; border: 0; background: transparent; text-align: left;
+  border-radius: var(--r-sm); font-size: 13px; color: var(--black); cursor: pointer;
+  font-family: var(--font-body);
+}
+.qf-result .qf-ico { font-size: 16px; flex: none; width: 22px; text-align: center; }
+.qf-result .qf-kind { margin-left: auto; font-size: 10px; color: var(--grey-400); text-transform: uppercase; letter-spacing: .05em; flex: none; }
+.qf-result.qf-active, .qf-result:active { background: var(--grey-100); }

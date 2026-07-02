@@ -15,7 +15,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Open+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=109">
+<link rel="stylesheet" href="styles.css?v=110">
 <script>
 /* No-flash brand boot: apply the cached published brand to :root BEFORE first paint,
    so a custom-branded portal never flashes the default palette on load. Self-contained
@@ -65,6 +65,7 @@
       <button class="week-nav" onclick="changeWeek(1)" aria-label="Next week">›</button>
       <div class="week-meta"><span class="month" id="monthMeta"></span><span class="wk">WK <span class="num" id="weekMeta">11</span></span></div>
       <button class="week-nav" onclick="toggleSearch()" aria-label="Search" title="Search classes">⌕</button>
+      <button class="week-nav" onclick="openQuickFind()" aria-label="Quick find (Ctrl+K)" title="Quick find (Ctrl+K)">🔎</button>
       <button class="week-nav" id="acctBtn" onclick="acctButtonTap()" aria-label="Account" title="Account" style="display:none;">⏻</button>
     </div>
     <div id="searchBar" style="display: none; margin-top: 8px;">
@@ -244,7 +245,7 @@
       <textarea id="aaEvidence" rows="2" placeholder="What was done to resolve it"></textarea>
     </div>
     <div class="detail-actions" style="margin-top:6px;">
-      <button class="btn btn-warn" id="aaDeleteBtn" style="display:none;" onclick="deleteAuditAction()">Delete</button>
+      <button class="btn btn-danger" id="aaDeleteBtn" style="display:none;" onclick="deleteAuditAction()">Delete</button>
       <button class="btn btn-primary" style="flex:1;" onclick="saveAuditAction()">Save action</button>
     </div>
     <button class="btn btn-ghost" style="width:100%;margin-top:6px;" onclick="closeModal('modalAuditAction')">Cancel</button>
@@ -965,6 +966,19 @@
 </div>
 
 <!-- ===== Modal: Device PIN lock (unlock on open) ===== -->
+<div class="modal-bg" id="modalQuickFind">
+  <div class="modal" style="max-width:480px;width:calc(100% - 24px);">
+    <div style="display:flex;align-items:center;gap:8px;">
+      <input id="qfInput" type="search" placeholder="Jump to a student, tool, supplier, view…" autocomplete="off" autocorrect="off" spellcheck="false"
+        style="flex:1;padding:11px 12px;border:1px solid var(--grey-300);border-radius:var(--r-sm);font-size:14px;box-sizing:border-box;font-family:var(--font-body);"
+        oninput="qfInputChange(this.value)" onkeydown="qfKey(event)">
+      <button class="btn" onclick="closeModal('modalQuickFind')" aria-label="Close" style="min-width:44px;min-height:44px;padding:0;justify-content:center;font-size:15px;">✕</button>
+    </div>
+    <div id="qfResults" style="margin-top:8px;max-height:min(52vh,420px);overflow-y:auto;"></div>
+    <div class="hint" style="margin-top:8px;">↑↓ to choose · Enter to open · Esc to close</div>
+  </div>
+</div>
+
 <div class="modal-bg" id="modalPinLock" style="z-index:6000;background:var(--bg,#fff);">
   <div class="modal">
     <div class="modal-handle" style="visibility:hidden;"></div>
@@ -2148,14 +2162,14 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '109';
+  window.KRMAS_APP_VERSION = '110';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
 </script>
-<script src="data.js?v=109"></script>
-<script src="db.js?v=109"></script>
-<script src="app.js?v=109"></script>
+<script src="data.js?v=110"></script>
+<script src="db.js?v=110"></script>
+<script src="app.js?v=110"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
