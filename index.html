@@ -15,7 +15,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Open+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=110">
+<link rel="stylesheet" href="styles.css?v=111">
 <script>
 /* No-flash brand boot: apply the cached published brand to :root BEFORE first paint,
    so a custom-branded portal never flashes the default palette on load. Self-contained
@@ -103,11 +103,11 @@
     </button>
     <button class="nav-btn" data-view="shop" onclick="setView('shop')" id="navShop" style="display:none;position:relative;">
       <span class="nav-icon">📦</span><span>Shop</span>
-      <span id="navShopBadge" style="display:none;position:absolute;top:2px;right:8px;min-width:15px;height:15px;line-height:15px;padding:0 4px;border-radius:8px;background:var(--red,#D22C12);color:#fff;font-size:9px;font-weight:700;text-align:center;">0</span>
+      <span id="navShopBadge" style="display:none;position:absolute;top:2px;right:8px;min-width:15px;height:15px;line-height:15px;padding:0 4px;border-radius:8px;background:var(--red,#D22C12);color:var(--white);font-size:9px;font-weight:700;text-align:center;">0</span>
     </button>
     <button class="nav-btn" data-view="audits" onclick="setView('audits')" id="navAudits" style="display:none;position:relative;">
       <span class="nav-icon">☑</span><span>Audits</span>
-      <span id="navAuditsBadge" style="display:none;position:absolute;top:2px;right:8px;min-width:15px;height:15px;line-height:15px;padding:0 4px;border-radius:8px;background:var(--red,#D22C12);color:#fff;font-size:9px;font-weight:700;text-align:center;">0</span>
+      <span id="navAuditsBadge" style="display:none;position:absolute;top:2px;right:8px;min-width:15px;height:15px;line-height:15px;padding:0 4px;border-radius:8px;background:var(--red,#D22C12);color:var(--white);font-size:9px;font-weight:700;text-align:center;">0</span>
     </button>
     <button class="nav-btn" data-view="more" onclick="setView('more')">
       <span class="nav-icon">⋯</span><span>More</span>
@@ -377,7 +377,7 @@
     <h2 id="planTitle">Lesson plan</h2>
     <p class="modal-sub" id="planSubtitle"></p>
 
-    <div id="planReadonlyBanner" style="display:none;background:#fffbeb;border:1px solid #fde68a;border-radius:var(--r-sm);padding:8px 12px;margin-bottom:10px;font-size:12px;color:#92400e;font-weight:600;">
+    <div id="planReadonlyBanner" style="display:none;background:#fffbeb;border:1px solid #fde68a;border-radius:var(--r-sm);padding:8px 12px;margin-bottom:10px;font-size:12px;color:var(--amber-700);font-weight:600;">
       👁 View only — you aren't rostered on this class, so it can't be edited here.
     </div>
 
@@ -966,6 +966,17 @@
 </div>
 
 <!-- ===== Modal: Device PIN lock (unlock on open) ===== -->
+<div class="modal-bg" id="modalConfirm">
+  <div class="modal" style="max-width:380px;width:calc(100% - 32px);">
+    <h3 id="uicTitle" style="margin:0;">Please confirm</h3>
+    <div id="uicMsg" class="uic-msg"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button id="uicCancel" class="btn" onclick="_uiConfirmDone(false)" style="min-height:44px;">Cancel</button>
+      <button id="uicOk" class="btn btn-primary" onclick="_uiConfirmDone(true)" style="min-height:44px;">OK</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-bg" id="modalQuickFind">
   <div class="modal" style="max-width:480px;width:calc(100% - 24px);">
     <div style="display:flex;align-items:center;gap:8px;">
@@ -979,7 +990,7 @@
   </div>
 </div>
 
-<div class="modal-bg" id="modalPinLock" style="z-index:6000;background:var(--bg,#fff);">
+<div class="modal-bg" id="modalPinLock" style="z-index:6000;background:var(--bg,var(--white));">
   <div class="modal">
     <div class="modal-handle" style="visibility:hidden;"></div>
     <h2 id="pinLockTitle">Enter your PIN</h2>
@@ -2162,14 +2173,14 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '110';
+  window.KRMAS_APP_VERSION = '111';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
 </script>
-<script src="data.js?v=110"></script>
-<script src="db.js?v=110"></script>
-<script src="app.js?v=110"></script>
+<script src="data.js?v=111"></script>
+<script src="db.js?v=111"></script>
+<script src="app.js?v=111"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

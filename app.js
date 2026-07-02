@@ -226,7 +226,7 @@ function canEditSchool(schoolId) {
 function requireRole(minRole, msg) {
   if (!hasRole(minRole)) {
     if (!state.user) { openLogin(); return false; }
-    alert(msg || 'You don\'t have permission for that.');
+    uiToast(msg || 'You don\'t have permission for that.');
     return false;
   }
   return true;
@@ -234,16 +234,16 @@ function requireRole(minRole, msg) {
 
 function roleBadge(role) {
   const map = {
-    superadmin: { bg: '#d62828', text: '#fff', label: 'Superadmin' },
-    admin:      { bg: '#1a1a1a', text: '#fff', label: 'Admin' },
-    instructor: { bg: '#3b82f6', text: '#fff', label: 'Instructor' },
-    junior:     { bg: '#8b5cf6', text: '#fff', label: 'Junior' },
+    superadmin: { bg: 'var(--red)', text: 'var(--white)', label: 'Superadmin' },
+    admin:      { bg: 'var(--black-2)', text: 'var(--white)', label: 'Admin' },
+    instructor: { bg: '#3b82f6', text: 'var(--white)', label: 'Instructor' },
+    junior:     { bg: '#8b5cf6', text: 'var(--white)', label: 'Junior' },
   };
   let c = map[role];
   if (!c) {
     // Custom role — show its configured label (falls back to the key) in a distinct colour.
     const cr = ((state.roleConfig && state.roleConfig.roles) || []).find(r => r.key === role);
-    c = { bg: '#0d9488', text: '#fff', label: (cr && cr.label) || role || 'Guest' };
+    c = { bg: '#0d9488', text: 'var(--white)', label: (cr && cr.label) || role || 'Guest' };
   }
   return `<span style="display:inline-block;background:${c.bg};color:${c.text};font-size:9px;font-weight:700;padding:2px 7px;border-radius:999px;text-transform:uppercase;letter-spacing:.05em;font-family:'Open Sans',sans-serif;">${escapeHtml(c.label)}</span>`;
 }
@@ -846,7 +846,7 @@ function renderClosuresAdmin() {
         <div style="font-weight:600;font-size:13px;">${escapeHtml(c.label || 'Closed')}</div>
         <div style="font-size:11px;color:var(--grey-400);">${single ? fmtIsoNice(c.from) : fmtIsoNice(c.from) + ' \u2192 ' + fmtIsoNice(c.to)}</div>
       </div>
-      ${c.eventId ? '<span title="Mirrored on the Events calendar" style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#16a34a;background:rgba(22,163,74,.12);padding:2px 6px;border-radius:999px;flex-shrink:0;white-space:nowrap;">\u{1F4C5} On calendar</span>' : ''}
+      ${c.eventId ? '<span title="Mirrored on the Events calendar" style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--ok);background:rgba(22,163,74,.12);padding:2px 6px;border-radius:999px;flex-shrink:0;white-space:nowrap;">\u{1F4C5} On calendar</span>' : ''}
       <button onclick="deleteClosure('${c.id}')" title="Delete" style="background:none;border:none;cursor:pointer;font-size:16px;color:var(--red);">\u00d7</button>
     </div>`;
   }).join('')) || `<div style="font-size:13px;color:var(--grey-400);padding:6px 0;">No closures yet.</div>`;
@@ -869,7 +869,7 @@ function renderClosuresAdmin() {
 // schema change. Forward writes go straight to DB.saveCalendarEvent and reverse writes
 // straight to the closures store, so the two directions never call each other's hooks;
 // `_calSync` is a belt-and-suspenders re-entry guard.
-const SYNC_TYPE = { closure: { name: 'Closure', colour: '#D22C12' }, grading: { name: 'Grading', colour: '#16a34a' }, special: { name: 'Special', colour: '#7c3aed' } };
+const SYNC_TYPE = { closure: { name: 'Closure', colour: '#D22C12' }, grading: { name: 'Grading', colour: 'var(--ok)' }, special: { name: 'Special', colour: '#7c3aed' } };
 let _calSync = false;
 function _evtId() { return 'EVT-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase(); }
 function findSyncTypeId(sid, key) {
@@ -978,13 +978,13 @@ async function syncOverrideRemoveFromEvent(ev) {
 async function addClosure() {
   if (blockedByImpersonation()) return;
   const sid = state._closuresSchool || state.schoolId;
-  if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
+  if (!canEditSchool(sid)) { uiToast('You can only edit your own school.'); return; }
   const label = (document.getElementById('clLabel')?.value || '').trim() || 'Closed';
   const from = document.getElementById('clFrom')?.value || '';
   let to = document.getElementById('clTo')?.value || '';
-  if (!from) { alert('Pick a start date.'); return; }
+  if (!from) { uiToast('Pick a start date.'); return; }
   if (!to) to = from;
-  if (to < from) { alert('The end date is before the start date.'); return; }
+  if (to < from) { uiToast('The end date is before the start date.'); return; }
   const o = ensureOverrideStores(sid);
   const closure = { id: newOvrId('CLO'), from, to, label };
   o.closures.push(closure);
@@ -996,7 +996,7 @@ async function addClosure() {
 async function deleteClosure(id) {
   if (blockedByImpersonation()) return;
   const sid = state._closuresSchool || state.schoolId;
-  if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
+  if (!canEditSchool(sid)) { uiToast('You can only edit your own school.'); return; }
   const o = ensureOverrideStores(sid);
   const gone = o.closures.find(c => c.id === id);
   o.closures = o.closures.filter(c => c.id !== id);
@@ -1013,7 +1013,7 @@ function rosterDisplayDate() {
 }
 function openDayOverride() {
   if (!requireRole('admin')) return;
-  if (!canEditSchool(state.schoolId)) { alert('You can only edit your own school.'); return; }
+  if (!canEditSchool(state.schoolId)) { uiToast('You can only edit your own school.'); return; }
   state._ovrDate = isoDate(rosterDisplayDate());
   state._ovrDraft = null;
   renderDayOverride();
@@ -1135,13 +1135,13 @@ function removeOverrideSlot(id) {
 async function saveDayOverride() {
   if (blockedByImpersonation()) return;
   const sid = state.schoolId;
-  if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
+  if (!canEditSchool(sid)) { uiToast('You can only edit your own school.'); return; }
   syncOvrDraftFromDOM();
   const d = state._ovrDraft;
-  if (!d || !d.slots.length) { alert('Add at least one class, or use Clear day.'); return; }
+  if (!d || !d.slots.length) { uiToast('Add at least one class, or use Clear day.'); return; }
   for (const s of d.slots) {
-    if (!s.start || !s.end) { alert('Every class needs a start and end time.'); return; }
-    if (s.end <= s.start) { alert('A class ends at or before it starts \u2014 check the times.'); return; }
+    if (!s.start || !s.end) { uiToast('Every class needs a start and end time.'); return; }
+    if (s.end <= s.start) { uiToast('A class ends at or before it starts \u2014 check the times.'); return; }
   }
   const o = ensureOverrideStores(sid);
   const prev = o.overrides[state._ovrDate];
@@ -1150,7 +1150,7 @@ async function saveDayOverride() {
   const onClosure = !!closureForDate(new Date(state._ovrDate + 'T00:00:00'), sid);
   const normalCount = onClosure ? 0 : currentSchedule().filter(c => c.day === dow).length;
   if (normalCount > 0) {
-    d.replaceNormal = confirm(`This day already has ${normalCount} scheduled class${normalCount === 1 ? '' : 'es'}.\n\nOK \u2014 replace them with this ${d.kind === 'grading' ? 'grading day' : 'special session'}.\nCancel \u2014 keep them and add these alongside.`);
+    d.replaceNormal = await uiConfirm(`This day already has ${normalCount} scheduled class${normalCount === 1 ? '' : 'es'}.\n\nOK \u2014 replace them with this ${d.kind === 'grading' ? 'grading day' : 'special session'}.\nCancel \u2014 keep them and add these alongside.`);
   }
   const ovr = { kind: d.kind, label: d.label, replaceNormal: !!d.replaceNormal, slots: d.slots, gradingId: d.gradingId || null, eventId: (prev && prev.eventId) || null };
   o.overrides[state._ovrDate] = ovr;
@@ -1168,8 +1168,8 @@ async function saveDayOverride() {
 async function clearDayOverride() {
   if (blockedByImpersonation()) return;
   const sid = state.schoolId;
-  if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
-  if (!confirm('Remove the special / grading setup for this day?')) return;
+  if (!canEditSchool(sid)) { uiToast('You can only edit your own school.'); return; }
+  if (!await uiConfirm('Remove the special / grading setup for this day?')) return;
   const o = ensureOverrideStores(sid);
   const prev = o.overrides[state._ovrDate];
   delete o.overrides[state._ovrDate];
@@ -1182,7 +1182,7 @@ async function clearDayOverride() {
 async function markSingleDayClosed() {
   if (blockedByImpersonation()) return;
   const sid = state.schoolId;
-  if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
+  if (!canEditSchool(sid)) { uiToast('You can only edit your own school.'); return; }
   const iso = state._ovrDate;
   const o = ensureOverrideStores(sid);
   const closure = { id: newOvrId('CLO'), from: iso, to: iso, label: 'Closed' };
@@ -1197,7 +1197,7 @@ async function markSingleDayClosed() {
 async function reopenSingleDay() {
   if (blockedByImpersonation()) return;
   const sid = state.schoolId;
-  if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
+  if (!canEditSchool(sid)) { uiToast('You can only edit your own school.'); return; }
   const iso = state._ovrDate;
   const o = ensureOverrideStores(sid);
   const gone = o.closures.filter(c => c.from === iso && c.to === iso);
@@ -1566,6 +1566,7 @@ const _modalNoEscape = { modalPinLock: true };
 const _modalCloseDelegate = {
   modalPdfViewer: () => closePdfViewer(),
   modalBranding:  () => closeBrandingPanel(),
+  modalConfirm:   () => _uiConfirmDone(false), // Escape = cancel; never strand the promise
 };
 function _topOpenModal() {
   let top = null, z = -1;
@@ -1609,6 +1610,7 @@ function qfBuildIndex() {
   if (state.user && can.seeShop())    add('view', '📦', 'Inventory / shop', "setView('shop')");
   if (state.user && can.viewAudits()) add('view', '✅', 'Audits', "setView('audits')");
   if (state.user) add('view', '🎓', 'Students', "setView('students')");
+  add('view', '🌓', 'Toggle dark mode', 'toggleDarkMode()');
   // admin tools (same gates as the Admin view)
   if (state.user && can.manageInstructors()) {
     const isSup = can.switchAnySchool();
@@ -2112,7 +2114,7 @@ function renderIncidentTrends() {
 }
 
 function exportIncidentsCsv() {
-  if (!hasRole('admin')) { alert("You don't have permission to export incidents."); return; }
+  if (!hasRole('admin')) { uiToast("You don't have permission to export incidents."); return; }
   const all = Object.entries(state.incidents || {}).map(([id, v]) => ({ id, ...v }))
     .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
   const school = KRMAS_SCHOOLS.find(s => s.id === state.schoolId);
@@ -2215,7 +2217,7 @@ async function renderMe() {
         <div style="margin-top:4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">${roleBadge(me.role)}<span style="font-size:12px;color:var(--grey-500);">${escapeHtml(me.role)}</span></div>
         ${me.email ? `<div style="font-size:12px;color:var(--grey-500);margin-top:3px;">${escapeHtml(me.email)}</div>` : ''}
       </div>
-      <div style="font-size:10px;padding:2px 8px;border-radius:999px;font-weight:700;text-transform:uppercase;flex-shrink:0;${DB.isSupabase ? 'background:#d1fae5;color:#065f46;' : 'background:#fef3c7;color:#92400e;'}">${DB.isSupabase ? '☁ Synced' : '⚠ Local'}</div>
+      <div style="font-size:10px;padding:2px 8px;border-radius:999px;font-weight:700;text-transform:uppercase;flex-shrink:0;${DB.isSupabase ? 'background:#d1fae5;color:#065f46;' : 'background:#fef3c7;color:var(--amber-700);'}">${DB.isSupabase ? '☁ Synced' : '⚠ Local'}</div>
     </div>
     <input type="file" id="meAvatarFile" accept="image/*" style="display:none;" onchange="handleMyAvatar(this)">
     <div style="display:flex;gap:8px;">
@@ -2286,7 +2288,7 @@ async function renderMe() {
   html += `<div style="margin-top:12px;display:grid;gap:8px;">
     ${can.changePin() ? `<button class="btn" onclick="openChangePin()" style="width:100%;">Device PIN</button>` : ''}
     ${DB.isSupabase ? `<button class="btn" onclick="openSetPassword('change')" style="width:100%;">🔑 Change password</button>` : ''}
-    <button class="btn" onclick="toggleDarkMode()" style="width:100%;">${document.body.classList.contains('dark-mode') ? '☀ Light mode' : '🌙 Dark mode'}</button>
+    <button class="btn" onclick="toggleDarkMode()" style="width:100%;">${themeLabel()}</button>
     ${'PushManager' in window ? `<button class="btn" onclick="${_pushEnabled ? 'disablePush' : 'requestPushPermission'}()" style="width:100%;">🔔 ${_pushEnabled ? 'Disable notifications' : 'Enable notifications'}</button>` : ''}
     ${('PushManager' in window && _pushEnabled) ? `<button class="btn" onclick="sendTestNotification()" style="width:100%;">📨 Send test notification</button>` : ''}
     <button class="btn" onclick="signOut()" style="width:100%;">Sign out</button>
@@ -2392,7 +2394,7 @@ function renderTeamHours(weekMonday) {
   if (rows.length === 0) return `<div style="font-size: 13px; color: var(--grey-500); padding: 8px 4px;">No hours found.</div>`;
 
   return `<div style="background: var(--white); border: 1px solid var(--grey-200); border-radius: var(--r-md); overflow: hidden; box-shadow: var(--shadow);">
-    <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+    <div class="table-scroll"><table style="width: 100%; border-collapse: collapse; font-size: 13px;">
       <thead>
         <tr style="background: var(--off-white);">
           <th style="padding: 7px 10px; text-align: left; font-family: 'Oswald', sans-serif; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--grey-500); font-weight: 700;">Instructor</th>
@@ -2409,7 +2411,7 @@ function renderTeamHours(weekMonday) {
           <td style="padding: 7px 10px; text-align: right; font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700;">${fmtHoursMins(r.totalMins)}</td>
         </tr>`).join('')}
       </tbody>
-    </table>
+    </table></div>
   </div>`;
 }
 // ---------- Cover badge ----------
@@ -2570,7 +2572,7 @@ async function submitSetPassword() {
     if (res && res.error) { if (err) err.textContent = res.error.message || 'Could not update password.'; return; }
     closeModal('modalSetPassword');
     if (_setPwMode === 'change') {
-      alert('Password updated.');
+      uiToast('Password updated.', 'success');
     } else {
       // first-login or recovery: enter the app with the now-current session
       _enteredOnce = false;
@@ -2589,17 +2591,17 @@ async function adminResetPassword() {
   if (!requireRole('admin')) return;
   const id = state.editingUserId;
   const instr = id ? allInstructors().find(i => i.id === id) : null;
-  if (!instr || !instr.uid) { alert('This person has no login yet. Add their email and Save first, then you can reset it.'); return; }
-  if (!confirm('Reset password for ' + (instr.name || 'this user') + '?\n\nThey will get a one-time temporary password and be asked to set their own when they next sign in.')) return;
+  if (!instr || !instr.uid) { uiToast('This person has no login yet. Add their email and Save first, then you can reset it.'); return; }
+  if (!await uiConfirm('Reset password for ' + (instr.name || 'this user') + '?\n\nThey will get a one-time temporary password and be asked to set their own when they next sign in.')) return;
   try {
     const res = await DB.users.resetPassword(instr.uid);
     if (res && res.tempPassword) {
-      alert('Password reset for ' + (instr.name || instr.email) + '.\n\nTemporary password (share privately — shown only once):\n\n' + res.tempPassword + '\n\nThey will be asked to set their own password when they next sign in.');
+      uiToast('Password reset for ' + (instr.name || instr.email) + '.\n\nTemporary password (share privately — shown only once):\n\n' + res.tempPassword + '\n\nThey will be asked to set their own password when they next sign in.');
     } else {
-      alert('Reset completed, but no temporary password was returned.');
+      uiToast('Reset completed, but no temporary password was returned.');
     }
   } catch (e) {
-    alert('Could not reset password:\n' + ((e && e.message) || 'unknown') + "\n\n(If the manage-users function isn't deployed yet, that's the cause.)");
+    uiToast('Could not reset password:\n' + ((e && e.message) || 'unknown') + "\n\n(If the manage-users function isn't deployed yet, that's the cause.)");
   }
 }
 
@@ -2639,7 +2641,7 @@ function renderPinDisplay() {
 function pinSubmit() { showLoginGate(); }
 
 async function signOut() {
-  if (!confirm('Sign out of KRMAS on this device?')) return;
+  if (!await uiConfirm('Sign out of KRMAS on this device?')) return;
   await DB.auth.signOut();
   state.user = null;
   state.myDocuments = [];
@@ -2702,9 +2704,9 @@ async function startImpersonation(targetId) {
   if (!state.user) return;
   const pool = (state.user.role === 'superadmin') ? allInstructorsAllSchools() : allInstructors();
   const target = pool.find(i => i.id === targetId);
-  if (!target) { alert('Could not find that user.'); return; }
-  if (!canImpersonate(target)) { alert("You can't view as that user."); return; }
-  if (!target.uid) { alert('That user has no login yet — nothing to view as.'); return; }
+  if (!target) { uiToast('Could not find that user.', 'error'); return; }
+  if (!canImpersonate(target)) { uiToast("You can't view as that user."); return; }
+  if (!target.uid) { uiToast('That user has no login yet — nothing to view as.'); return; }
 
   const asSuper = state.user.role === 'superadmin';
 
@@ -2769,7 +2771,7 @@ async function stopImpersonation() {
   DB.setReadOnly(false);
   if (snap.mode === 'server') {
     try { await DB.auth.restoreSession(snap.realSession); }
-    catch (e) { console.warn('restore session failed:', e && e.message); alert('Could not fully restore your session — please sign in again.'); }
+    catch (e) { console.warn('restore session failed:', e && e.message); uiToast('Could not fully restore your session — please sign in again.', 'error'); }
     try { localStorage.removeItem('krmas_imp'); } catch (_) {}
     // Audit the end now that we're back to the real user (best-effort, non-blocking).
     if (snap.targetUid) { try { await DB.auth.endImpersonation(snap.targetUid); } catch (e) { console.warn('impersonate_stop audit:', e && e.message); } }
@@ -2791,7 +2793,7 @@ async function stopImpersonation() {
 async function toggleImpersonationWrite() {
   if (!state.impersonation || state.impersonation.mode !== 'server') return;
   if (DB.readOnly) {
-    if (!confirm('Allow changes while viewing as ' + state.impersonation.target.name +
+    if (!await uiConfirm('Allow changes while viewing as ' + state.impersonation.target.name +
       '?\n\nAnything you do will be saved AS THEM and attributed to them. This is logged.')) return;
     DB.setReadOnly(false);
   } else {
@@ -2806,7 +2808,7 @@ function renderImpersonationBanner() {
   if (!bar) {
     bar = document.createElement('div');
     bar.id = 'impersonationBar';
-    bar.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:#b45309;color:#fff;font-family:'Open Sans',sans-serif;font-size:13px;padding:8px 12px;display:flex;align-items:center;justify-content:space-between;gap:10px;box-shadow:0 2px 8px rgba(0,0,0,.25);";
+    bar.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:#b45309;color:var(--white);font-family:'Open Sans',sans-serif;font-size:13px;padding:8px 12px;display:flex;align-items:center;justify-content:space-between;gap:10px;box-shadow:0 2px 8px rgba(0,0,0,.25);";
     document.body.appendChild(bar);
   }
   const imp = state.impersonation, t = imp.target;
@@ -2815,25 +2817,63 @@ function renderImpersonationBanner() {
   const stateTag = live ? (ro ? 'live · read-only' : 'live · CHANGES ON') : 'read-only preview';
   // Only server mode can actually write (it holds the target's session); offer a toggle.
   const writeBtn = live
-    ? `<button onclick="toggleImpersonationWrite()" style="flex:none;background:${ro ? 'transparent' : '#7f1d1d'};color:#fff;border:1px solid #fff;border-radius:6px;padding:4px 10px;font-weight:700;cursor:pointer;font-size:11px;">${ro ? 'Make changes' : 'Read-only'}</button>`
+    ? `<button onclick="toggleImpersonationWrite()" style="flex:none;background:${ro ? 'transparent' : '#7f1d1d'};color:var(--white);border:1px solid var(--white);border-radius:6px;padding:4px 10px;font-weight:700;cursor:pointer;font-size:11px;">${ro ? 'Make changes' : 'Read-only'}</button>`
     : '';
   bar.style.background = (live && !ro) ? '#7f1d1d' : '#b45309';
   bar.innerHTML = `<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">👁 Viewing as <strong>${escapeHtml(t.name)}</strong> · ${escapeHtml(roleLabelFor(t.role))} · ${stateTag}</span>
     <span style="flex:none;display:flex;gap:6px;">${writeBtn}
-    <button onclick="stopImpersonation()" style="flex:none;background:#fff;color:#b45309;border:none;border-radius:6px;padding:4px 12px;font-weight:700;cursor:pointer;font-size:12px;">Exit</button></span>`;
+    <button onclick="stopImpersonation()" style="flex:none;background:var(--white);color:#b45309;border:none;border-radius:6px;padding:4px 12px;font-weight:700;cursor:pointer;font-size:12px;">Exit</button></span>`;
 }
 
 // Lightweight transient toast (used to explain blocked writes during impersonation).
-function showToast(msg) {
+// v111 feedback layer — kind-aware toast. Replaces the old ad-hoc showToast
+// and the app's 280 native uiToast() calls. kinds: 'info' (default) | 'success' | 'error'.
+let _uiToastTimer = null;
+const _TOAST_ERR = /fail|error|couldn|could not|unable|invalid|not (be|available|found|permitted|allowed)|missing|denied|too (large|many|long)|no longer|unavailable|wrong|expired|exceed|already exists|refused|blocked/i;
+const _TOAST_OK  = /\bsaved\b|\badded\b|\bupdated\b|\bsent\b|\bcopied\b|\bcreated\b|\bcomplete\b|\bimported\b|\bgranted\b|\bremoved\b|\bdeleted\b|\bpublished\b|\brestored\b|\bexported\b|\bapplied\b|\bdone\b/i;
+function uiToast(msg, kind, duration) {
+  const text = String(msg == null ? '' : msg);
+  if (kind !== 'success' && kind !== 'error' && kind !== 'info') {
+    // Auto-classify migrated call sites that pass no explicit kind (explicit always wins).
+    kind = _TOAST_ERR.test(text) ? 'error' : _TOAST_OK.test(text) ? 'success' : 'info';
+  }
   let t = document.getElementById('krmasToast');
   if (!t) {
     t = document.createElement('div');
     t.id = 'krmasToast';
-    t.style.cssText = "position:fixed;bottom:90px;left:50%;transform:translateX(-50%);z-index:10000;background:#1a1a1a;color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;max-width:80%;text-align:center;font-family:'Open Sans',sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.3);opacity:0;transition:opacity .2s;";
     document.body.appendChild(t);
   }
-  t.textContent = msg; t.style.opacity = '1';
-  clearTimeout(t._timer); t._timer = setTimeout(() => { t.style.opacity = '0'; }, 2400);
+  t.className = 'ui-toast ui-toast-' + kind;
+  const icon = kind === 'success' ? '✓ ' : kind === 'error' ? '⚠ ' : '';
+  t.textContent = icon + text;
+  // force reflow so re-triggered toasts restart their transition
+  void t.offsetWidth;
+  t.classList.add('show');
+  if (_uiToastTimer) clearTimeout(_uiToastTimer);
+  _uiToastTimer = setTimeout(() => { t.classList.remove('show'); }, duration || (kind === 'error' ? 5000 : 2600));
+}
+function showToast(msg) { uiToast(msg, 'info'); } // back-compat
+
+// v111 — styled promise-based confirm, replacing native await uiConfirm().
+// Usage: if (!(await uiConfirm('Delete this?'))) return;   (or: !await uiConfirm(...))
+let _uiConfirmResolve = null;
+function uiConfirm(message, opts) {
+  opts = opts || {};
+  return new Promise((resolve) => {
+    if (_uiConfirmResolve) { try { _uiConfirmResolve(false); } catch (e) {} } // stacked-call safety
+    _uiConfirmResolve = resolve;
+    const T = document.getElementById('uicTitle'); if (T) T.textContent = opts.title || 'Please confirm';
+    const M = document.getElementById('uicMsg');   if (M) M.textContent = String(message == null ? '' : message);
+    const ok = document.getElementById('uicOk');
+    if (ok) { ok.textContent = opts.okLabel || 'OK'; ok.className = 'btn ' + (opts.danger === false ? 'btn-black' : 'btn-primary'); }
+    const ca = document.getElementById('uicCancel'); if (ca) ca.textContent = opts.cancelLabel || 'Cancel';
+    openModal('modalConfirm');
+  });
+}
+function _uiConfirmDone(v) {
+  const r = _uiConfirmResolve; _uiConfirmResolve = null;
+  closeModal('modalConfirm');
+  if (r) r(!!v);
 }
 
 // Friendly guard for the common write entry points (the DB read-only proxy is the
@@ -2968,7 +3008,7 @@ async function changePinAdvance() {
       if (DB.isSupabase) await DB.auth.setPin(state.pinChangeNew);
       state._pinUnlocked = true;
       closeModal('modalChangePin');
-      alert('Device PIN set. You\u2019ll be asked for it when you open the app on this device.');
+      uiToast('Device PIN set. You\u2019ll be asked for it when you open the app on this device.');
     } catch (e) {
       document.getElementById('changePinError').textContent = 'Could not save: ' + ((e && e.message) || 'error');
     }
@@ -3041,7 +3081,7 @@ function openSchoolPicker() {
   openModal('modalSchool');
 }
 
-function selectSchool(id) {
+async function selectSchool(id) {
   const seed = SCHOOL_DATA_SEED[id];
   const custom = state.customSchools?.[id];
   const hasInstructors = !!(custom?.instructors?.length || seed?.instructors?.length);
@@ -3058,7 +3098,7 @@ function selectSchool(id) {
   // Has timetable but no instructors — offer to set up (for admins)
   if (hasSchedule && !hasInstructors && can.manageInstructors()) {
     closeModal('modalSchool');
-    if (confirm(
+    if (await uiConfirm(
       (KRMAS_SCHOOLS.find(s => s.id === id)?.name || id) +
       ' has a timetable but no instructors set up yet.\n\nSet up instructors now?'
     )) {
@@ -3258,7 +3298,7 @@ function renderWizardSchedule() {
 function wizardAddInstructor() {
   const name = document.getElementById('wizNewInstrName').value.trim();
   const role = document.getElementById('wizNewInstrRole').value;
-  if (!name) { alert('Enter a name.'); return; }
+  if (!name) { uiToast('Enter a name.'); return; }
   const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') + '-' + Date.now().toString(36).slice(-4);
   state.wizardData.instructors.push({ id, name, short: name.split(' ').pop(), pin: '0000', role });
   document.getElementById('wizNewInstrName').value = '';
@@ -3275,7 +3315,7 @@ function wizardAddClass() {
   const type  = document.getElementById('wizNewClassType').value;
   const start = document.getElementById('wizNewClassStart').value;
   const end   = document.getElementById('wizNewClassEnd').value;
-  if (!start || !end) { alert('Enter start and end times.'); return; }
+  if (!start || !end) { uiToast('Enter start and end times.'); return; }
   state.wizardData.schedule.push({ day, start, end, type });
   state.wizardData.schedule.sort((a, b) => a.day - b.day || a.start.localeCompare(b.start));
   document.getElementById('wizClassList').innerHTML = renderWizardSchedule();
@@ -3286,9 +3326,9 @@ function wizardRemoveClass(idx) {
   document.getElementById('wizClassList').innerHTML = renderWizardSchedule();
 }
 
-function wizardCopyEdgeworth() {
+async function wizardCopyEdgeworth() {
   if (state.wizardData.schedule.length > 0) {
-    if (!confirm('This will replace your current schedule with Edgeworth\'s template. Continue?')) return;
+    if (!await uiConfirm('This will replace your current schedule with Edgeworth\'s template. Continue?')) return;
   }
   state.wizardData.schedule = EDGEWORTH_SCHEDULE.map(c => ({ ...c }));
   document.getElementById('wizClassList').innerHTML = renderWizardSchedule();
@@ -3332,11 +3372,11 @@ async function finishWizard() {
   const w = state.wizardData;
   const hasSeedSchedule = SCHOOL_DATA_SEED[w.schoolId]?.schedule?.length > 0;
   if (w.instructors.length === 0) {
-    alert('You must add at least one instructor before finishing.');
+    uiToast('You must add at least one instructor before finishing.');
     return;
   }
   if (!hasSeedSchedule && w.schedule.length === 0) {
-    alert('You must add at least one class before finishing.');
+    uiToast('You must add at least one class before finishing.');
     return;
   }
   state.customSchools[w.schoolId] = {
@@ -3356,7 +3396,7 @@ async function finishWizard() {
   // previously-selected school carries over into it.
   await loadCurrentSchoolData();
   saveUserAsync();
-  alert('Welcome to ' + schoolName + '!\nNow assign instructors to each class via Edit roster.');
+  uiToast('Welcome to ' + schoolName + '!\nNow assign instructors to each class via Edit roster.');
   setView('roster');
 }
 
@@ -3364,7 +3404,7 @@ async function finishWizard() {
 async function resetEdit() {
   const key = state.editingKey;
   if (!key) return;
-  if (!confirm('Reset to default roster assignments for this class? Removes any custom overrides.')) return;
+  if (!await uiConfirm('Reset to default roster assignments for this class? Removes any custom overrides.')) return;
   delete state.edits[key];
   await saveEdits();
   closeModal('modalEdit');
@@ -3477,7 +3517,7 @@ function updateRotStatus(role) {
   if (res.overlaps.length) {
     el.innerHTML = `<span style="color:var(--red);font-weight:600;">&#9888; Two people on week${res.overlaps.length > 1 ? 's' : ''} ${res.overlaps.join(', ')} — fix before saving.</span>`;
   } else if (res.missing.length) {
-    el.innerHTML = `<span style="color:#92400e;">No one on week${res.missing.length > 1 ? 's' : ''} ${res.missing.join(', ')} (left unassigned — that's allowed).</span>`;
+    el.innerHTML = `<span style="color:var(--amber-700);">No one on week${res.missing.length > 1 ? 's' : ''} ${res.missing.join(', ')} (left unassigned — that's allowed).</span>`;
   } else {
     el.innerHTML = `<span style="color:var(--ok);font-weight:600;">&#10003; Weeks 1–12 all covered.</span>`;
   }
@@ -3531,7 +3571,7 @@ async function saveRotation() {
   if (!requireRole('admin')) return;
   ROT_ROLES.forEach(([r]) => syncRot(r));
   const bad = ROT_ROLES.filter(([r]) => isRotation(_rotationDraft[r]) && validateRotation(_rotationDraft[r].rotate).overlaps.length);
-  if (bad.length) { alert("Two people can't be on the same week in one role. Fix the highlighted weeks, then save."); return; }
+  if (bad.length) { uiToast("Two people can't be on the same week in one role. Fix the highlighted weeks, then save."); return; }
   const out = {};
   ROT_ROLES.forEach(([r]) => {
     const v = _rotationDraft[r];
@@ -3547,7 +3587,7 @@ async function saveRotation() {
   try {
     await saveCustomSchools();
   } catch (e) {
-    alert('Could not save: ' + (e && e.message ? e.message : e));
+    uiToast('Could not save: ' + (e && e.message ? e.message : e));
     return;
   }
   closeModal('modalRotation');
@@ -3601,7 +3641,7 @@ async function saveEdit() {
 async function markNeedsCover(dateKey) {
   if (!state.user) { openLogin(); return; }
   const c = classForDateKey(dateKey);
-  if (!canRequestCover(c)) { alert('You can only request cover for your own classes.'); return; }
+  if (!canRequestCover(c)) { uiToast('You can only request cover for your own classes.'); return; }
   const existing = state.edits[dateKey] || {};
   state.edits[dateKey] = { ...existing, status: 'needs-cover' };
   await saveEdits();
@@ -3612,7 +3652,7 @@ async function markNeedsCover(dateKey) {
 async function clearNeedsCover(dateKey) {
   if (!state.user) { openLogin(); return; }
   const c = classForDateKey(dateKey);
-  if (!canRequestCover(c)) { alert('You can only change cover for your own classes.'); return; }
+  if (!canRequestCover(c)) { uiToast('You can only change cover for your own classes.'); return; }
   const existing = state.edits[dateKey] || {};
   state.edits[dateKey] = { ...existing, status: 'confirmed' };
   await saveEdits();
@@ -3801,7 +3841,7 @@ function applyPlanEditorChrome(key, existing) {
 
 // Lesson plan attached to a grading session (change 9). Stored under key "grading-{id}".
 function openGradingPlan(sessionId) {
-  if (!can.manageGrading()) { alert('Grading manager access required.'); return; }
+  if (!can.manageGrading()) { uiToast('Grading manager access required.'); return; }
   const s = state.grading[sessionId];
   if (!s) return;
   const key = 'grading-' + sessionId;
@@ -3871,7 +3911,7 @@ function fillFromTopic() {
 async function savePlan(status) {
   const dateKey = state.planningKey;
   if (!dateKey) return;
-  if (!canWritePlan(dateKey)) { alert("You don't have permission to edit lesson plans for this class."); return; }
+  if (!canWritePlan(dateKey)) { uiToast("You don't have permission to edit lesson plans for this class."); return; }
 
   const isGrading = dateKey.startsWith('grading-');
   let c = null;
@@ -3920,7 +3960,7 @@ async function savePlan(status) {
 
 function emailPlan() {
   const dateKey = state.planningKey;
-  if (!dateKey) { alert('Save the plan first.'); return; }
+  if (!dateKey) { uiToast('Save the plan first.'); return; }
   const contact = currentContact() || {};
   const to = contact.adminEmail || '';
   const p = {
@@ -4355,8 +4395,8 @@ async function deletePlan() {
   const dateKey = state.planningKey;
   if (!dateKey || !state.plans[dateKey]) return;
   const isGrading = dateKey.startsWith('grading-');
-  if (isGrading ? !can.manageGrading() : !can.deletePlans()) { alert('You don\'t have permission to delete this plan.'); return; }
-  if (!confirm('Delete this lesson plan? Cannot be undone.')) return;
+  if (isGrading ? !can.manageGrading() : !can.deletePlans()) { uiToast('You don\'t have permission to delete this plan.'); return; }
+  if (!await uiConfirm('Delete this lesson plan? Cannot be undone.')) return;
   delete state.plans[dateKey];
   await savePlans();
   closeModal('modalPlan');
@@ -4367,11 +4407,11 @@ async function deletePlan() {
 
 async function saveIncident() {
   if (blockedByImpersonation()) return;
-  if (!can.fileIncidents()) { alert('Sign in to save incidents.'); return; }
+  if (!can.fileIncidents()) { uiToast('Sign in to save incidents.'); return; }
   const inc = collectIncident();
   const missing = validateIncident(inc);
   if (missing.length > 0) {
-    alert('Please fill in required fields: ' + missing.join(', '));
+    uiToast('Please fill in required fields: ' + missing.join(', '));
     return;
   }
   const id = state.editingIncidentId || ('INC-' + Date.now().toString(36).toUpperCase());
@@ -4400,15 +4440,15 @@ async function saveIncident() {
   closeModal('modalIncident');
   if (state.view === 'incidents') renderIncidents();
   else if (state.view === 'roster') renderDay();
-  alert('Incident saved \u00b7 ID: ' + id + (isNew ? '\nThe school admin has been assigned a review action.' : ''));
+  uiToast('Incident saved \u00b7 ID: ' + id + (isNew ? '\nThe school admin has been assigned a review action.' : ''));
 }
 
 async function deleteIncident() {
-  if (!can.editIncidents()) { alert('You don\'t have permission to delete incidents.'); return; }
+  if (!can.editIncidents()) { uiToast('You don\'t have permission to delete incidents.'); return; }
   const id = state.editingIncidentId;
   if (!id || !state.incidents[id]) return;
   const inc = state.incidents[id];
-  if (!confirm(`Delete incident report for ${inc.personName || 'unknown'} on ${inc.date || '—'}? Cannot be undone.`)) return;
+  if (!await uiConfirm(`Delete incident report for ${inc.personName || 'unknown'} on ${inc.date || '—'}? Cannot be undone.`)) return;
   delete state.incidents[id];
   await saveIncidents();
   closeModal('modalIncident');
@@ -4684,7 +4724,7 @@ ${body}
 function downloadIncident() {
   const inc = collectIncident();
   const missing = validateIncident(inc);
-  if (missing.length > 0) { alert('Fill in required fields first: ' + missing.join(', ')); return; }
+  if (missing.length > 0) { uiToast('Fill in required fields first: ' + missing.join(', ')); return; }
   const html = formatIncidentHtml(inc);
   const blob = new Blob([html], { type: 'text/html' });
   const url = URL.createObjectURL(blob);
@@ -4702,10 +4742,10 @@ function downloadIncident() {
 function printIncident() {
   const inc = collectIncident();
   const missing = validateIncident(inc);
-  if (missing.length > 0) { alert('Fill in required fields first: ' + missing.join(', ')); return; }
+  if (missing.length > 0) { uiToast('Fill in required fields first: ' + missing.join(', ')); return; }
   const html = formatIncidentHtml(inc);
   const w = window.open('', '_blank', 'width=900,height=700');
-  if (!w) { alert('Allow pop-ups for this site to print.'); return; }
+  if (!w) { uiToast('Allow pop-ups for this site to print.'); return; }
   w.document.write(html);
   w.document.close();
   // Give it a tick to layout, then trigger print
@@ -4715,7 +4755,7 @@ function printIncident() {
 function emailIncident() {
   const inc = collectIncident();
   const missing = validateIncident(inc);
-  if (missing.length > 0) { alert('Fill in required fields first: ' + missing.join(', ')); return; }
+  if (missing.length > 0) { uiToast('Fill in required fields first: ' + missing.join(', ')); return; }
   const contact = currentContact() || {};
   const to = contact.adminEmail || '';
   const sevLabel = (inc.severity || '').toUpperCase();
@@ -4843,9 +4883,9 @@ function _aquilaSchoolName(sid) {
 
 // ---------- Aquila settings (Admin → Integrations) ----------
 function openAquilaSettings() {
-  if (!hasRole('admin')) { alert('Only an admin can manage Aquila.'); return; }
-  if (!DB.isSupabase) { alert('Aquila requires the Supabase backend.'); return; }
-  if (!canEditSchool(state.schoolId)) { alert('You can only manage your own school.'); return; }
+  if (!hasRole('admin')) { uiToast('Only an admin can manage Aquila.'); return; }
+  if (!DB.isSupabase) { uiToast('Aquila requires the Supabase backend.'); return; }
+  if (!canEditSchool(state.schoolId)) { uiToast('You can only manage your own school.'); return; }
   state._aquilaDraft = { step: schoolHasAquila() ? 'connected' : 'enter', apiKey: '', validation: null, locIdx: 0, error: '', busy: false };
   renderAquilaSettings();
   openModal('modalAquila');
@@ -4859,7 +4899,7 @@ function renderAquilaSettings() {
   let h = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
       <div class="section-sub" style="margin:0;">🔗 Aquila CRM — ${escapeHtml(schoolName)}</div>
       <button class="btn" onclick="closeModal('modalAquila')" style="min-width:44px;min-height:44px;padding:0;justify-content:center;font-size:15px;">✕</button></div>`;
-  if (d.error) h += `<div style="background:var(--red-50,#fde8e8);color:var(--red-700,#b42318);border-radius:8px;padding:8px 10px;margin:6px 0;font-size:13px;">${escapeHtml(d.error)}</div>`;
+  if (d.error) h += `<div style="background:var(--red-50,#fde8e8);color:var(--red-700,var(--red-700));border-radius:8px;padding:8px 10px;margin:6px 0;font-size:13px;">${escapeHtml(d.error)}</div>`;
 
   if (d.step === 'connected' && intg) {
     const roles = (intg.roles || []).join(', ') || '—';
@@ -4873,7 +4913,7 @@ function renderAquilaSettings() {
     if (!devOk) h += `<div style="background:var(--amber-50,#fef3cd);color:var(--amber-800,#7a5b00);border-radius:8px;padding:8px 10px;margin-top:8px;font-size:12px;">This key lacks the <b>Development_Read</b> role, so student progression won't load. Rotate to a key that has it.</div>`;
     h += `<div style="display:flex;gap:8px;margin-top:14px;">
         <button class="btn" onclick="_aquilaStartRotate()" style="flex:1;">Update / rotate key</button>
-        <button class="btn" onclick="_aquilaDisconnect()" style="flex:1;color:var(--red-700,#b42318);">Disconnect</button></div>`;
+        <button class="btn" onclick="_aquilaDisconnect()" style="flex:1;color:var(--red-700,var(--red-700));">Disconnect</button></div>`;
   } else if (d.step === 'pick' && d.validation) {
     const locs = d.validation.locations || [];
     h += `<p style="font-size:13px;color:var(--grey-600,#52525b);margin:4px 0 10px;">Key valid for <b>${escapeHtml(d.validation.userName || 'this account')}</b>. Choose the location to connect to ${escapeHtml(schoolName)}:</p>
@@ -4881,7 +4921,7 @@ function renderAquilaSettings() {
     locs.forEach((l, i) => {
       h += `<label style="display:flex;gap:8px;align-items:flex-start;border:1px solid var(--grey-200,#e4e4e7);border-radius:8px;padding:10px;cursor:pointer;">
         <input type="radio" name="aqloc" value="${i}" ${i === (d.locIdx || 0) ? 'checked' : ''} onchange="state._aquilaDraft.locIdx=${i}">
-        <span style="font-size:13px;"><b>${escapeHtml(l.name || l.id)}</b><br><span style="color:var(--grey-500,#71717a);">${escapeHtml(l.accountName || '')} · roles: ${escapeHtml((l.roles || []).join(', ') || '—')}</span></span></label>`;
+        <span style="font-size:13px;"><b>${escapeHtml(l.name || l.id)}</b><br><span style="color:var(--grey-500,var(--grey-400));">${escapeHtml(l.accountName || '')} · roles: ${escapeHtml((l.roles || []).join(', ') || '—')}</span></span></label>`;
     });
     h += `</div><div style="display:flex;gap:8px;margin-top:14px;">
         <button class="btn" onclick="_aquilaCancel()" style="flex:1;">Back</button>
@@ -4942,7 +4982,7 @@ function _aquilaCancel() {
   renderAquilaSettings();
 }
 async function _aquilaDisconnect() {
-  if (!confirm('Disconnect Aquila for this school? Leadership enrolments are kept.')) return;
+  if (!await uiConfirm('Disconnect Aquila for this school? Leadership enrolments are kept.')) return;
   const d = state._aquilaDraft; d.error = ''; d.busy = true; renderAquilaSettings();
   try {
     await DB.aquila.disconnect(state.schoolId);
@@ -4969,7 +5009,7 @@ function _aquilaFullName(m) { return (((m && m.firstName) || '') + ' ' + ((m && 
 
 // ---------- F: leadership live student lookup (search → list, that's it) ----------
 function openAquilaStudentLookup() {
-  if (!schoolHasAquila()) { alert('Aquila is not connected for this school.'); return; }
+  if (!schoolHasAquila()) { uiToast('Aquila is not connected for this school.'); return; }
   state._aqLookup = { query: '', data: null, error: '', loading: true };
   renderAquilaLookup();
   openModal('modalAquilaLookup');
@@ -4994,19 +5034,19 @@ function renderAquilaLookup() {
 function _aquilaLookupResults() {
   const box = document.getElementById('aqLookupResults'); if (!box) return;
   const L = state._aqLookup || {};
-  if (L.loading) { box.innerHTML = `<div style="color:var(--grey-500,#71717a);font-size:13px;padding:8px 0;">Loading live roster…</div>`; return; }
-  if (L.error) { box.innerHTML = `<div style="background:var(--red-50,#fde8e8);color:var(--red-700,#b42318);border-radius:8px;padding:8px 10px;font-size:13px;">${escapeHtml(L.error)}</div>`; return; }
+  if (L.loading) { box.innerHTML = `<div style="color:var(--grey-500,var(--grey-400));font-size:13px;padding:8px 0;">Loading live roster…</div>`; return; }
+  if (L.error) { box.innerHTML = `<div style="background:var(--red-50,#fde8e8);color:var(--red-700,var(--red-700));border-radius:8px;padding:8px 10px;font-size:13px;">${escapeHtml(L.error)}</div>`; return; }
   const members = (L.data && L.data.members) || [];
   const hits = aquilaSearch(members, L.query);
-  if (!hits.length) { box.innerHTML = `<div style="color:var(--grey-500,#71717a);font-size:13px;padding:8px 0;">No matching students.</div>`; return; }
-  box.innerHTML = `<div style="font-size:11px;color:var(--grey-500,#71717a);margin-bottom:6px;">${hits.length} student${hits.length === 1 ? '' : 's'}${L.query ? '' : ' (showing first 50)'}</div>` +
+  if (!hits.length) { box.innerHTML = `<div style="color:var(--grey-500,var(--grey-400));font-size:13px;padding:8px 0;">No matching students.</div>`; return; }
+  box.innerHTML = `<div style="font-size:11px;color:var(--grey-500,var(--grey-400));margin-bottom:6px;">${hits.length} student${hits.length === 1 ? '' : 's'}${L.query ? '' : ' (showing first 50)'}</div>` +
     hits.map((m) => {
       const grades = escapeHtml(aquilaGradeSummary(m) || 'No grades recorded');
       const contact = [m.email, m.mobile].filter(Boolean).map(escapeHtml).join(' · ');
       return `<div style="border:1px solid var(--grey-200,#e4e4e7);border-radius:8px;padding:10px;margin-bottom:6px;">
         <div style="font-weight:600;font-size:13px;">${escapeHtml(_aquilaFullName(m))}</div>
         <div style="font-size:12px;color:var(--grey-600,#52525b);margin-top:2px;">${grades}</div>
-        ${contact ? `<div style="font-size:11px;color:var(--grey-500,#71717a);margin-top:3px;">${contact}</div>` : ''}</div>`;
+        ${contact ? `<div style="font-size:11px;color:var(--grey-500,var(--grey-400));margin-top:3px;">${contact}</div>` : ''}</div>`;
     }).join('');
 }
 
@@ -5015,8 +5055,8 @@ function _aquilaLookupResults() {
 // student record (found-or-created by name+DOB, tagged source:'aquila'), then
 // hands off to openProgressionForStudent -- the SAME planner the manual flow uses.
 function openAquilaProgPicker() {
-  if (!schoolHasAquila()) { alert('Aquila is not connected for this school.'); return; }
-  if (!aquilaCanProgression()) { alert('The Aquila key for this school lacks the Development_Read role, so the student roster is unavailable.'); return; }
+  if (!schoolHasAquila()) { uiToast('Aquila is not connected for this school.'); return; }
+  if (!aquilaCanProgression()) { uiToast('The Aquila key for this school lacks the Development_Read role, so the student roster is unavailable.', 'error'); return; }
   state._aqPick = { query: '', data: null, error: '', loading: true, busy: false };
   renderAquilaProgPicker();
   openModal('modalAquilaProg');
@@ -5043,13 +5083,13 @@ function renderAquilaProgPicker() {
 function _aquilaProgPickerResults() {
   const box = document.getElementById('aqPickResults'); if (!box) return;
   const P = state._aqPick || {};
-  if (P.busy)    { box.innerHTML = `<div style="color:var(--grey-500,#71717a);font-size:13px;padding:8px 0;">Opening planner…</div>`; return; }
-  if (P.loading) { box.innerHTML = `<div style="color:var(--grey-500,#71717a);font-size:13px;padding:8px 0;">Loading roster…</div>`; return; }
-  if (P.error)   { box.innerHTML = `<div style="background:var(--red-50,#fde8e8);color:var(--red-700,#b42318);border-radius:8px;padding:8px 10px;font-size:13px;">${escapeHtml(P.error)}</div>`; return; }
+  if (P.busy)    { box.innerHTML = `<div style="color:var(--grey-500,var(--grey-400));font-size:13px;padding:8px 0;">Opening planner…</div>`; return; }
+  if (P.loading) { box.innerHTML = `<div style="color:var(--grey-500,var(--grey-400));font-size:13px;padding:8px 0;">Loading roster…</div>`; return; }
+  if (P.error)   { box.innerHTML = `<div style="background:var(--red-50,#fde8e8);color:var(--red-700,var(--red-700));border-radius:8px;padding:8px 10px;font-size:13px;">${escapeHtml(P.error)}</div>`; return; }
   const members = (P.data && P.data.members) || [];
   const hits = aquilaSearch(members, P.query);
-  if (!hits.length) { box.innerHTML = `<div style="color:var(--grey-500,#71717a);font-size:13px;padding:8px 0;">No matching students.</div>`; return; }
-  box.innerHTML = `<div style="font-size:11px;color:var(--grey-500,#71717a);margin-bottom:6px;">${hits.length} student${hits.length === 1 ? '' : 's'}${P.query ? '' : ' (showing first 50)'} · tap to start a plan</div>` +
+  if (!hits.length) { box.innerHTML = `<div style="color:var(--grey-500,var(--grey-400));font-size:13px;padding:8px 0;">No matching students.</div>`; return; }
+  box.innerHTML = `<div style="font-size:11px;color:var(--grey-500,var(--grey-400));margin-bottom:6px;">${hits.length} student${hits.length === 1 ? '' : 's'}${P.query ? '' : ' (showing first 50)'} · tap to start a plan</div>` +
     hits.map((m) => {
       const idx = members.indexOf(m);
       const dob = m.dob ? String(m.dob).slice(0, 10) : '';
@@ -5082,9 +5122,9 @@ async function _aquilaProgPick(idx) {
 // Unlike the progression picker, this one MATERIALISES a local student and opens
 // the saved pathway editor, because pathways are tracked and updated over time.
 function openAquilaPathwayPicker() {
-  if (!schoolHasAquila()) { alert('Aquila is not connected for this school.'); return; }
-  if (!aquilaCanProgression()) { alert('The Aquila key for this school lacks the Development_Read role, so the roster is unavailable.'); return; }
-  if (!can.managePathway()) { alert('You need instructor access to manage pathways.'); return; }
+  if (!schoolHasAquila()) { uiToast('Aquila is not connected for this school.'); return; }
+  if (!aquilaCanProgression()) { uiToast('The Aquila key for this school lacks the Development_Read role, so the roster is unavailable.', 'error'); return; }
+  if (!can.managePathway()) { uiToast('You need instructor access to manage pathways.'); return; }
   state._aqPwPick = { query: '', data: null, error: '', loading: true, busy: false };
   renderAquilaPathwayPicker();
   openModal('modalAquilaPathway');
@@ -5111,13 +5151,13 @@ function renderAquilaPathwayPicker() {
 function _aquilaPathwayPickerResults() {
   const box = document.getElementById('aqPwResults'); if (!box) return;
   const P = state._aqPwPick || {};
-  if (P.busy)    { box.innerHTML = `<div style="color:var(--grey-500,#71717a);font-size:13px;padding:8px 0;">Opening pathway…</div>`; return; }
-  if (P.loading) { box.innerHTML = `<div style="color:var(--grey-500,#71717a);font-size:13px;padding:8px 0;">Loading roster…</div>`; return; }
-  if (P.error)   { box.innerHTML = `<div style="background:var(--red-50,#fde8e8);color:var(--red-700,#b42318);border-radius:8px;padding:8px 10px;font-size:13px;">${escapeHtml(P.error)}</div>`; return; }
+  if (P.busy)    { box.innerHTML = `<div style="color:var(--grey-500,var(--grey-400));font-size:13px;padding:8px 0;">Opening pathway…</div>`; return; }
+  if (P.loading) { box.innerHTML = `<div style="color:var(--grey-500,var(--grey-400));font-size:13px;padding:8px 0;">Loading roster…</div>`; return; }
+  if (P.error)   { box.innerHTML = `<div style="background:var(--red-50,#fde8e8);color:var(--red-700,var(--red-700));border-radius:8px;padding:8px 10px;font-size:13px;">${escapeHtml(P.error)}</div>`; return; }
   const members = (P.data && P.data.members) || [];
   const hits = aquilaSearch(members, P.query);
-  if (!hits.length) { box.innerHTML = `<div style="color:var(--grey-500,#71717a);font-size:13px;padding:8px 0;">No matching members.</div>`; return; }
-  box.innerHTML = `<div style="font-size:11px;color:var(--grey-500,#71717a);margin-bottom:6px;">${hits.length} member${hits.length === 1 ? '' : 's'}${P.query ? '' : ' (showing first 50)'} · tap to open pathway</div>` +
+  if (!hits.length) { box.innerHTML = `<div style="color:var(--grey-500,var(--grey-400));font-size:13px;padding:8px 0;">No matching members.</div>`; return; }
+  box.innerHTML = `<div style="font-size:11px;color:var(--grey-500,var(--grey-400));margin-bottom:6px;">${hits.length} member${hits.length === 1 ? '' : 's'}${P.query ? '' : ' (showing first 50)'} · tap to open pathway</div>` +
     hits.map((m) => {
       const idx = members.indexOf(m);
       const dob = m.dob ? String(m.dob).slice(0, 10) : '';
@@ -5478,12 +5518,12 @@ function generateProgression() {
   ppSaveCardValues();
   const dob = ppParseDate(document.getElementById('progDob').value);
   const name = document.getElementById('progStudentName').value.trim();
-  if (!name) { alert('Enter the student name.'); return; }
-  if (!dob)  { alert('Enter a valid date of birth.'); return; }
-  if (dob > new Date()) { alert('Date of birth cannot be in the future.'); return; }
+  if (!name) { uiToast('Enter the student name.'); return; }
+  if (!dob)  { uiToast('Enter a valid date of birth.'); return; }
+  if (dob > new Date()) { uiToast('Date of birth cannot be in the future.', 'error'); return; }
 
   const selected = ppGetSelectedPrograms();
-  if (selected.length === 0) { alert('Pick at least one program.'); return; }
+  if (selected.length === 0) { uiToast('Pick at least one program.'); return; }
 
   const programResults = {};
   for (const progId of selected) {
@@ -5526,14 +5566,14 @@ function renderProgressionResults() {
     if (data.projection.length === 0) {
       html += `<div style="font-size: 12px; color: var(--grey-500); font-style: italic;">Already at top rank.</div>`;
     } else {
-      html += `<div class="pp-table-wrap"><table class="pp-table">
+      html += `<div class="pp-table-wrap"><div class="table-scroll"><table class="pp-table">
         <thead><tr><th>Rank</th><th>Earliest date</th><th>Age</th></tr></thead>
         <tbody>`;
       for (const row of data.projection) {
         const ageLabel = row.ageAtRank ? `${row.ageAtRank.years}y ${row.ageAtRank.months}m` : '—';
         html += `<tr><td>${escapeHtml(row.label)}</td><td>${ppFmt(row.date)}</td><td>${ageLabel}</td></tr>`;
       }
-      html += `</tbody></table></div>`;
+      html += `</tbody></table></div></div>`;
     }
     html += `</div>`;
   }
@@ -5850,7 +5890,7 @@ async function saveStudent() {
   if (blockedByImpersonation()) return;
   const name = document.getElementById('studentNameInput').value.trim();
   const dob = document.getElementById('studentDobInput').value;
-  if (!name) { alert('Enter a name.'); return; }
+  if (!name) { uiToast('Enter a name.'); return; }
   let id = state.editingStudentId;
   if (!id) {
     const norm = name.trim().toLowerCase();
@@ -5878,7 +5918,7 @@ async function saveStudent() {
 async function deleteStudent(studentId) {
   const stu = state.students[studentId];
   if (!stu) return;
-  if (!confirm(`Delete ${stu.name}? This removes their progression plans and instructor pathway. Cannot be undone.`)) return;
+  if (!await uiConfirm(`Delete ${stu.name}? This removes their progression plans and instructor pathway. Cannot be undone.`)) return;
   // Cascade
   delete state.students[studentId];
   for (const progId of Object.keys(state.progressions)) {
@@ -5967,7 +6007,7 @@ async function deletePathway() {
   const id = state.editingPathwayId;
   if (!id) return;
   const stu = state.students[id];
-  if (!confirm(`Delete instructor pathway for ${stu?.name || 'this student'}? Cannot be undone.`)) return;
+  if (!await uiConfirm(`Delete instructor pathway for ${stu?.name || 'this student'}? Cannot be undone.`)) return;
   delete state.pathways[id];
   await savePathways();
   closeModal('modalPathway');
@@ -5993,7 +6033,7 @@ function formatProgressionHtml() {
       <h2 style="border-left: 4px solid ${prog.colour}; padding-left: 10px;">${escapeHtml(prog.name)} <span style="font-weight: normal; color: #666; font-size: 13px;">— currently ${escapeHtml(data.currentRankLabel)}</span></h2>
       ${data.projection.length === 0
         ? '<p style="font-style: italic; color: #666;">Already at top rank.</p>'
-        : `<table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+        : `<div class="table-scroll"><table style="width: 100%; border-collapse: collapse; font-size: 13px;">
             <thead><tr style="background: #f5f5f3;">
               <th style="text-align: left; padding: 8px; border-bottom: 1px solid #ddd; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;">Rank</th>
               <th style="text-align: left; padding: 8px; border-bottom: 1px solid #ddd; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;">Earliest date</th>
@@ -6002,7 +6042,7 @@ function formatProgressionHtml() {
             <tbody>${data.projection.map(row =>
               `<tr><td style="padding: 7px 8px; border-bottom: 1px solid #eee;">${escapeHtml(row.label)}</td><td style="padding: 7px 8px; border-bottom: 1px solid #eee;">${ppFmt(row.date)}</td><td style="padding: 7px 8px; border-bottom: 1px solid #eee;">${row.ageAtRank ? row.ageAtRank.years + 'y ' + row.ageAtRank.months + 'm' : '—'}</td></tr>`
             ).join('')}</tbody>
-          </table>`}
+          </table></div>`}
     </section>`;
   }
 
@@ -6038,7 +6078,7 @@ ${progTables}
 }
 
 function downloadProgression() {
-  if (!state.progResultsCache) { alert('Generate the plan first.'); return; }
+  if (!state.progResultsCache) { uiToast('Generate the plan first.'); return; }
   const html = formatProgressionHtml();
   const blob = new Blob([html], { type: 'text/html' });
   const url = URL.createObjectURL(blob);
@@ -6053,10 +6093,10 @@ function downloadProgression() {
 }
 
 function printProgression() {
-  if (!state.progResultsCache) { alert('Generate the plan first.'); return; }
+  if (!state.progResultsCache) { uiToast('Generate the plan first.'); return; }
   const html = formatProgressionHtml();
   const w = window.open('', '_blank', 'width=900,height=700');
-  if (!w) { alert('Allow pop-ups for this site to print.'); return; }
+  if (!w) { uiToast('Allow pop-ups for this site to print.'); return; }
   w.document.write(html);
   w.document.close();
   setTimeout(() => { w.focus(); w.print(); }, 400);
@@ -6067,7 +6107,7 @@ function printProgression() {
 function openPathway(studentId) {
   if (!state.user) { openLogin(); return; }
   const stu = state.students[studentId];
-  if (!stu) { alert('Student not found.'); return; }
+  if (!stu) { uiToast('Student not found.', 'error'); return; }
   state.editingPathwayId = studentId;
   state.selectedPathwayYear = String(new Date().getFullYear());
 
@@ -6250,7 +6290,7 @@ async function savePathway() {
   await savePathways();
   closeModal('modalPathway');
   if (state.view === 'students') renderStudents();
-  alert('Pathway saved.');
+  uiToast('Pathway saved.', 'success');
 }
 
 function formatPathwayHtml(stu, pw) {
@@ -6322,22 +6362,22 @@ function formatPathwayHtml(stu, pw) {
 </div>
 
 <h2>Instructing goals</h2>
-<table>
+<div class="table-scroll"><table>
   <thead><tr><th>Role</th><th>Set with</th><th>Date</th><th style="text-align: right;">Points</th></tr></thead>
   <tbody>${goalsRows}</tbody>
-</table>
+</table></div>
 
 <h2>Monthly leadership meetings</h2>
-<table>
+<div class="table-scroll"><table>
   <thead><tr><th>Year</th><th>Month</th><th>Date</th><th style="text-align: right;">Points</th></tr></thead>
   <tbody>${meetingsRows}</tbody>
-</table>
+</table></div>
 
 <h2>Milestones</h2>
-<table>
+<div class="table-scroll"><table>
   <thead><tr><th>Milestone</th><th>Date</th><th>Reviewed by</th><th style="text-align: right;">Points</th></tr></thead>
   <tbody>${milestonesRows}</tbody>
-</table>
+</table></div>
 
 <h2>Weaknesses & areas to develop</h2>
 <div class="weaknesses">${esc(pw.weaknesses)}</div>
@@ -6351,7 +6391,7 @@ function downloadPathway() {
   const studentId = state.editingPathwayId;
   const stu = state.students[studentId];
   const pw = state.pathways[studentId];
-  if (!stu || !pw) { alert('Save first.'); return; }
+  if (!stu || !pw) { uiToast('Save first.'); return; }
   const html = formatPathwayHtml(stu, pw);
   const blob = new Blob([html], { type: 'text/html' });
   const url = URL.createObjectURL(blob);
@@ -6369,10 +6409,10 @@ function printPathway() {
   const studentId = state.editingPathwayId;
   const stu = state.students[studentId];
   const pw = state.pathways[studentId];
-  if (!stu || !pw) { alert('Save first.'); return; }
+  if (!stu || !pw) { uiToast('Save first.'); return; }
   const html = formatPathwayHtml(stu, pw);
   const w = window.open('', '_blank', 'width=900,height=700');
-  if (!w) { alert('Allow pop-ups for this site to print.'); return; }
+  if (!w) { uiToast('Allow pop-ups for this site to print.'); return; }
   w.document.write(html);
   w.document.close();
   setTimeout(() => { w.focus(); w.print(); }, 400);
@@ -6504,7 +6544,7 @@ function exportWeekRoster() {
 
     daySections += `<div class="day-block">
       <h2>${DAY_LABELS[dow]} <span class="day-date">${String(date.getDate()).padStart(2,'0')}/${String(date.getMonth()+1).padStart(2,'0')}</span></h2>
-      <table><tbody>${rows}</tbody></table>
+      <div class="table-scroll"><table><tbody>${rows}</tbody></table></div>
     </div>`;
   }
 
@@ -6779,9 +6819,9 @@ async function saveGradingSession() {
   const location = document.getElementById('gsLocation').value.trim();
   let start      = (document.getElementById('gsStart').value || '').trim();
   let end        = (document.getElementById('gsEnd').value || '').trim();
-  if (!date) { alert('Enter a date.'); return; }
+  if (!date) { uiToast('Enter a date.'); return; }
   start = start || '17:00'; end = end || '18:30';
-  if (end <= start) { alert('The grading ends at or before it starts \u2014 check the times.'); return; }
+  if (end <= start) { uiToast('The grading ends at or before it starts \u2014 check the times.'); return; }
   let id = state.editingGradingSessionId;
   const oldDate = id ? ((state.grading[id] && state.grading[id].date) || null) : null;
   if (id) {
@@ -6860,7 +6900,7 @@ async function deleteGradingSession() {
   if (!id) return;
   const s = state.grading[id];
   const label = s ? (GRADING_SYLLABI[s.syllabus]?.label || s.syllabus) + ' · ' + (s.date || '') : id;
-  if (!confirm('Delete "' + label + '" and all its candidates? Cannot be undone.')) return;
+  if (!await uiConfirm('Delete "' + label + '" and all its candidates? Cannot be undone.')) return;
   const dt = s && s.date;
   delete state.grading[id];
   if (state.gradingSessionId === id) state.gradingSessionId = null;
@@ -7057,7 +7097,7 @@ function linkStudentForCandidate(name, memberNum, priorStudentId) {
 
 async function saveGradingCandidate() {
   const name = document.getElementById('gcName').value.trim();
-  if (!name) { alert('Enter the student name.'); return; }
+  if (!name) { uiToast('Enter the student name.'); return; }
   const sessionId = state.gradingSessionId;
   const session = state.grading[sessionId];
   if (!session) return;
@@ -7099,7 +7139,7 @@ async function deleteGradingCandidate() {
   const session = state.grading[sessionId];
   if (!session || state.editingCandidateIdx === null) return;
   const c = session.candidates.find(c => c.idx === state.editingCandidateIdx);
-  if (!confirm('Remove ' + (c?.name || 'this student') + ' from the grading list?')) return;
+  if (!await uiConfirm('Remove ' + (c?.name || 'this student') + ' from the grading list?')) return;
   session.candidates = session.candidates.filter(c => c.idx !== state.editingCandidateIdx);
   await saveGrading();
   closeModal('modalGradingCandidate');
@@ -7114,7 +7154,7 @@ async function deleteGradingCandidate() {
 let _gradingImportRows = [];
 
 function openGradingImport(sessionId) {
-  if (!can.manageGrading()) { alert('Grading manager access required.'); return; }
+  if (!can.manageGrading()) { uiToast('Grading manager access required.'); return; }
   const session = state.grading[sessionId];
   if (!session) return;
   state.gradingSessionId = sessionId;
@@ -7286,7 +7326,7 @@ function parseGradingImport() {
   status.textContent = `${okCount} student${okCount === 1 ? '' : 's'} ready` + (_gradingImportRows.length - okCount > 0 ? `, ${_gradingImportRows.length - okCount} row(s) skipped (no name)` : '') + (hasHeader ? ' · detected column headers' : '');
   status.style.color = okCount ? 'var(--ok)' : 'var(--red)';
 
-  preview.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px;">
+  preview.innerHTML = `<div class="table-scroll"><table style="width:100%;border-collapse:collapse;font-size:12px;">
     <thead><tr style="text-align:left;color:var(--grey-500);">
       <th style="padding:4px;">Member</th><th style="padding:4px;">Name</th><th style="padding:4px;">Current grade</th><th style="padding:4px;">Result</th>
     </tr></thead><tbody>
@@ -7296,7 +7336,7 @@ function parseGradingImport() {
       <td style="padding:4px;">${escapeHtml(r.currentGrade || '—')}${!r.gradeMatched ? ' <span style="color:var(--warn);" title="Not recognised — defaulted to first grade">⚠</span>' : ''}</td>
       <td style="padding:4px;">${escapeHtml(GRADING_RESULTS.find(x => x.value === r.result)?.label.split(' (')[0] || '—')}</td>
     </tr>`).join('')}
-  </tbody></table>`;
+  </tbody></table></div>`;
   document.getElementById('giCommitBtn').style.display = okCount ? 'block' : 'none';
 }
 
@@ -7304,7 +7344,7 @@ async function commitGradingImport() {
   const session = state.grading[state.gradingSessionId];
   if (!session) return;
   const rows = _gradingImportRows.filter(r => r.valid);
-  if (rows.length === 0) { alert('No valid students to import.'); return; }
+  if (rows.length === 0) { uiToast('No valid students to import.'); return; }
   if (!Array.isArray(session.candidates)) session.candidates = [];
   let base = Date.now();
   const added = [];
@@ -7328,7 +7368,7 @@ async function commitGradingImport() {
   await saveStudents();
   closeModal('modalGradingImport');
   renderGrading();
-  alert(`Imported ${rows.length} student${rows.length === 1 ? '' : 's'} into the grading.`);
+  uiToast(`Imported ${rows.length} student${rows.length === 1 ? '' : 's'} into the grading.`, 'success');
 }
 
 /* ================================================================
@@ -7379,7 +7419,7 @@ function certTemplateFor(syllabus) { return syllabus === 'mln' ? 'mln' : 'allino
 let _certState = null;
 
 function openGradingCerts(sessionId) {
-  if (!can.manageGrading()) { alert('Grading manager access required.'); return; }
+  if (!can.manageGrading()) { uiToast('Grading manager access required.'); return; }
   const session = state.grading[sessionId];
   if (!session) return;
   const syl = GRADING_SYLLABI[session.syllabus];
@@ -7446,7 +7486,7 @@ function printGradingCerts() {
   try { localStorage.setItem('krmas-cert-offset', JSON.stringify({ x: offsetX, y: offsetY })); } catch (e) {}
 
   const chosen = _certState.rows.filter(r => r.include);
-  if (chosen.length === 0) { alert('Select at least one student.'); return; }
+  if (chosen.length === 0) { uiToast('Select at least one student.'); return; }
 
   const dateStr = ordinalDate(_certState.date);
   const pages = chosen.map(r => {
@@ -7481,7 +7521,7 @@ function printGradingCerts() {
   </body></html>`;
 
   const w = window.open('', '_blank', 'width=900,height=1000');
-  if (!w) { alert('Allow pop-ups for this site to print certificates.'); return; }
+  if (!w) { uiToast('Allow pop-ups for this site to print certificates.'); return; }
   w.document.write(html);
   w.document.close();
   setTimeout(() => { w.focus(); w.print(); }, 600);
@@ -7495,7 +7535,7 @@ function printGradingSheet(sessionId) {
   if (!session) return;
   const html = buildGradingSheetHtml(session);
   const w = window.open('', '_blank', 'width=1100,height=800');
-  if (!w) { alert('Allow pop-ups for this site to print.'); return; }
+  if (!w) { uiToast('Allow pop-ups for this site to print.'); return; }
   w.document.write(html);
   w.document.close();
   setTimeout(() => { w.focus(); w.print(); }, 500);
@@ -7577,7 +7617,7 @@ function buildGradingSheetHtml(session) {
   </div>
 </div>
 
-<table>
+<div class="table-scroll"><table>
   <thead>
     <tr>
       <th style="width:70px;">Member No.</th>
@@ -7593,7 +7633,7 @@ function buildGradingSheetHtml(session) {
     </tr>
   </thead>
   <tbody>${rows}</tbody>
-</table>
+</table></div>
 
 <div class="rounds-section">
   <strong>Grappling and/or sparring rounds as per relevant syllabus</strong> — Two minute rounds, max 20 second break between rounds
@@ -7795,15 +7835,15 @@ function printBeltOrder() {
 <body>
   <h1>Belt Order — ${escapeHtml(schoolName)}</h1>
   <div class="sub">Generated ${new Date().toLocaleDateString('en-AU', {day:'2-digit',month:'long',year:'numeric'})} · All grading sessions with results recorded</div>
-  <table>
+  <div class="table-scroll"><table>
     <thead><tr><th>Belt</th><th>Size</th><th>Needed</th><th>In stock</th><th>Order qty</th></tr></thead>
     <tbody>${rows}</tbody>
-  </table>
+  </table></div>
   <div class="total">Total to order: ${total}</div>
 </body></html>`;
 
   const w = window.open('', '_blank', 'width=800,height=600');
-  if (!w) { alert('Allow pop-ups to print.'); return; }
+  if (!w) { uiToast('Allow pop-ups to print.'); return; }
   w.document.write(html);
   w.document.close();
   setTimeout(() => { w.focus(); w.print(); }, 400);
@@ -7833,11 +7873,11 @@ function renderInstructorManagerModal() {
         ${avatarHtml(instr, 40)}
         <div style="flex:1;min-width:0;">
           <div style="font-weight:700;">${escapeHtml(instr.name)}</div>
-          <div style="font-size:11px;color:var(--grey-500);margin-top:2px;">${instr.email ? escapeHtml(instr.email) + ' · ' : ''}${instr.uid ? '<span style="color:#16a34a;font-weight:600;">Can sign in</span>' : (instr.email ? 'No login — re-save to enable' : 'No login (add an email)')}</div>
+          <div style="font-size:11px;color:var(--grey-500);margin-top:2px;">${instr.email ? escapeHtml(instr.email) + ' · ' : ''}${instr.uid ? '<span style="color:var(--ok);font-weight:600;">Can sign in</span>' : (instr.email ? 'No login — re-save to enable' : 'No login (add an email)')}</div>
         </div>
         ${roleBadge(instr.role)}
         ${isAccredited(instr.id) ? '<span title="Holds a valid NCAS Accreditation compliance record" style="font-size:9px;background:#dcfce7;color:#166534;padding:2px 7px;border-radius:999px;font-weight:700;text-transform:uppercase;">NCAS</span>' : ''}
-        ${instr.status === 'leave' ? '<span style="font-size:9px;background:#fef3c7;color:#92400e;padding:2px 7px;border-radius:999px;font-weight:700;text-transform:uppercase;">On leave</span>' : ''}
+        ${instr.status === 'leave' ? '<span style="font-size:9px;background:#fef3c7;color:var(--amber-700);padding:2px 7px;border-radius:999px;font-weight:700;text-transform:uppercase;">On leave</span>' : ''}
         ${instr.active === false && instr.status !== 'leave' ? '<span style="font-size:9px;background:var(--grey-200);color:var(--grey-500);padding:2px 6px;border-radius:999px;font-weight:700;text-transform:uppercase;">Inactive</span>' : ''}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
@@ -7873,7 +7913,7 @@ function roleSelectOptions(selectedRole) {
 // ── App logins manager (auth users / profiles) ──
 async function openUserManager() {
   if (!requireRole('admin')) return;
-  if (!DB.isSupabase) { alert('Login management needs the app to be online.'); return; }
+  if (!DB.isSupabase) { uiToast('Login management needs the app to be online.'); return; }
   openModal('modalUsers');
   const ir = document.getElementById('inviteResult'); if (ir) ir.innerHTML = '';
   const ie = document.getElementById('inviteError'); if (ie) ie.textContent = '';
@@ -7943,13 +7983,13 @@ async function userInvite() {
 
 async function userSetRole(uid, role) {
   try { await DB.users.setRole(uid, role); }
-  catch (e) { alert('Could not change role: ' + ((e && e.message) || '')); await renderUserManager(); }
+  catch (e) { uiToast('Could not change role: ' + ((e && e.message) || '')); await renderUserManager(); }
 }
 
 async function userRemove(uid, name) {
-  if (!confirm('Remove the login for ' + name + '?\n\nThey will no longer be able to sign in. This does not delete any roster or scheduling data.')) return;
+  if (!await uiConfirm('Remove the login for ' + name + '?\n\nThey will no longer be able to sign in. This does not delete any roster or scheduling data.')) return;
   try { await DB.users.remove(uid); await renderUserManager(); }
-  catch (e) { alert('Could not remove: ' + ((e && e.message) || '')); }
+  catch (e) { uiToast('Could not remove: ' + ((e && e.message) || '')); }
 }
 
 // ── User editor (add / edit) — change 4 ──
@@ -8084,7 +8124,7 @@ async function saveUser() {
   const role  = document.getElementById('userRole').value;
   const statusSel = document.getElementById('userStatus').value;
 
-  if (!first && !short) { alert('Enter at least a first name or short name.'); return; }
+  if (!first && !short) { uiToast('Enter at least a first name or short name.'); return; }
   const name = [title, first, last].filter(Boolean).join(' ') || short;
 
   const instrs = ensureCustomInstructors();
@@ -8134,7 +8174,7 @@ async function saveUser() {
     const had  = !!(state._shopAdminByUid && state._shopAdminByUid[instr.uid]);
     if (want !== had) {
       try { await DB.setShopAdmin(instr.uid, want); if (state._shopAdminByUid) state._shopAdminByUid[instr.uid] = want; }
-      catch (e) { alert('Could not update shop admin: ' + (e.message || e)); }
+      catch (e) { uiToast('Could not update shop admin: ' + (e.message || e)); }
     }
   }
 
@@ -8146,7 +8186,7 @@ async function saveUser() {
     const had  = !!(state._supplyAdminByUid && state._supplyAdminByUid[instr.uid]);
     if (want !== had) {
       try { await DB.setSupplyAdmin(instr.uid, want); if (state._supplyAdminByUid) state._supplyAdminByUid[instr.uid] = want; }
-      catch (e) { alert('Could not update supply admin: ' + (e.message || e)); }
+      catch (e) { uiToast('Could not update supply admin: ' + (e.message || e)); }
     }
   }
 
@@ -8172,12 +8212,12 @@ async function saveUser() {
           const res = await DB.users.invite(email, role, state.schoolId, name, schools);
           if (res && res.uid) { instr.uid = res.uid; await saveCustomSchools(); }
           if (res && res.tempPassword) {
-            alert('Login created for ' + email + '.\n\nTemporary password (share privately — shown only once):\n\n' + res.tempPassword);
+            uiToast('Login created for ' + email + '.\n\nTemporary password (share privately — shown only once):\n\n' + res.tempPassword);
           }
         }
       }
     } catch (e) {
-      alert('Saved to the roster, but setting up their login failed:\n' + ((e && e.message) || 'unknown') + '\n\nEdit them again to retry.');
+      uiToast('Saved to the roster, but setting up their login failed:\n' + ((e && e.message) || 'unknown') + '\n\nEdit them again to retry.');
     }
   }
 
@@ -8189,14 +8229,14 @@ async function deleteUser() {
   if (!requireRole('admin')) return;
   const id = state.editingUserId;
   if (!id) return;
-  if (state.user && id === state.user.id) { alert('You cannot delete your own account.'); return; }
+  if (state.user && id === state.user.id) { uiToast('You cannot delete your own account.'); return; }
   const instrs = ensureCustomInstructors();
   const instr = instrs.find(i => i.id === id);
   if (!instr) return;
-  if (!confirm(`Delete "${instr.name}"? This removes them from this school and revokes their login. Cannot be undone.`)) return;
+  if (!await uiConfirm(`Delete "${instr.name}"? This removes them from this school and revokes their login. Cannot be undone.`)) return;
   if (DB.isSupabase && instr.uid) {
     try { await DB.users.remove(instr.uid); }
-    catch (e) { alert('Could not remove their login (' + ((e && e.message) || '') + '). Removing from roster anyway.'); }
+    catch (e) { uiToast('Could not remove their login (' + ((e && e.message) || '') + '). Removing from roster anyway.'); }
   }
   state.customSchools[state.schoolId].instructors = instrs.filter(i => i.id !== id);
   await saveCustomSchools();
@@ -8224,18 +8264,18 @@ async function instrSetRole(instrId, newRole) {
     const merged = currentInstructors();
     const src = merged.find(i => i.id === instrId);
     if (src) { state.customSchools[state.schoolId].instructors = JSON.parse(JSON.stringify(merged)); }
-    else { alert('Instructor not found.'); return; }
+    else { uiToast('Instructor not found.', 'error'); return; }
   }
   const target = state.customSchools[state.schoolId].instructors.find(i => i.id === instrId);
-  if (!target) { alert('Could not update role.'); return; }
+  if (!target) { uiToast('Could not update role.', 'error'); return; }
   target.role = newRole;
   if (instrId === state.user?.id && !['admin','superadmin'].includes(newRole)) {
-    if (!confirm('You are changing your own role. You may lose admin access. Continue?')) { renderInstructorManagerModal(); return; }
+    if (!await uiConfirm('You are changing your own role. You may lose admin access. Continue?')) { renderInstructorManagerModal(); return; }
   }
   await saveCustomSchools();
   if (DB.isSupabase && target.uid) {
     try { await DB.users.setRole(target.uid, newRole); }
-    catch (e) { alert('Updated on the roster, but their login role change failed: ' + ((e && e.message) || '')); }
+    catch (e) { uiToast('Updated on the roster, but their login role change failed: ' + ((e && e.message) || '')); }
   }
   renderInstructorManagerModal();
   if (instrId === state.user?.id) { state.user.role = newRole; saveUserAsync(); }
@@ -8245,7 +8285,7 @@ async function instrSetRole(instrId, newRole) {
 
 async function instrSetStatus(instrId, status) {
   if (!requireRole('admin')) return;
-  if (instrId === state.user?.id && status === 'inactive') { alert('You cannot deactivate your own account.'); renderInstructorManagerModal(); return; }
+  if (instrId === state.user?.id && status === 'inactive') { uiToast('You cannot deactivate your own account.'); renderInstructorManagerModal(); return; }
   // Ensure custom schools overlay exists
   if (!state.customSchools[state.schoolId]) {
     const seed = SCHOOL_DATA_SEED[state.schoolId];
@@ -8266,7 +8306,7 @@ async function instrSetStatus(instrId, status) {
 
 async function instrToggleActive(instrId) {
   if (!requireRole('admin')) return;
-  if (instrId === state.user?.id) { alert('You cannot deactivate your own account.'); return; }
+  if (instrId === state.user?.id) { uiToast('You cannot deactivate your own account.'); return; }
   if (!state.customSchools[state.schoolId]) {
     const seed = SCHOOL_DATA_SEED[state.schoolId];
     state.customSchools[state.schoolId] = {
@@ -8287,7 +8327,7 @@ async function instrToggleActive(instrId) {
 }
 
 async function instrResetPin(instrId) {
-  alert('PINs are no longer used to sign in. Everyone signs in with their email and password (manage those under "Manage app logins"). The optional on-device PIN is a personal lock each person sets on their own device.');
+  uiToast('PINs are no longer used to sign in. Everyone signs in with their email and password (manage those under "Manage app logins"). The optional on-device PIN is a personal lock each person sets on their own device.', 'error');
 }
 
 // ---------- Audit log ----------
@@ -8339,8 +8379,8 @@ function collectAuditEntries() {
 
 const NOTICE_TYPES = {
   info:    { label: 'Info',    bg: '#eff6ff', border: '#3b82f6', text: '#1e40af', icon: 'ℹ' },
-  alert:   { label: 'Alert',   bg: '#fffbeb', border: '#f59e0b', text: '#92400e', icon: '⚠' },
-  urgent:  { label: 'Urgent',  bg: '#fff1f2', border: '#d62828', text: '#9f1239', icon: '🚨' },
+  alert:   { label: 'Alert',   bg: '#fffbeb', border: 'var(--amber-500)', text: 'var(--amber-700)', icon: '⚠' },
+  urgent:  { label: 'Urgent',  bg: '#fff1f2', border: 'var(--red)', text: '#9f1239', icon: '🚨' },
 };
 
 function activeNotices() {
@@ -8384,7 +8424,7 @@ function renderNoticeBanners() {
       container.innerHTML = notices.map(n => {
         const t = NOTICE_TYPES[n.type] || NOTICE_TYPES.info;
         const networkTag = n._network
-          ? `<span style="font-size:9px;background:var(--red);color:#fff;padding:1px 6px;border-radius:999px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-left:6px;">Network</span>`
+          ? `<span style="font-size:9px;background:var(--red);color:var(--white);padding:1px 6px;border-radius:999px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-left:6px;">Network</span>`
           : '';
         return `<div style="background:${t.bg};border:1px solid ${t.border};border-left:4px solid ${t.border};border-radius:var(--r-md);padding:10px 12px;margin-bottom:6px;display:flex;align-items:flex-start;gap:8px;">
           <span style="font-size:16px;flex-shrink:0;line-height:1.3;">${t.icon}</span>
@@ -8485,8 +8525,8 @@ function renderNoticesBoard() {
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
           <span>${t.icon}</span>
           <span style="font-weight:700;font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml((p.body || '').slice(0, 70))}${(p.body || '').length > 70 ? '…' : ''}</span>
-          ${p.requiredReading ? '<span style="font-size:9px;background:var(--red);color:#fff;padding:1px 6px;border-radius:999px;font-weight:700;">REQUIRED</span>' : ''}
-          ${expired ? '<span style="font-size:9px;background:var(--grey-300);color:#fff;padding:1px 6px;border-radius:999px;font-weight:700;">EXPIRED</span>' : ''}
+          ${p.requiredReading ? '<span style="font-size:9px;background:var(--red);color:var(--white);padding:1px 6px;border-radius:999px;font-weight:700;">REQUIRED</span>' : ''}
+          ${expired ? '<span style="font-size:9px;background:var(--grey-300);color:var(--white);padding:1px 6px;border-radius:999px;font-weight:700;">EXPIRED</span>' : ''}
         </div>
         <div style="font-size:10px;color:var(--grey-400);margin-top:4px;">${escapeHtml(p.authorName)} · ${timeAgo(p.createdAt)} · ${(p.likeCount||0)} like${(p.likeCount||0)===1?'':'s'}, ${(p.commentCount||0)} comment${(p.commentCount||0)===1?'':'s'} · tap to open feed</div>
       </div>`;
@@ -8534,9 +8574,9 @@ function renderNoticeBoardItem(n, isNetwork, canEdit) {
       <div style="flex:1;min-width:0;">
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:2px;">
           <span style="font-weight:700;font-size:13px;">${escapeHtml(n.title)}</span>
-          <span style="font-size:9px;background:${t.border};color:#fff;padding:1px 6px;border-radius:999px;font-weight:700;text-transform:uppercase;">${t.label}</span>
-          ${n.pinned ? '<span style="font-size:9px;background:var(--black);color:#fff;padding:1px 6px;border-radius:999px;font-weight:700;text-transform:uppercase;">Pinned</span>' : ''}
-          ${expired ? '<span style="font-size:9px;background:var(--grey-300);color:#fff;padding:1px 6px;border-radius:999px;font-weight:700;text-transform:uppercase;">Expired</span>' : ''}
+          <span style="font-size:9px;background:${t.border};color:var(--white);padding:1px 6px;border-radius:999px;font-weight:700;text-transform:uppercase;">${t.label}</span>
+          ${n.pinned ? '<span style="font-size:9px;background:var(--black);color:var(--white);padding:1px 6px;border-radius:999px;font-weight:700;text-transform:uppercase;">Pinned</span>' : ''}
+          ${expired ? '<span style="font-size:9px;background:var(--grey-300);color:var(--white);padding:1px 6px;border-radius:999px;font-weight:700;text-transform:uppercase;">Expired</span>' : ''}
         </div>
         ${n.body ? `<div style="font-size:12px;color:var(--grey-500);line-height:1.4;">${escapeHtml(n.body)}</div>` : ''}
         <div style="font-size:10px;color:var(--grey-400);margin-top:4px;">
@@ -8571,12 +8611,12 @@ function openNoticeEditor(isNetwork, existingId) {
 async function saveNotice() {
   if (blockedByImpersonation()) return;
   const title = document.getElementById('noticeTitle').value.trim();
-  if (!title) { alert('Enter a title.'); return; }
+  if (!title) { uiToast('Enter a title.'); return; }
   const isNetwork = document.getElementById('noticeIsNetwork').value === '1';
   // Network notices → superadmin; school notices → notices 'edit' (existing) or 'add' (new).
   const allowed = isNetwork ? can.switchAnySchool()
     : (state.editingNoticeId ? can.editNotices() : can.manageNotices());
-  if (!allowed) { alert("You don't have permission to do that."); return; }
+  if (!allowed) { uiToast("You don't have permission to do that."); return; }
   const id = state.editingNoticeId || ('NTC-' + Date.now().toString(36).toUpperCase());
   const school = KRMAS_SCHOOLS.find(s => s.id === state.schoolId);
 
@@ -8634,7 +8674,7 @@ async function deleteNotice() {
   const id = state.editingNoticeId;
   if (!id) return;
   const isNetwork = document.getElementById('noticeIsNetwork').value === '1';
-  if (!confirm('Delete this notice?')) return;
+  if (!await uiConfirm('Delete this notice?')) return;
   if (isNetwork) {
     state.networkNotices = state.networkNotices.filter(n => n.id !== id);
   } else {
@@ -8648,17 +8688,17 @@ async function deleteNotice() {
 
 // ---------- Supabase migration ----------
 async function runMigration() {
-  if (!confirm(
+  if (!await uiConfirm(
     'This will copy all local data for this school into Supabase.\n\n' +
     'Only run this once per device after setting up Supabase.\n\n' +
     'Continue?'
   )) return;
   try {
     const count = await DB.migrateLocalToSupabase(state.schoolId);
-    alert(`Migration complete! ${count} data records copied to Supabase.\n\nAll instructors can now share data across devices.`);
+    uiToast(`Migration complete! ${count} data records copied to Supabase.\n\nAll instructors can now share data across devices.`, 'success');
     renderMe();
   } catch (e) {
-    alert('Migration failed: ' + e.message + '\n\nMake sure SUPABASE_URL and SUPABASE_ANON are set in index.html.');
+    uiToast('Migration failed: ' + e.message + '\n\nMake sure SUPABASE_URL and SUPABASE_ANON are set in index.html.');
   }
 }
 
@@ -8787,9 +8827,9 @@ function showUpdateBanner(newVer) {
   if (document.getElementById('updateBanner')) return;
   const bar = document.createElement('div');
   bar.id = 'updateBanner';
-  bar.style.cssText = 'position:fixed;left:0;right:0;bottom:calc(64px + env(safe-area-inset-bottom));z-index:200;display:flex;align-items:center;gap:10px;justify-content:center;background:var(--black);color:#fff;padding:10px 14px;font-size:13px;box-shadow:0 -2px 12px rgba(0,0,0,.3);';
+  bar.style.cssText = 'position:fixed;left:0;right:0;bottom:calc(64px + env(safe-area-inset-bottom));z-index:200;display:flex;align-items:center;gap:10px;justify-content:center;background:var(--black);color:var(--white);padding:10px 14px;font-size:13px;box-shadow:0 -2px 12px rgba(0,0,0,.3);';
   bar.innerHTML = `<span>A new version is available.</span>
-    <button id="updateNowBtn" style="background:var(--red);color:#fff;border:none;border-radius:var(--r-sm);padding:7px 14px;font-weight:700;cursor:pointer;font-family:'Oswald',sans-serif;text-transform:uppercase;letter-spacing:.04em;">Update now</button>
+    <button id="updateNowBtn" style="background:var(--red);color:var(--white);border:none;border-radius:var(--r-sm);padding:7px 14px;font-weight:700;cursor:pointer;font-family:'Oswald',sans-serif;text-transform:uppercase;letter-spacing:.04em;">Update now</button>
     <button id="updateDismissBtn" style="background:transparent;color:#aaa;border:none;cursor:pointer;font-size:18px;line-height:1;">×</button>`;
   document.body.appendChild(bar);
   document.getElementById('updateNowBtn').onclick = applyAppUpdate;
@@ -9040,7 +9080,7 @@ function renderFeed() {
         <div style="font-weight:700;font-size:13px;color:${t.text};">${escapeHtml(n.title)}</div>
         ${n.body ? `<div style="font-size:12px;color:${t.text};opacity:.85;margin-top:2px;">${escapeHtml(n.body.slice(0, 100))}${n.body.length > 100 ? '…' : ''}</div>` : ''}
       </div>
-      <span style="font-size:9px;background:${t.border};color:#fff;padding:1px 6px;border-radius:999px;font-weight:700;text-transform:uppercase;flex-shrink:0;">${t.label}</span>
+      <span style="font-size:9px;background:${t.border};color:var(--white);padding:1px 6px;border-radius:999px;font-weight:700;text-transform:uppercase;flex-shrink:0;">${t.label}</span>
     </div>`;
   }
 
@@ -9329,7 +9369,7 @@ async function submitComment(postId) {
 
 async function deleteComment(commentId, postId) {
   if (blockedByImpersonation()) return;
-  if (!confirm('Delete this comment?')) return;
+  if (!await uiConfirm('Delete this comment?')) return;
   const post = state.feed.find(p => p.id === postId);
   if (post?._comments) {
     post._comments = post._comments.filter(c => c.id !== commentId);
@@ -9382,7 +9422,7 @@ function openPostMenu(postId) {
 
 async function deleteFeedPost(postId) {
   if (blockedByImpersonation()) return;
-  if (!confirm('Delete this post?')) return;
+  if (!await uiConfirm('Delete this post?')) return;
   state.feed = state.feed.filter(p => p.id !== postId);
   const el = document.getElementById('fp-' + postId);
   if (el) el.remove();
@@ -9532,14 +9572,14 @@ async function submitPost() {
   if (!state.user) return;
   if (blockedByImpersonation()) return;
   const body = document.getElementById('composerBody').value.trim();
-  if (!body && _pendingAttachments.length === 0) { alert('Write something or attach a file first.'); return; }
+  if (!body && _pendingAttachments.length === 0) { uiToast('Write something or attach a file first.'); return; }
   const scope = document.getElementById('composerScope').value;
   const composerModal = document.getElementById('modalPostComposer');
   const targetIds = (scope === 'group' || scope === 'role' || scope === 'users')
     ? [...composerModal.querySelectorAll('.composer-target-check:checked')].map(el => el.value)
     : [];
   if ((scope === 'group' || scope === 'role' || scope === 'users') && targetIds.length === 0) {
-    alert('Pick at least one ' + (scope === 'group' ? 'group' : scope === 'users' ? 'person' : 'role') + '.');
+    uiToast('Pick at least one ' + (scope === 'group' ? 'group' : scope === 'users' ? 'person' : 'role') + '.');
     return;
   }
 
@@ -9601,7 +9641,7 @@ async function submitPost() {
     const bodyEl = document.getElementById('composerBody');
     if (bodyEl) bodyEl.value = body;
     openModal('modalPostComposer');
-    alert('Your post could not be saved' + ((saveRes && saveRes.error) ? (':\n' + saveRes.error) : '.') +
+    uiToast('Your post could not be saved' + ((saveRes && saveRes.error) ? (':\n' + saveRes.error) : '.') +
           '\n\nNothing was lost — your draft is still in the composer. Please try again.');
     return;
   }
@@ -9714,7 +9754,7 @@ function openGroupsAdmin() {
   // Any groups management permission opens the manager; per-action buttons inside are
   // gated individually. Matches the groups RLS (network scope stays superadmin-only).
   if (!can.manageGroups() && !can.editGroups() && !can.deleteGroups()) {
-    alert('You don\'t have permission to manage groups.'); return;
+    uiToast('You don\'t have permission to manage groups.'); return;
   }
   renderGroupsAdminModal();
   openModal('modalGroupsAdmin');
@@ -9752,7 +9792,7 @@ function openGroupEditor(groupId) {
   const allowed = groupId
     ? ((existing && existing.school_id === null) ? can.switchAnySchool() : can.editGroups())
     : can.manageGroups();
-  if (!allowed) { alert("You don't have permission to do that."); return; }
+  if (!allowed) { uiToast("You don't have permission to do that."); return; }
   state.editingGroupId = groupId || null;
   _editingRules = existing?.rules ? JSON.parse(JSON.stringify(existing.rules)) : [];
   // Load STATIC picks only (source 'static'), normalising each to the instructor's uid so
@@ -9939,20 +9979,20 @@ async function resyncAllGroups() {
 // Manual trigger (Admin → Groups): runs the one-time migration + a safety re-sync.
 async function resyncGroupsManual() {
   if (blockedByImpersonation()) return;
-  if (!can.manageGroups() && !can.editGroups() && !can.deleteGroups()) { alert('Admin access required.'); return; }
+  if (!can.manageGroups() && !can.editGroups() && !can.deleteGroups()) { uiToast('Admin access required.'); return; }
   const n = await resyncAllGroups();
-  alert('Re-synced ' + n + ' group' + (n === 1 ? '' : 's') + '. Group-targeted posts will now reach the right people.');
+  uiToast('Re-synced ' + n + ' group' + (n === 1 ? '' : 's') + '. Group-targeted posts will now reach the right people.');
 }
 
 async function saveGroup() {
   if (blockedByImpersonation()) return;
   const name = document.getElementById('groupName').value.trim();
-  if (!name) { alert('Enter a group name.'); return; }
+  if (!name) { uiToast('Enter a group name.'); return; }
   const isNetwork = document.getElementById('groupIsNetwork').checked && can.switchAnySchool();
   // Network groups → superadmin; school groups → groups edit (existing) or add (new).
   const allowed = isNetwork ? can.switchAnySchool()
     : (state.editingGroupId ? can.editGroups() : can.manageGroups());
-  if (!allowed) { alert("You don't have permission to do that."); return; }
+  if (!allowed) { uiToast("You don't have permission to do that."); return; }
   const id = state.editingGroupId || ('GRP-' + Date.now().toString(36).toUpperCase());
   const existing = state.editingGroupId ? state.groups.find(g => g.id === id) : null;
 
@@ -9988,8 +10028,8 @@ async function deleteGroup() {
   if (!id) return;
   const g = state.groups.find(g => g.id === id);
   const allowed = g && ((g.school_id === null) ? can.switchAnySchool() : can.deleteGroups());
-  if (!allowed) { alert("You don't have permission to delete this group."); return; }
-  if (!confirm(`Delete group "${g?.name || id}"?`)) return;
+  if (!allowed) { uiToast("You don't have permission to delete this group."); return; }
+  if (!await uiConfirm(`Delete group "${g?.name || id}"?`)) return;
   state.groups = state.groups.filter(g => g.id !== id);
   await DB.deleteGroup(id);
   closeModal('modalGroupEditor');
@@ -10244,7 +10284,7 @@ function previewBulkImport(rows) {
 
   if (results.length === 0) { preview.innerHTML = '<div style="font-size:13px;color:var(--grey-500);">No valid rows found.</div>'; return; }
 
-  preview.innerHTML = `<table style="width:100%;font-size:12px;border-collapse:collapse;">
+  preview.innerHTML = `<div class="table-scroll"><table style="width:100%;font-size:12px;border-collapse:collapse;">
     <thead><tr style="background:var(--off-white);">
       <th style="padding:5px 8px;text-align:left;border-bottom:1px solid var(--grey-200);">Row</th>
       <th style="padding:5px 8px;text-align:left;border-bottom:1px solid var(--grey-200);">Name</th>
@@ -10256,14 +10296,14 @@ function previewBulkImport(rows) {
         <td style="padding:4px 8px;border-bottom:1px solid var(--grey-100);color:var(--grey-400);">${r.row}</td>
         <td style="padding:4px 8px;border-bottom:1px solid var(--grey-100);font-weight:600;">
           ${escapeHtml(r.name || '—')}
-          ${r.existing ? '<span style="font-size:9px;background:#fef3c7;color:#92400e;padding:1px 5px;border-radius:999px;margin-left:4px;">exists</span>' : ''}
+          ${r.existing ? '<span style="font-size:9px;background:#fef3c7;color:var(--amber-700);padding:1px 5px;border-radius:999px;margin-left:4px;">exists</span>' : ''}
           ${r.errors.length ? `<span style="font-size:9px;color:var(--red);">${r.errors.join(', ')}</span>` : ''}
         </td>
         <td style="padding:4px 8px;border-bottom:1px solid var(--grey-100);">${roleBadge(r.role)}</td>
         <td style="padding:4px 8px;border-bottom:1px solid var(--grey-100);">${escapeHtml(r.status)}</td>
       </tr>`).join('')}
     </tbody>
-  </table>`;
+  </table></div>`;
 
   // Store for confirm import
   window._bulkImportRows = results;
@@ -10271,12 +10311,12 @@ function previewBulkImport(rows) {
 
 async function confirmBulkImport() {
   const rows = window._bulkImportRows;
-  if (!rows || rows.length === 0) { alert('No data to import. Upload a file first.'); return; }
+  if (!rows || rows.length === 0) { uiToast('No data to import. Upload a file first.'); return; }
   const valid = rows.filter(r => r.errors.length === 0);
-  if (valid.length === 0) { alert('No valid rows to import.'); return; }
+  if (valid.length === 0) { uiToast('No valid rows to import.'); return; }
   const schoolName = KRMAS_SCHOOLS.find(s => s.id === state.schoolId)?.name || state.schoolId;
   const withEmail = valid.filter(r => r.email).length;
-  if (!confirm(`Import ${valid.length} instructor${valid.length === 1 ? '' : 's'} into ${schoolName}?\n\n${withEmail} with an email will also get a login account (a temporary password is shown after import for you to share). Existing names are updated.`)) return;
+  if (!await uiConfirm(`Import ${valid.length} instructor${valid.length === 1 ? '' : 's'} into ${schoolName}?\n\n${withEmail} with an email will also get a login account (a temporary password is shown after import for you to share). Existing names are updated.`)) return;
 
   // Roster side (custom-schools overlay) — no PINs anymore.
   if (!state.customSchools[state.schoolId]) {
@@ -10340,14 +10380,14 @@ function renderBulkImportResult(added, updated, creds, loginErrors) {
   if (creds.length) {
     html += `<div style="margin-top:10px;padding:10px;border:1px solid var(--grey-200);border-radius:var(--r-sm);background:var(--off-white);">
       <div style="font-weight:700;margin-bottom:6px;">New login accounts — copy these now and share them privately. They won't be shown again.</div>
-      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <div class="table-scroll"><table style="width:100%;border-collapse:collapse;font-size:12px;">
         <thead><tr><th style="text-align:left;padding:3px 6px;">Name</th><th style="text-align:left;padding:3px 6px;">Email</th><th style="text-align:left;padding:3px 6px;">Temporary password</th></tr></thead>
         <tbody>${creds.map(c => `<tr>
           <td style="padding:3px 6px;">${escapeHtml(c.name)}</td>
           <td style="padding:3px 6px;">${escapeHtml(c.email)}</td>
           <td style="padding:3px 6px;font-family:'JetBrains Mono',monospace;font-weight:700;">${escapeHtml(c.pw)}</td>
         </tr>`).join('')}</tbody>
-      </table></div>`;
+      </table></div></div>`;
   }
   if (loginErrors.length) {
     html += `<div style="margin-top:8px;font-size:12px;color:var(--grey-500);">Some logins were skipped (often because the email already has an account):<br>${loginErrors.map(escapeHtml).join('<br>')}</div>`;
@@ -10361,17 +10401,17 @@ function composerPickFiles() { document.getElementById('composerFileInput').clic
 async function handleComposerFiles(input) {
   const files = [...(input.files || [])];
   for (const file of files) {
-    if (_pendingAttachments.length >= 4) { alert('Maximum 4 attachments per post.'); break; }
+    if (_pendingAttachments.length >= 4) { uiToast('Maximum 4 attachments per post.'); break; }
     if (file.type.startsWith('image/')) {
       const att = await resizeImageToAttachment(file);
       if (att) _pendingAttachments.push(att);
     } else {
-      if (file.size > 1.5 * 1024 * 1024) { alert(file.name + ' is too large (max 1.5MB for non-image files).'); continue; }
+      if (file.size > 1.5 * 1024 * 1024) { uiToast(file.name + ' is too large (max 1.5MB for non-image files).'); continue; }
       try {
         const dataUrl = await fileToDataUrl(file);
         _pendingAttachments.push({ type: 'file', name: file.name, size: file.size, dataUrl });
       } catch (e) {
-        alert('Could not read ' + file.name);
+        uiToast('Could not read ' + file.name);
       }
     }
   }
@@ -10428,7 +10468,7 @@ function resizeImageToAttachment(file) {
       const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
       resolve({ type: 'image', name: file.name, size: Math.round(dataUrl.length * 0.75), dataUrl });
     };
-    img.onerror = () => { URL.revokeObjectURL(url); alert('Could not read image: ' + file.name); resolve(null); };
+    img.onerror = () => { URL.revokeObjectURL(url); uiToast('Could not read image: ' + file.name); resolve(null); };
     img.src = url;
   });
 }
@@ -10821,7 +10861,7 @@ function openEventEditor(eventId) {
   const allowed = eventId
     ? ((existing && existing.schoolId === null) ? can.switchAnySchool() : can.editCalendar())
     : can.manageCalendar();
-  if (!allowed) { alert("You don't have permission to manage events."); return; }
+  if (!allowed) { uiToast("You don't have permission to manage events."); return; }
   state.editingEventId = eventId || null;
 
   document.getElementById('evEditorTitle').textContent = existing ? 'Edit event' : 'New event';
@@ -10868,15 +10908,15 @@ function evAllDayToggled() {
 async function saveEvent() {
   if (blockedByImpersonation()) return;
   const title = document.getElementById('evTitle').value.trim();
-  if (!title) { alert('Enter an event title.'); return; }
+  if (!title) { uiToast('Enter an event title.'); return; }
   let startDate = document.getElementById('evStart').value;
   let endDate = document.getElementById('evEnd').value || startDate;
-  if (!startDate) { alert('Pick a start date.'); return; }
-  if (endDate < startDate) { alert('End date is before start date.'); return; }
+  if (!startDate) { uiToast('Pick a start date.'); return; }
+  if (endDate < startDate) { uiToast('End date is before start date.'); return; }
   const allDay = document.getElementById('evAllDay').checked;
   let startTime = allDay ? null : (document.getElementById('evStartTime').value || null);
   let endTime = allDay ? null : (document.getElementById('evEndTime').value || null);
-  if (!allDay && !startTime) { alert('Pick a start time or mark the event all-day.'); return; }
+  if (!allDay && !startTime) { uiToast('Pick a start time or mark the event all-day.'); return; }
 
   const isNetwork = can.switchAnySchool() && document.getElementById('evScope').value === 'network';
   const existing = state.editingEventId ? state.calendarEvents.find(e => e.id === state.editingEventId) : null;
@@ -10885,7 +10925,7 @@ async function saveEvent() {
   // superadmin; otherwise editing an event needs calendar 'edit', creating needs 'add'.
   const allowedToSave = isNetwork ? can.switchAnySchool()
     : existing ? can.editCalendar() : can.manageCalendar();
-  if (!allowedToSave) { alert("You don't have permission to save this event."); return; }
+  if (!allowedToSave) { uiToast("You don't have permission to save this event."); return; }
 
   const ev = {
     id:          existing?.id || ('EVT-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 5).toUpperCase()),
@@ -10904,8 +10944,8 @@ async function saveEvent() {
   const repeatUntil = document.getElementById('evRepeatUntil').value;
   const occurrences = [ev];
   if (repeat) {
-    if (!repeatUntil) { alert('Pick an "until" date for the repeat.'); return; }
-    if (repeatUntil < startDate) { alert('"Until" date is before the start date.'); return; }
+    if (!repeatUntil) { uiToast('Pick an "until" date for the repeat.'); return; }
+    if (repeatUntil < startDate) { uiToast('"Until" date is before the start date.'); return; }
     const spanDays = Math.round((new Date(endDate + 'T00:00:00') - new Date(startDate + 'T00:00:00')) / 86400000);
     let next = startDate;
     while (occurrences.length < 52) {
@@ -10935,7 +10975,7 @@ async function saveEvent() {
   for (const o of occurrences) await syncClosureFromEvent(o); // Closure-typed events → closures
   for (const o of occurrences) await syncOverrideFromEvent(o); // Grading/Special events → that day's override
   if (occurrences.length > 1) {
-    setTimeout(() => alert(occurrences.length + ' events created (' + repeat + ' until ' + repeatUntil + ').'), 100);
+    setTimeout(() => uiToast(occurrences.length + ' events created (' + repeat + ' until ' + repeatUntil + ').'), 100);
   }
 }
 
@@ -10946,8 +10986,8 @@ async function deleteEvent() {
   const ev = state.calendarEvents.find(e => e.id === id);
   // Network events → superadmin; school events → calendar 'delete' permission.
   const allowedToDelete = ev && ((ev.schoolId === null) ? can.switchAnySchool() : can.deleteCalendar());
-  if (!allowedToDelete) { alert("You don't have permission to delete this event."); return; }
-  if (!confirm(`Delete "${ev?.title || 'this event'}"?`)) return;
+  if (!allowedToDelete) { uiToast("You don't have permission to delete this event."); return; }
+  if (!await uiConfirm(`Delete "${ev?.title || 'this event'}"?`)) return;
   state.calendarEvents = state.calendarEvents.filter(e => e.id !== id);
   closeModal('modalEventEditor');
   if (state.view === 'calendar') renderCalendar();
@@ -10988,9 +11028,9 @@ function renderEventTypesList() {
 
 async function addEventType() {
   const name = document.getElementById('etName').value.trim();
-  if (!name) { alert('Enter a type name.'); return; }
+  if (!name) { uiToast('Enter a type name.'); return; }
   if (state.eventTypes.find(t => t.name.toLowerCase() === name.toLowerCase())) {
-    alert('A type with that name already exists.'); return;
+    uiToast('A type with that name already exists.', 'error'); return;
   }
   const isNetwork = can.switchAnySchool() && document.getElementById('etNetwork').checked;
   const t = {
@@ -11008,7 +11048,7 @@ async function addEventType() {
 
 async function removeEventType(id) {
   const t = state.eventTypes.find(x => x.id === id);
-  if (!confirm(`Delete type "${t?.name}"? Events using it keep their data but lose the colour.`)) return;
+  if (!await uiConfirm(`Delete type "${t?.name}"? Events using it keep their data but lose the colour.`)) return;
   state.eventTypes = state.eventTypes.filter(x => x.id !== id);
   renderEventTypesList();
   await DB.deleteEventType(id, t?.schoolId);
@@ -11243,7 +11283,7 @@ function previewEventImport(rows) {
     return;
   }
 
-  preview.innerHTML = `<table style="width:100%;font-size:11px;border-collapse:collapse;">
+  preview.innerHTML = `<div class="table-scroll"><table style="width:100%;font-size:11px;border-collapse:collapse;">
     <thead><tr style="background:var(--off-white);">
       <th style="padding:5px 6px;text-align:left;border-bottom:1px solid var(--grey-200);">Row</th>
       <th style="padding:5px 6px;text-align:left;border-bottom:1px solid var(--grey-200);">Title</th>
@@ -11259,21 +11299,21 @@ function previewEventImport(rows) {
           ${r.errors.length ? `<div style="font-size:9px;color:var(--red);">${r.errors.join(', ')}</div>` : ''}
         </td>
         <td style="padding:4px 6px;border-bottom:1px solid var(--grey-100);">${r.startDate || '?'}${r.endDate && r.endDate !== r.startDate ? '→' + r.endDate : ''}${r.startTime ? '<br>' + r.startTime + (r.endTime ? '–' + r.endTime : '') : ''}</td>
-        <td style="padding:4px 6px;border-bottom:1px solid var(--grey-100);">${escapeHtml(r.typeName || '—')}${r.newType ? ' <span style="font-size:8px;background:#fef3c7;color:#92400e;padding:1px 4px;border-radius:999px;">new</span>' : ''}</td>
+        <td style="padding:4px 6px;border-bottom:1px solid var(--grey-100);">${escapeHtml(r.typeName || '—')}${r.newType ? ' <span style="font-size:8px;background:#fef3c7;color:var(--amber-700);padding:1px 4px;border-radius:999px;">new</span>' : ''}</td>
         <td style="padding:4px 6px;border-bottom:1px solid var(--grey-100);">${r.schoolId === null ? '<span style="color:var(--red);font-weight:700;">Network</span>' : escapeHtml(KRMAS_SCHOOLS.find(s => s.id === r.schoolId)?.name || r.schoolId || '?')}</td>
       </tr>`).join('')}
     </tbody>
-  </table>`;
+  </table></div>`;
 
   window._eventImportRows = results;
 }
 
 async function confirmEventImport() {
   const rows = window._eventImportRows;
-  if (!rows || rows.length === 0) { alert('No data to import. Upload a file first.'); return; }
+  if (!rows || rows.length === 0) { uiToast('No data to import. Upload a file first.'); return; }
   const valid = rows.filter(r => r.errors.length === 0);
-  if (valid.length === 0) { alert('No valid rows to import.'); return; }
-  if (!confirm(`Import ${valid.length} event${valid.length === 1 ? '' : 's'}?`)) return;
+  if (valid.length === 0) { uiToast('No valid rows to import.'); return; }
+  if (!await uiConfirm(`Import ${valid.length} event${valid.length === 1 ? '' : 's'}?`)) return;
 
   // Auto-create any new types first (deduplicated by name)
   const newTypeNames = [...new Set(valid.filter(r => r.newType).map(r => r.typeName.toLowerCase()))];
@@ -11451,7 +11491,7 @@ function findDocById(docId) {
 
 function downloadDocument(docId) {
   const doc = findDocById(docId);
-  if (!doc || !doc.fileData) { alert('Document data not available.'); return; }
+  if (!doc || !doc.fileData) { uiToast('Document data not available.', 'error'); return; }
   const link = document.createElement('a');
   link.href = doc.fileData;
   link.download = doc.filename;
@@ -11493,7 +11533,7 @@ function closePdfViewer() {
 
 function viewDocument(docId) {
   const doc = findDocById(docId);
-  if (!doc || !doc.fileData) { alert('Document data not available.'); return; }
+  if (!doc || !doc.fileData) { uiToast('Document data not available.', 'error'); return; }
   const isPdf = /^data:application\/pdf/i.test(doc.fileData) || /\.pdf$/i.test(doc.filename || '');
 
   // Release any previous preview blob before making a new one.
@@ -11521,7 +11561,7 @@ function viewDocument(docId) {
 async function deleteDocConfirm(docId) {
   const doc = (state.documents || []).find(d => d.id === docId);
   if (!doc) return;
-  if (!confirm(`Delete "${doc.title}"?\n\nThis removes the document for all users.`)) return;
+  if (!await uiConfirm(`Delete "${doc.title}"?\n\nThis removes the document for all users.`)) return;
   state.documents = state.documents.filter(d => d.id !== docId);
   await DB.deleteDocument(docId, doc.schoolId);
   renderDocLibrary();
@@ -11540,14 +11580,14 @@ async function openRenameDoc(docId) {
   if (typeof blockedByImpersonation === 'function' && blockedByImpersonation()) return;
   const doc = findDocById(docId);
   if (!doc) return;
-  if (!canEditDocument(doc)) { alert('You don\u2019t have permission to rename this document.'); return; }
+  if (!canEditDocument(doc)) { uiToast('You don\u2019t have permission to rename this document.'); return; }
   const next = prompt('Rename document', doc.title || '');
   if (next === null) return;                 // cancelled
   const title = next.trim();
-  if (!title) { alert('Title cannot be empty.'); return; }
+  if (!title) { uiToast('Title cannot be empty.', 'error'); return; }
   if (title === doc.title) return;           // no change
   const ok = await DB.renameDocument(doc, title);
-  if (!ok) { alert('Could not rename the document \u2014 you may not have permission, or you\u2019re offline.'); return; }
+  if (!ok) { uiToast('Could not rename the document \u2014 you may not have permission, or you\u2019re offline.', 'error'); return; }
   doc.title = title;                         // findDocById returns the live object; update in place
   // Re-render whichever surface is currently showing.
   if (document.getElementById('docLibraryBody')) renderDocLibrary();
@@ -11562,7 +11602,7 @@ function triggerReplaceDoc(docId) {
   if (typeof blockedByImpersonation === 'function' && blockedByImpersonation()) return;
   const doc = findDocById(docId);
   if (!doc) return;
-  if (!canEditDocument(doc)) { alert('You don\u2019t have permission to replace this document.'); return; }
+  if (!canEditDocument(doc)) { uiToast('You don\u2019t have permission to replace this document.'); return; }
   _replaceDocId = docId;
   const inp = document.getElementById('docReplaceFile');
   if (!inp) return;
@@ -11577,22 +11617,22 @@ async function handleReplaceDocFile(input) {
   if (!file || !docId) return;
   const doc = findDocById(docId);
   if (!doc) return;
-  if (!canEditDocument(doc)) { alert('You don\u2019t have permission to replace this document.'); return; }
-  if (!isAllowedDocFile(file)) { alert('Only PDF or image files are accepted.'); return; }
-  if (file.size > MAX_DOC_SIZE) { alert('File too large. Maximum is ' + fmtBytes(MAX_DOC_SIZE) + '.'); return; }
-  if (!confirm(`Replace the file for "${doc.title}" with "${file.name}"?\n\nThe current file is overwritten and can't be recovered.`)) return;
+  if (!canEditDocument(doc)) { uiToast('You don\u2019t have permission to replace this document.'); return; }
+  if (!isAllowedDocFile(file)) { uiToast('Only PDF or image files are accepted.'); return; }
+  if (file.size > MAX_DOC_SIZE) { uiToast('File too large. Maximum is ' + fmtBytes(MAX_DOC_SIZE) + '.'); return; }
+  if (!await uiConfirm(`Replace the file for "${doc.title}" with "${file.name}"?\n\nThe current file is overwritten and can't be recovered.`)) return;
   try {
     const dataUrl = await fileToDataUrl(file);
     const fields = { fileData: dataUrl, filename: file.name, mimeType: file.type || 'application/octet-stream', fileSize: file.size };
     const ok = await DB.replaceDocumentFile(doc, fields);
-    if (!ok) { alert('Could not replace the file \u2014 you may not have permission, or you\u2019re offline.'); return; }
+    if (!ok) { uiToast('Could not replace the file \u2014 you may not have permission, or you\u2019re offline.', 'error'); return; }
     Object.assign(doc, fields);   // update the in-memory live object so the next Open shows the new file
     if (document.getElementById('docLibraryBody')) renderDocLibrary();
     if (state.view === 'docs') renderDocuments();
     if (typeof renderPersonalDocs === 'function' && document.getElementById('personalDocsBody')) renderPersonalDocs();
-    alert('File replaced.');
+    uiToast('File replaced.');
   } catch (e) {
-    alert('Could not read the file.');
+    uiToast('Could not read the file.', 'error');
   }
 }
 
@@ -11601,7 +11641,7 @@ async function handleReplaceDocFile(input) {
 let _docUploadTarget = null; // null = org; { instructorId } = personal
 
 function openDocUpload() {
-  if (!can.manageDocuments()) { alert("You don't have permission to upload documents."); return; }
+  if (!can.manageDocuments()) { uiToast("You don't have permission to upload documents."); return; }
   _docUploadTarget = null;
   document.getElementById('docUpHeading').textContent = '📄 Upload document';
   document.getElementById('docUpSub').textContent = 'Upload a PDF or image for instructors to view. Maximum 5 MB.';
@@ -11651,8 +11691,8 @@ function docUpScopeChanged() {
 // Open the uploader targeting a person's personal documents (defaults to self).
 function openDocUploadFor(instructorId) {
   const target = instructorId || state.personalDocsTarget || state.user?.id;
-  if (!target) { alert('Sign in first.'); return; }
-  if (target !== state.user?.id && !can.manageInstructors()) { alert('Admin access required to add documents for another user.'); return; }
+  if (!target) { uiToast('Sign in first.'); return; }
+  if (target !== state.user?.id && !can.manageInstructors()) { uiToast('Admin access required to add documents for another user.'); return; }
   _docUploadTarget = { instructorId: target };
   const who = allInstructors().find(i => i.id === target);
   document.getElementById('docUpHeading').textContent = '📄 Upload personal document';
@@ -11695,30 +11735,30 @@ async function submitDocUpload() {
   if (blockedByImpersonation()) return;
   if (personal) {
     const tgt = _docUploadTarget.instructorId;
-    if (tgt !== state.user?.id && !can.manageInstructors()) { alert('Admin access required.'); return; }
+    if (tgt !== state.user?.id && !can.manageInstructors()) { uiToast('Admin access required.'); return; }
   } else if (!can.manageDocuments()) {
-    alert("You don't have permission to upload documents."); return;
+    uiToast("You don't have permission to upload documents."); return;
   }
 
   const title = document.getElementById('docUpTitle').value.trim();
-  if (!title) { alert('Enter a document title.'); return; }
+  if (!title) { uiToast('Enter a document title.'); return; }
   const fileInput = document.getElementById('docUpFile');
   const file = fileInput.files[0];
-  if (!file) { alert('Select a PDF or image file first.'); return; }
-  if (!isAllowedDocFile(file)) { alert('Only PDF or image files are accepted.'); return; }
-  if (file.size > MAX_DOC_SIZE) { alert('File too large. Maximum is ' + fmtBytes(MAX_DOC_SIZE) + '.'); return; }
+  if (!file) { uiToast('Select a PDF or image file first.'); return; }
+  if (!isAllowedDocFile(file)) { uiToast('Only PDF or image files are accepted.'); return; }
+  if (file.size > MAX_DOC_SIZE) { uiToast('File too large. Maximum is ' + fmtBytes(MAX_DOC_SIZE) + '.'); return; }
 
   // Resolve the chosen scope → (schoolId, targetScope, targetIds).
   let docSchoolId = state.schoolId, targetScope = 'school', targetIds = [];
   if (!personal) {
     const scopeVal = (document.getElementById('docUpScope') || {}).value || 'school';
     if (scopeVal === 'network') {
-      if (!can.switchAnySchool()) { alert('Only a superadmin can post to the whole network.'); return; }
+      if (!can.switchAnySchool()) { uiToast('Only a superadmin can post to the whole network.'); return; }
       docSchoolId = null; targetScope = 'network';
     } else if (scopeVal === 'group') {
       const gid = (document.getElementById('docUpGroup') || {}).value;
       const g = (state.groups || []).find(x => x.id === gid);
-      if (!g) { alert('Pick a group to send this document to.'); return; }
+      if (!g) { uiToast('Pick a group to send this document to.'); return; }
       docSchoolId = g.school_id || null; targetScope = 'group'; targetIds = [g.id];
     } else {
       docSchoolId = state.schoolId; targetScope = 'school';
@@ -11826,7 +11866,7 @@ async function deletePersonalDoc(docId) {
   const docs = state.personalDocsList || [];
   const doc = docs.find(d => d.id === docId);
   if (!doc) return;
-  if (!confirm(`Delete "${doc.title}"?`)) return;
+  if (!await uiConfirm(`Delete "${doc.title}"?`)) return;
   await DB.deleteDocument(docId, doc.schoolId, doc.instructorId);
   state.personalDocsList = docs.filter(d => d.id !== docId);
   if (doc.instructorId === state.user?.id) state.myDocuments = (state.myDocuments || []).filter(d => d.id !== docId);
@@ -11834,24 +11874,45 @@ async function deletePersonalDoc(docId) {
 }
 
 // ---------- Dark mode ----------
-function toggleDarkMode() {
-  const isDark = document.body.classList.toggle('dark-mode');
-  try { localStorage.setItem('krmas-dark-mode', isDark ? '1' : '0'); } catch(e) {}
-  // Update meta theme-color
+// v111: three-state theme (light / dark / auto-follow-system), applied LIVE.
+// The class toggle alone never re-derived the design tokens (that happens in
+// applyBrand via deriveDark), so pre-v111 the toggle only half-applied until a
+// reload. applyThemeFromPref() is now the single entry point.
+function getThemePref() {
+  try { const p = localStorage.getItem('krmas-dark-mode'); return p === '1' || p === '0' ? p : 'auto'; }
+  catch (e) { return 'auto'; }
+}
+function themeIsDark(pref) {
+  if (pref === '1') return true;
+  if (pref === '0') return false;
+  try { return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches); }
+  catch (e) { return false; }
+}
+function applyThemeFromPref() {
+  const dark = themeIsDark(getThemePref());
+  document.body.classList.toggle('dark-mode', dark);
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.content = isDark ? '#0f0f23' : '#000000';
+  if (meta) meta.content = dark ? '#101216' : '#000000';
+  try { applyBrand(state.brand || null); } catch (e) {} // re-derive tokens for the mode
+}
+function toggleDarkMode() { // cycles: auto → dark → light → auto
+  const cur = getThemePref();
+  const next = cur === 'auto' ? '1' : cur === '1' ? '0' : 'auto';
+  try { localStorage.setItem('krmas-dark-mode', next); } catch (e) {}
+  applyThemeFromPref();
+  uiToast(next === 'auto' ? 'Theme: follow system' : next === '1' ? 'Theme: dark' : 'Theme: light', 'info');
   if (state.view === 'me') renderMe();
 }
-
+function themeLabel() {
+  const p = getThemePref();
+  return p === '1' ? '🌙 Dark (tap: light)' : p === '0' ? '☀ Light (tap: auto)' : '🌓 Auto — follows system (tap: dark)';
+}
 function initDarkMode() {
+  applyThemeFromPref();
   try {
-    const pref = localStorage.getItem('krmas-dark-mode');
-    if (pref === '1') {
-      document.body.classList.add('dark-mode');
-      const meta = document.querySelector('meta[name="theme-color"]');
-      if (meta) meta.content = '#0f0f23';
-    }
-  } catch(e) {}
+    const mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+    if (mq && mq.addEventListener) mq.addEventListener('change', () => { if (getThemePref() === 'auto') applyThemeFromPref(); });
+  } catch (e) {}
 }
 initDarkMode();
 
@@ -11862,7 +11923,7 @@ initDarkMode();
 const COMPLIANCE_STATUS = {
   valid:       { label: 'Valid',       colour: '#10b981', icon: '✓' },
   expired:     { label: 'Expired',     colour: '#ef4444', icon: '✕' },
-  pending:     { label: 'Pending',     colour: '#f59e0b', icon: '⏳' },
+  pending:     { label: 'Pending',     colour: 'var(--amber-500)', icon: '⏳' },
   exempt:      { label: 'Exempt',      colour: '#6b7280', icon: '—' },
   not_started: { label: 'Not started', colour: '#d1d5db', icon: '○' },
 };
@@ -11920,7 +11981,7 @@ function renderComplianceDashboard() {
       <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--grey-500);">Expired</div>
     </div>
     <div style="text-align:center;padding:10px;background:${expiringSoon ? '#fffbeb' : 'var(--off-white)'};border-radius:var(--r-sm);border:1px solid ${expiringSoon ? '#fde68a' : 'var(--grey-200)'};">
-      <div style="font-size:22px;font-weight:700;color:${expiringSoon ? '#f59e0b' : 'var(--grey-400)'};">${expiringSoon}</div>
+      <div style="font-size:22px;font-weight:700;color:${expiringSoon ? 'var(--amber-500)' : 'var(--grey-400)'};">${expiringSoon}</div>
       <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--grey-500);">Expiring ≤30d</div>
     </div>
     <div style="text-align:center;padding:10px;background:var(--off-white);border-radius:var(--r-sm);border:1px solid var(--grey-200);">
@@ -11941,10 +12002,10 @@ function renderComplianceDashboard() {
       const s = COMPLIANCE_STATUS[st];
       const expiring = st === 'valid' && req.hasExpiry && rec?.expiryDate && rec.expiryDate <= thirtyDays;
       html += `<div onclick="openComplianceEditor('${instr.id}','${req.id}')" style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--grey-100);cursor:pointer;">
-        <span style="width:22px;height:22px;border-radius:50%;background:${s.colour};color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;">${s.icon}</span>
+        <span style="width:22px;height:22px;border-radius:50%;background:${s.colour};color:var(--white);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;">${s.icon}</span>
         <div style="flex:1;min-width:0;">
           <div style="font-size:13px;font-weight:600;">${escapeHtml(req.name)}</div>
-          ${rec?.expiryDate ? `<div style="font-size:11px;color:${expiring ? '#f59e0b' : st==='expired' ? '#ef4444' : 'var(--grey-400)'};">${st === 'expired' ? 'Expired' : expiring ? 'Expires' : 'Valid until'} ${rec.expiryDate}${rec.referenceNumber ? ' · #' + escapeHtml(rec.referenceNumber) : ''}</div>` : ''}
+          ${rec?.expiryDate ? `<div style="font-size:11px;color:${expiring ? 'var(--amber-500)' : st==='expired' ? '#ef4444' : 'var(--grey-400)'};">${st === 'expired' ? 'Expired' : expiring ? 'Expires' : 'Valid until'} ${rec.expiryDate}${rec.referenceNumber ? ' · #' + escapeHtml(rec.referenceNumber) : ''}</div>` : ''}
         </div>
         <span style="font-size:11px;color:var(--grey-400);">›</span>
       </div>`;
@@ -11982,7 +12043,7 @@ function renderComplianceReqList() {
 
 async function addComplianceReq() {
   const name = document.getElementById('compReqName').value.trim();
-  if (!name) { alert('Enter a requirement name.'); return; }
+  if (!name) { uiToast('Enter a requirement name.'); return; }
   const hasExpiry = document.getElementById('compReqExpiry').checked;
   const isNetwork = can.switchAnySchool() && document.getElementById('compReqNetwork').checked;
   const req = {
@@ -12001,7 +12062,7 @@ async function addComplianceReq() {
 
 async function deleteComplianceReq(id) {
   const req = state.complianceReqs.find(r => r.id === id);
-  if (!confirm(`Delete requirement "${req?.name}"?\n\nExisting compliance records for this requirement will be orphaned.`)) return;
+  if (!await uiConfirm(`Delete requirement "${req?.name}"?\n\nExisting compliance records for this requirement will be orphaned.`)) return;
   state.complianceReqs = state.complianceReqs.filter(r => r.id !== id);
   await DB.deleteComplianceRequirement(id, req?.schoolId);
   renderComplianceReqList();
@@ -12058,19 +12119,19 @@ async function saveComplianceRecord() {
 
 async function requestPushPermission() {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-    alert('Push notifications are not supported on this device/browser.');
+    uiToast('Push notifications are not supported on this device/browser.');
     return;
   }
   if (!state.user) { openLogin(); return; }
   if (!window.VAPID_PUBLIC_KEY) {
-    alert('Push notifications are not configured yet. A VAPID key needs to be set up.');
+    uiToast('Push notifications are not configured yet. A VAPID key needs to be set up.');
     return;
   }
 
   try {
     const permission = await Notification.requestPermission();
     if (permission !== 'granted') {
-      alert('Notification permission denied. You can change this in your browser settings.');
+      uiToast('Notification permission denied. You can change this in your browser settings.', 'error');
       return;
     }
 
@@ -12085,13 +12146,13 @@ async function requestPushPermission() {
 
     const saved = await DB.savePushSubscription(state.user.id, state.schoolId, sub);
     if (saved) {
-      alert('Push notifications enabled! You\'ll be notified about required-reading posts, urgent notices, and cover requests.');
+      uiToast('Push notifications enabled! You\'ll be notified about required-reading posts, urgent notices, and cover requests.');
     } else {
-      alert('Subscription saved locally but couldn\'t sync to Supabase. Notifications may only work on this device.');
+      uiToast('Subscription saved locally but couldn\'t sync to Supabase. Notifications may only work on this device.', 'error');
     }
     if (state.view === 'me') renderMe();
   } catch (e) {
-    alert('Failed to set up notifications: ' + e.message);
+    uiToast('Failed to set up notifications: ' + e.message);
   }
 }
 
@@ -12103,10 +12164,10 @@ async function disablePush() {
       await DB.removePushSubscription(sub.endpoint);
       await sub.unsubscribe();
     }
-    alert('Push notifications disabled.');
+    uiToast('Push notifications disabled.');
     if (state.view === 'me') renderMe();
   } catch (e) {
-    alert('Error: ' + e.message);
+    uiToast('Error: ' + e.message);
   }
 }
 
@@ -12130,9 +12191,9 @@ function urlBase64ToUint8Array(base64String) {
 // Targets only the current user and does NOT exclude them (it's a self-test).
 async function sendTestNotification() {
   if (!state.user) { openLogin(); return; }
-  if (!('PushManager' in window)) { alert('Push notifications are not supported on this device/browser.'); return; }
+  if (!('PushManager' in window)) { uiToast('Push notifications are not supported on this device/browser.'); return; }
   const enabled = await isPushEnabled();
-  if (!enabled) { alert('Turn on “Enable notifications” first, then send a test.'); return; }
+  if (!enabled) { uiToast('Turn on “Enable notifications” first, then send a test.'); return; }
   const res = await DB.sendPushNotification({
     title: '🔔 KRMAS test',
     body: 'Push notifications are working on this device.',
@@ -12143,14 +12204,14 @@ async function sendTestNotification() {
   });
   if (res && typeof res === 'object' && typeof res.sent === 'number') {
     if (res.sent > 0) {
-      alert(`Test sent to ${res.sent} device${res.sent === 1 ? '' : 's'}. It should arrive in a few seconds.`);
+      uiToast(`Test sent to ${res.sent} device${res.sent === 1 ? '' : 's'}. It should arrive in a few seconds.`, 'success');
     } else {
-      alert('No active subscriptions were found for your account on the server. Try disabling and re-enabling notifications, then test again.');
+      uiToast('No active subscriptions were found for your account on the server. Try disabling and re-enabling notifications, then test again.');
     }
   } else if (res) {
-    alert('Test request sent. If nothing arrives, confirm the send-push-notification Edge Function is deployed with the VAPID secrets set.');
+    uiToast('Test request sent. If nothing arrives, confirm the send-push-notification Edge Function is deployed with the VAPID secrets set.', 'success');
   } else {
-    alert('Couldn’t reach the push service. Make sure the send-push-notification Edge Function is deployed and Supabase is reachable.');
+    uiToast('Couldn’t reach the push service. Make sure the send-push-notification Edge Function is deployed and Supabase is reachable.', 'error');
   }
 }
 
@@ -12358,7 +12419,7 @@ const STRUCTURAL_DISPLAY = [
 ];
 
 async function openRolesMatrix() {
-  if (!can.manageRoles()) { alert('Only superadmins can edit roles.'); return; }
+  if (!can.manageRoles()) { uiToast('Only superadmins can edit roles.'); return; }
   try { state.roleConfig = await DB.roles.loadConfig(); } catch (e) { console.warn('roles load:', e && e.message); }
   const below = (state.roleConfig.roles || []).filter(r => r.rank < 3)
                   .sort((a,b) => (b.rank - a.rank) || a.label.localeCompare(b.label));
@@ -12383,7 +12444,7 @@ function renderRolesMatrix() {
   for (const r of roles) {
     const active = r.key === sel;
     html += `<button class="btn btn-sm" onclick="selectMatrixRole('${escapeHtml(r.key)}')"
-      style="${active ? 'background:var(--red);color:#fff;border-color:var(--red);' : ''}">${escapeHtml(r.label)}</button>`;
+      style="${active ? 'background:var(--red);color:var(--white);border-color:var(--red);' : ''}">${escapeHtml(r.label)}</button>`;
   }
   html += `<button class="btn btn-sm" onclick="createCustomRole()">+ New role</button></div>`;
 
@@ -12393,7 +12454,7 @@ function renderRolesMatrix() {
       style="color:var(--red);">Delete &ldquo;${escapeHtml(selRole.label)}&rdquo;</button></div>`;
   }
 
-  html += `<table style="width:100%;border-collapse:collapse;font-size:12px;">
+  html += `<div class="table-scroll"><table style="width:100%;border-collapse:collapse;font-size:12px;">
     <thead><tr style="border-bottom:1px solid var(--grey-200);">
       <th style="text-align:left;padding:5px 4px;">Section</th>
       <th style="padding:5px 4px;width:46px;">View</th><th style="padding:5px 4px;width:46px;">Add</th>
@@ -12420,7 +12481,7 @@ function renderRolesMatrix() {
     html += `<tr style="opacity:.55;"><td style="padding:5px 4px;">${escapeHtml(label)} <span style="font-size:10px;">🔒</span></td>
       <td colspan="4" style="text-align:center;font-size:11px;color:var(--grey-400);">Admins only</td></tr>`;
   }
-  html += `</tbody></table>`;
+  html += `</tbody></table></div>`;
   body.innerHTML = html;
 }
 
@@ -12440,7 +12501,7 @@ async function toggleRolePerm(roleKey, section, action, allowed) {
     for (const a of Object.keys(defaults)) {
       if (a === action || !defaults[a]) continue;     // toggled action is set explicitly below
       const rr = await DB.roles.setPermission(roleKey, section, a, true);
-      if (rr.error) { alert('Could not save: ' + rr.error); renderRolesMatrix(); return; }
+      if (rr.error) { uiToast('Could not save: ' + rr.error); renderRolesMatrix(); return; }
       if (!cfg.perms[roleKey]) cfg.perms[roleKey] = {};
       if (!cfg.perms[roleKey][section]) cfg.perms[roleKey][section] = {};
       cfg.perms[roleKey][section][a] = true;
@@ -12448,7 +12509,7 @@ async function toggleRolePerm(roleKey, section, action, allowed) {
     }
   }
   const r = await DB.roles.setPermission(roleKey, section, action, allowed);
-  if (r.error) { alert('Could not save: ' + r.error); renderRolesMatrix(); return; }
+  if (r.error) { uiToast('Could not save: ' + r.error); renderRolesMatrix(); return; }
   if (!cfg.perms[roleKey]) cfg.perms[roleKey] = {};
   if (!cfg.perms[roleKey][section]) cfg.perms[roleKey][section] = {};
   if (allowed) cfg.perms[roleKey][section][action] = true;
@@ -12460,18 +12521,18 @@ async function createCustomRole() {
   const label = prompt('Name for the new role (e.g. "Senior Instructor"):');
   if (!label || !label.trim()) return;
   const key = label.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
-  if (!key) { alert('Please use a name with letters or numbers.'); return; }
+  if (!key) { uiToast('Please use a name with letters or numbers.'); return; }
   const r = await DB.roles.createRole(key, label.trim(), 2);
-  if (r.error) { alert('Could not create role: ' + r.error); return; }
+  if (r.error) { uiToast('Could not create role: ' + r.error); return; }
   state.roleConfig = await DB.roles.loadConfig();
   state._rolesEditingRole = key;
   renderRolesMatrix();
 }
 
 async function deleteCustomRole(key) {
-  if (!confirm('Delete this role? Anyone assigned to it keeps their login but will need a new role.')) return;
+  if (!await uiConfirm('Delete this role? Anyone assigned to it keeps their login but will need a new role.')) return;
   const r = await DB.roles.deleteRole(key);
-  if (r.error) { alert('Could not delete role: ' + r.error); return; }
+  if (r.error) { uiToast('Could not delete role: ' + r.error); return; }
   state.roleConfig = await DB.roles.loadConfig();
   const below = (state.roleConfig.roles || []).filter(x => x.rank < 3);
   state._rolesEditingRole = (below[0] && below[0].key) || 'instructor';
@@ -12603,7 +12664,7 @@ function qlCancelEdit() { state._qlDraft = null; renderQuickLinksAdmin(); }
 async function qlSave() {
   const label = (document.getElementById('qlLabel')?.value || '').trim();
   let url = (document.getElementById('qlUrl')?.value || '').trim();
-  if (!label || !url) { alert('Add both a label and a URL.'); return; }
+  if (!label || !url) { uiToast('Add both a label and a URL.'); return; }
   if (!/^https?:\/\//i.test(url)) url = 'https://' + url; // be forgiving
   const isSuper = can.switchAnySchool();
   const draft = state._qlDraft;
@@ -12624,9 +12685,9 @@ async function qlSave() {
     createdAt: (draft && draft.createdAt) || new Date().toISOString(),
   };
   // Guard: don't let a non-superadmin write outside their school
-  if (!isSuper && link.schoolId !== state.schoolId) { alert("You can only manage your own school's links."); return; }
+  if (!isSuper && link.schoolId !== state.schoolId) { uiToast("You can only manage your own school's links."); return; }
   const ok = await DB.saveQuickLink(link);
-  if (ok === false) { alert('Could not save the link.'); return; }
+  if (ok === false) { uiToast('Could not save the link.', 'error'); return; }
   const arr = state.quickLinks || [];
   const idx = arr.findIndex(x => x.id === link.id);
   if (idx !== -1) arr[idx] = link; else arr.push(link);
@@ -12639,9 +12700,9 @@ async function qlSave() {
 async function qlDelete(id) {
   const l = (state.quickLinks || []).find(x => x.id === id);
   if (!l || !qlCanEditLink(l)) return;
-  if (!confirm('Delete this link?')) return;
+  if (!await uiConfirm('Delete this link?')) return;
   const ok = await DB.deleteQuickLink(id, l.schoolId);
-  if (ok === false) { alert('Could not delete the link.'); return; }
+  if (ok === false) { uiToast('Could not delete the link.', 'error'); return; }
   state.quickLinks = (state.quickLinks || []).filter(x => x.id !== id);
   if (state._qlDraft && state._qlDraft.id === id) state._qlDraft = null;
   renderQuickLinksAdmin();
@@ -12727,7 +12788,7 @@ async function clearClassTypeOverride(label) {
 // so existing schedules and analytics keep working.
 // ====================================================================
 function openClassTypesEditor() {
-  if (!can.manageRoles()) { alert('Only superadmins can edit class types.'); return; }
+  if (!can.manageRoles()) { uiToast('Only superadmins can edit class types.'); return; }
   renderClassTypesEditor();
   openModal('modalClassTypesEditor');
 }
@@ -12793,7 +12854,7 @@ async function saveClassTypeEdit(key) {
   const name = (document.getElementById('ctName-' + key)?.value || '').trim();
   const short = (document.getElementById('ctShort-' + key)?.value || '').trim();
   const colour = document.getElementById('ctColour-' + key)?.value || '--grey-300';
-  if (!name) { alert('Name cannot be empty.'); return; }
+  if (!name) { uiToast('Name cannot be empty.', 'error'); return; }
   const existing = (state.classTypes || []).find(r => r.key === key) || {};
   const row = {
     key, name, short, colour,
@@ -12802,7 +12863,7 @@ async function saveClassTypeEdit(key) {
     sort_order: existing.sort_order != null ? existing.sort_order : 100,
   };
   const res = await DB.classTypes.save(row);
-  if (res.error) { alert('Could not save: ' + res.error); return; }
+  if (res.error) { uiToast('Could not save: ' + res.error); return; }
   await reloadClassTypes();
 }
 
@@ -12811,12 +12872,12 @@ async function addClassType() {
   const name = (document.getElementById('ctNewName')?.value || '').trim();
   const short = (document.getElementById('ctNewShort')?.value || '').trim();
   const colour = document.getElementById('ctNewColour')?.value || '--c-mln';
-  if (!name) { alert('Give the new class type a name.'); return; }
+  if (!name) { uiToast('Give the new class type a name.'); return; }
   const key = slugifyClassKey(name);
   const maxSort = Math.max(0, ...((state.classTypes || []).map(r => r.sort_order || 0)));
   const row = { key, name, short: short || name.slice(0, 6), colour, chart: null, builtin: false, sort_order: maxSort + 1 };
   const res = await DB.classTypes.save(row);
-  if (res.error) { alert('Could not add: ' + res.error); return; }
+  if (res.error) { uiToast('Could not add: ' + res.error); return; }
   await reloadClassTypes();
 }
 
@@ -12824,25 +12885,25 @@ async function resetClassType(key) {
   if (blockedByImpersonation()) return;
   const def = CLASS_TYPE_DEFAULTS[key];
   if (!def) return;
-  if (!confirm('Reset "' + def.name + '" to its default name, short code and colour?')) return;
+  if (!await uiConfirm('Reset "' + def.name + '" to its default name, short code and colour?')) return;
   const existing = (state.classTypes || []).find(r => r.key === key) || {};
   const row = { key, name: def.name, short: def.short, colour: def.colour, chart: def.chart, builtin: true, sort_order: existing.sort_order != null ? existing.sort_order : 100 };
   const res = await DB.classTypes.save(row);
-  if (res.error) { alert('Could not reset: ' + res.error); return; }
+  if (res.error) { uiToast('Could not reset: ' + res.error); return; }
   await reloadClassTypes();
 }
 
 async function deleteClassType(key) {
   if (blockedByImpersonation()) return;
-  if (CLASS_TYPE_DEFAULTS[key]) { alert('Built-in types cannot be deleted — use reset instead.'); return; }
+  if (CLASS_TYPE_DEFAULTS[key]) { uiToast('Built-in types cannot be deleted — use reset instead.', 'error'); return; }
   const inUse = classTypeInUse(key);
   const meta = CLASS_TYPES[key];
   const warn = inUse
     ? '\n\nWARNING: ' + inUse + ' class(es) across your loaded schools use this type. They will show the type key until reassigned.'
     : '';
-  if (!confirm('Delete the class type "' + (meta ? meta.name : key) + '"?' + warn)) return;
+  if (!await uiConfirm('Delete the class type "' + (meta ? meta.name : key) + '"?' + warn)) return;
   const res = await DB.classTypes.remove(key);
-  if (res.error) { alert('Could not delete: ' + res.error); return; }
+  if (res.error) { uiToast('Could not delete: ' + res.error); return; }
   await reloadClassTypes();
 }
 
@@ -12977,7 +13038,7 @@ function renderSchoolManager() {
 
 function openSchoolEditor(schoolId) {
   if (!requireRole('admin')) return;
-  if (!can.switchAnySchool() && (!schoolId || schoolId !== state.schoolId)) { alert('You can only edit your own school.'); return; }
+  if (!can.switchAnySchool() && (!schoolId || schoolId !== state.schoolId)) { uiToast('You can only edit your own school.'); return; }
   const school = KRMAS_SCHOOLS.find(s => s.id === schoolId);
   const isNew = !schoolId;
   const custom = schoolId ? (state.customSchools[schoolId] || {}) : {};
@@ -13009,17 +13070,17 @@ async function saveSchoolDetails() {
 
   if (isNew) {
     const newId = document.getElementById('schoolEdNewId').value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-');
-    if (!newId || newId.length < 2) { alert('Enter a valid school ID (lowercase, min 2 chars).'); return; }
-    if (KRMAS_SCHOOLS.find(s => s.id === newId)) { alert('A school with that ID already exists.'); return; }
+    if (!newId || newId.length < 2) { uiToast('Enter a valid school ID (lowercase, min 2 chars).'); return; }
+    if (KRMAS_SCHOOLS.find(s => s.id === newId)) { uiToast('A school with that ID already exists.', 'error'); return; }
     schoolId = newId;
   }
 
-  if (isNew ? !can.switchAnySchool() : !canEditSchool(schoolId)) { alert('You can only edit your own school.'); return; }
+  if (isNew ? !can.switchAnySchool() : !canEditSchool(schoolId)) { uiToast('You can only edit your own school.'); return; }
   const name = document.getElementById('schoolEdName').value.trim();
-  if (!name) { alert('Enter a school name.'); return; }
+  if (!name) { uiToast('Enter a school name.'); return; }
 
   const activeDays = [0,1,2,3,4,5,6].filter(d => document.getElementById('schoolEdDay' + d)?.checked);
-  if (activeDays.length === 0) { alert('Select at least one active day.'); return; }
+  if (activeDays.length === 0) { uiToast('Select at least one active day.'); return; }
 
   const details = {
     name,
@@ -13082,7 +13143,7 @@ async function saveSchoolDetails() {
 async function deleteSchool(schoolId) {
   if (!schoolId) return;
   const school = KRMAS_SCHOOLS.find(s => s.id === schoolId);
-  if (!confirm(`Delete school "${school?.name || schoolId}"?\n\nThis removes it from the school picker. Data in Supabase is not deleted.`)) return;
+  if (!await uiConfirm(`Delete school "${school?.name || schoolId}"?\n\nThis removes it from the school picker. Data in Supabase is not deleted.`)) return;
   const idx = KRMAS_SCHOOLS.findIndex(s => s.id === schoolId);
   if (idx !== -1) KRMAS_SCHOOLS.splice(idx, 1);
   delete state.customSchools[schoolId];
@@ -13097,7 +13158,7 @@ async function deleteSchool(schoolId) {
 // ── Schedule editor ──
 function openScheduleEditor(schoolId) {
   if (!requireRole('admin')) return;
-  if (!can.switchAnySchool() && schoolId !== state.schoolId) { alert('You can only edit your own school\u2019s timetable.'); return; }
+  if (!can.switchAnySchool() && schoolId !== state.schoolId) { uiToast('You can only edit your own school\u2019s timetable.'); return; }
   state._editingScheduleSchool = schoolId;
   renderScheduleEditor();
   openModal('modalScheduleEditor');
@@ -13191,7 +13252,7 @@ function editScheduleSlot(dow, idx) {
 async function saveScheduleSlot() {
   if (blockedByImpersonation()) return;
   const schoolId = state._editingScheduleSchool;
-  if (!canEditSchool(schoolId)) { alert('You can only edit your own school.'); return; }
+  if (!canEditSchool(schoolId)) { uiToast('You can only edit your own school.'); return; }
   const dow = parseInt(document.getElementById('slotEdDow').value);
   const idx = parseInt(document.getElementById('slotEdIdx').value);
   const start = document.getElementById('slotEdStart').value;
@@ -13199,7 +13260,7 @@ async function saveScheduleSlot() {
   const label = document.getElementById('slotEdLabel').value.trim();
   const type = document.getElementById('slotEdType').value;
   const areaId = document.getElementById('slotEdArea')?.value || null;
-  if (!start || !end) { alert('Set start and end times.'); return; }
+  if (!start || !end) { uiToast('Set start and end times.'); return; }
 
   // Ensure customSchools overlay exists
   if (!state.customSchools[schoolId]) {
@@ -13234,8 +13295,8 @@ async function saveScheduleSlot() {
 
 async function removeScheduleSlot(dow, idx) {
   const schoolId = state._editingScheduleSchool;
-  if (!canEditSchool(schoolId)) { alert('You can only edit your own school.'); return; }
-  if (!confirm('Remove this class from the timetable?')) return;
+  if (!canEditSchool(schoolId)) { uiToast('You can only edit your own school.'); return; }
+  if (!await uiConfirm('Remove this class from the timetable?')) return;
 
   if (!state.customSchools[schoolId]) {
     const seed = SCHOOL_DATA_SEED[schoolId];
@@ -13322,7 +13383,7 @@ function slotAreaBadge(areaId, schoolId) {
 function openAreasEditor(schoolId) {
   if (!requireRole('admin')) return;
   const sid = schoolId || state._editingScheduleSchool || state.schoolId;
-  if (!can.switchAnySchool() && sid !== state.schoolId) { alert('You can only edit your own school\u2019s training areas.'); return; }
+  if (!can.switchAnySchool() && sid !== state.schoolId) { uiToast('You can only edit your own school\u2019s training areas.'); return; }
   state._editingAreasSchool = sid;
   renderAreasEditor();
   openModal('modalAreasEditor');
@@ -13369,9 +13430,9 @@ function renderAreasEditor() {
 async function addArea() {
   if (blockedByImpersonation()) return;
   const sid = state._editingAreasSchool;
-  if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
+  if (!canEditSchool(sid)) { uiToast('You can only edit your own school.'); return; }
   const name = (document.getElementById('arNewName')?.value || '').trim();
-  if (!name) { alert('Give the area a name.'); return; }
+  if (!name) { uiToast('Give the area a name.'); return; }
   const overlay = ensureSchoolOverlay(sid);
   overlay.areas.push({ id: newAreaId(), name });
   await saveCustomSchools(sid);
@@ -13381,9 +13442,9 @@ async function addArea() {
 async function saveAreaEdit(id) {
   if (blockedByImpersonation()) return;
   const sid = state._editingAreasSchool;
-  if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
+  if (!canEditSchool(sid)) { uiToast('You can only edit your own school.'); return; }
   const name = (document.getElementById('arName-' + id)?.value || '').trim();
-  if (!name) { alert('Name cannot be empty.'); return; }
+  if (!name) { uiToast('Name cannot be empty.', 'error'); return; }
   const overlay = ensureSchoolOverlay(sid);
   const a = overlay.areas.find(x => x.id === id);
   if (!a) return;
@@ -13396,11 +13457,11 @@ async function saveAreaEdit(id) {
 async function deleteArea(id) {
   if (blockedByImpersonation()) return;
   const sid = state._editingAreasSchool;
-  if (!canEditSchool(sid)) { alert('You can only edit your own school.'); return; }
+  if (!canEditSchool(sid)) { uiToast('You can only edit your own school.'); return; }
   const a = schoolAreas(sid).find(x => x.id === id);
   const n = areaInUse(sid, id);
   const warn = n ? `\n\n${n} class${n === 1 ? '' : 'es'} assigned to this area will become unassigned.` : '';
-  if (!confirm(`Delete training area "${a ? a.name : id}"?${warn}`)) return;
+  if (!await uiConfirm(`Delete training area "${a ? a.name : id}"?${warn}`)) return;
   const overlay = ensureSchoolOverlay(sid);
   overlay.areas = overlay.areas.filter(x => x.id !== id);
   for (const slot of (overlay.schedule || [])) if (slot.areaId === id) slot.areaId = null;
@@ -13504,7 +13565,7 @@ function renderDashboard() {
       <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--grey-500);">Active instructors</div>
     </div>
     <div style="text-align:center;padding:12px 8px;background:var(--off-white);border-radius:var(--r-sm);border:1px solid var(--grey-200);">
-      <div style="font-size:24px;font-weight:700;color:${totalOnLeave ? '#f59e0b' : 'var(--grey-400)'};">${totalOnLeave}</div>
+      <div style="font-size:24px;font-weight:700;color:${totalOnLeave ? 'var(--amber-500)' : 'var(--grey-400)'};">${totalOnLeave}</div>
       <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--grey-500);">On leave</div>
     </div>
   </div>`;
@@ -13512,11 +13573,11 @@ function renderDashboard() {
   // Alerts
   const alerts = [];
   if (compExpired > 0) alerts.push({ icon: '🚨', text: `${compExpired} expired compliance item${compExpired!==1?'s':''}`, colour: '#ef4444' });
-  if (compExpiring > 0) alerts.push({ icon: '⚠', text: `${compExpiring} compliance expiring within 30 days`, colour: '#f59e0b' });
+  if (compExpiring > 0) alerts.push({ icon: '⚠', text: `${compExpiring} compliance expiring within 30 days`, colour: 'var(--amber-500)' });
   if (unreadRequired > 0) alerts.push({ icon: '📢', text: `${unreadRequired} unread required-reading post${unreadRequired!==1?'s':''}`, colour: '#3b82f6' });
   const incompleteOnboarding = (state.onboardingChecklists || []).filter(c => c.status !== 'complete').length;
   if (incompleteOnboarding > 0) alerts.push({ icon: '🎓', text: incompleteOnboarding + ' instructor' + (incompleteOnboarding!==1?'s':'') + ' with incomplete onboarding', colour: '#6b7280' });
-  if (coverGaps > 0) alerts.push({ icon: '🕳', text: `${coverGaps} unstaffed class${coverGaps!==1?'es':''} this week`, colour: '#f59e0b' });
+  if (coverGaps > 0) alerts.push({ icon: '🕳', text: `${coverGaps} unstaffed class${coverGaps!==1?'es':''} this week`, colour: 'var(--amber-500)' });
 
   if (alerts.length > 0) {
     html += `<div class="section-sub">Needs attention</div>`;
@@ -13537,7 +13598,7 @@ function renderDashboard() {
     html += `<div class="section-sub">Compliance — ${escapeHtml(KRMAS_SCHOOLS.find(s=>s.id===state.schoolId)?.name||'')}</div>`;
     html += `<div style="display:flex;gap:6px;margin-bottom:10px;">
       <span style="font-size:12px;padding:3px 8px;border-radius:999px;background:#d1fae5;color:#065f46;font-weight:700;">${compValid} valid</span>
-      <span style="font-size:12px;padding:3px 8px;border-radius:999px;background:#fef3c7;color:#92400e;font-weight:700;">${compExpiring} expiring</span>
+      <span style="font-size:12px;padding:3px 8px;border-radius:999px;background:#fef3c7;color:var(--amber-700);font-weight:700;">${compExpiring} expiring</span>
       <span style="font-size:12px;padding:3px 8px;border-radius:999px;background:#fff1f2;color:#9f1239;font-weight:700;">${compExpired} expired</span>
       <span style="font-size:12px;padding:3px 8px;border-radius:999px;background:var(--off-white);color:var(--grey-500);font-weight:700;">${compTotal - compValid - compExpiring - compExpired} other</span>
     </div>`;
@@ -13559,7 +13620,7 @@ function renderDashboard() {
   // School breakdown (superadmin)
   if (isSuperAdmin) {
     html += `<div class="section-sub" style="margin-top:12px;">Schools breakdown</div>`;
-    html += `<table style="width:100%;font-size:12px;border-collapse:collapse;">
+    html += `<div class="table-scroll"><table style="width:100%;font-size:12px;border-collapse:collapse;">
       <thead><tr style="background:var(--off-white);">
         <th style="padding:6px 8px;text-align:left;font-size:10px;text-transform:uppercase;color:var(--grey-500);">School</th>
         <th style="padding:6px 8px;text-align:right;font-size:10px;text-transform:uppercase;color:var(--grey-500);">Instructors</th>
@@ -13568,11 +13629,11 @@ function renderDashboard() {
     for (const s of schoolStats.sort((a,b) => b.instrs - a.instrs)) {
       html += `<tr style="border-bottom:1px solid var(--grey-100);">
         <td style="padding:5px 8px;font-weight:600;">${escapeHtml(s.school.name)}</td>
-        <td style="padding:5px 8px;text-align:right;">${s.active}${s.leave ? `<span style="color:#f59e0b;"> +${s.leave} leave</span>` : ''}</td>
+        <td style="padding:5px 8px;text-align:right;">${s.active}${s.leave ? `<span style="color:var(--amber-500);"> +${s.leave} leave</span>` : ''}</td>
         <td style="padding:5px 8px;text-align:right;">${s.classes}</td>
       </tr>`;
     }
-    html += `</tbody></table>`;
+    html += `</tbody></table></div>`;
   }
 
   body.innerHTML = html;
@@ -13616,9 +13677,9 @@ function renderMultiSchoolReportSection() {
 function msReportToggleAll(on) { document.querySelectorAll('.ms-report-school').forEach(c => { c.checked = on; }); }
 
 async function generateMultiSchoolCompliance() {
-  if (!can.switchAnySchool()) { alert('This report is for superadmins.'); return; }
+  if (!can.switchAnySchool()) { uiToast('This report is for superadmins.'); return; }
   const checked = Array.from(document.querySelectorAll('.ms-report-school:checked')).map(c => c.value);
-  if (checked.length === 0) { alert('Select at least one school.'); return; }
+  if (checked.length === 0) { uiToast('Select at least one school.'); return; }
   const today = isoDate(new Date());
   const lines = [
     'KRMAS Instructor App — Multi-School Compliance Report',
@@ -13908,16 +13969,16 @@ function onbTemplateAdd() {
 
 async function saveOnboardingTemplate() {
   const items = _onbTemplateDraft.map(it => ({ ...it, label: (it.label || '').trim() })).filter(it => it.label);
-  if (items.length === 0) { alert('Add at least one task with a description.'); return; }
+  if (items.length === 0) { uiToast('Add at least one task with a description.'); return; }
   state.onboardingTemplate = items;
   await DB.saveOnboardingTemplate(state.schoolId, items);
   closeModal('modalOnboardingTemplate');
   renderOnboardingAdmin();
-  alert('Custom onboarding saved. New checklists will use these tasks.');
+  uiToast('Custom onboarding saved. New checklists will use these tasks.', 'success');
 }
 
 async function resetOnboardingTemplate() {
-  if (!confirm('Reset to the built-in default onboarding tasks? Your custom list will be removed.')) return;
+  if (!await uiConfirm('Reset to the built-in default onboarding tasks? Your custom list will be removed.')) return;
   state.onboardingTemplate = null;
   await DB.saveOnboardingTemplate(state.schoolId, null);
   closeModal('modalOnboardingTemplate');
@@ -13966,7 +14027,7 @@ function renderOnboardingAdmin() {
         <button class="btn btn-sm" onclick="initOnboarding('${instr.id}')">Start</button>
       </div>`;
     } else {
-      const colour = cl.status === 'complete' ? '#10b981' : prog.pct > 0 ? '#f59e0b' : 'var(--grey-300)';
+      const colour = cl.status === 'complete' ? '#10b981' : prog.pct > 0 ? 'var(--amber-500)' : 'var(--grey-300)';
       html += `<div class="ev-card" style="border-left:4px solid ${colour};cursor:pointer;" onclick="openOnboardingDetail('${instr.id}')">
         <div style="display:flex;align-items:center;gap:10px;">
           <div style="flex:1;min-width:0;">
@@ -13999,7 +14060,7 @@ async function initAllOnboarding() {
       created++;
     }
   }
-  alert(created ? `Onboarding created for ${created} instructor${created!==1?'s':''}.` : 'All instructors already have onboarding checklists.');
+  uiToast(created ? `Onboarding created for ${created} instructor${created!==1?'s':''}.` : 'All instructors already have onboarding checklists.');
   renderOnboardingAdmin();
 }
 
@@ -14022,7 +14083,7 @@ function openOnboardingDetail(instructorId) {
       <span>${prog.pct}%</span>
     </div>
     <div style="height:8px;background:var(--grey-200);border-radius:999px;overflow:hidden;">
-      <div style="height:100%;width:${prog.pct}%;background:${cl.status==='complete'?'#10b981':'#f59e0b'};border-radius:999px;transition:width .3s;"></div>
+      <div style="height:100%;width:${prog.pct}%;background:${cl.status==='complete'?'#10b981':'var(--amber-500)'};border-radius:999px;transition:width .3s;"></div>
     </div>
   </div>`;
 
@@ -14072,7 +14133,7 @@ async function toggleOnboardingItem(instructorId, itemIdx, checked) {
 }
 
 async function resetOnboarding(instructorId) {
-  if (!confirm('Reset all onboarding items to incomplete?')) return;
+  if (!await uiConfirm('Reset all onboarding items to incomplete?')) return;
   const cl = getOnboardingForInstructor(instructorId);
   if (!cl) return;
   for (const item of cl.items) {
@@ -14093,12 +14154,12 @@ function renderMyOnboarding() {
   return `<div onclick="openOnboardingDetail('${state.user.id}')" style="cursor:pointer;background:#fffbeb;border:1px solid #fde68a;border-radius:var(--r-md);padding:12px;margin-bottom:12px;">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
       <span style="font-weight:700;font-size:14px;">🎓 Complete your onboarding</span>
-      <span style="font-size:12px;font-weight:700;color:#f59e0b;">${prog.pct}%</span>
+      <span style="font-size:12px;font-weight:700;color:var(--amber-500);">${prog.pct}%</span>
     </div>
     <div style="height:6px;background:#fde68a;border-radius:999px;overflow:hidden;">
-      <div style="height:100%;width:${prog.pct}%;background:#f59e0b;border-radius:999px;"></div>
+      <div style="height:100%;width:${prog.pct}%;background:var(--amber-500);border-radius:999px;"></div>
     </div>
-    <div style="font-size:12px;color:#92400e;margin-top:6px;">${prog.done}/${prog.total} items done — tap to continue</div>
+    <div style="font-size:12px;color:var(--amber-700);margin-top:6px;">${prog.done}/${prog.total} items done — tap to continue</div>
   </div>`;
 }
 
@@ -14287,8 +14348,8 @@ const SUPPLY_STATUS = {
   confirmed:     ['Confirmed',      '#2563eb'],
   in_production: ['In production',  'var(--warn,#d97706)'],
   shipped:       ['Shipped',        'var(--warn,#d97706)'],
-  arrived:       ['Arrived',        'var(--ok,#16a34a)'],
-  received:      ['Received',       'var(--ok,#16a34a)'],
+  arrived:       ['Arrived',        'var(--ok,var(--ok))'],
+  received:      ['Received',       'var(--ok,var(--ok))'],
   cancelled:     ['Cancelled',      'var(--red,#D22C12)'],
 };
 function supplyStatusBadge(s) {
@@ -14732,28 +14793,28 @@ function orderEditSeedFromReorder() {
 async function shopOrderSaveDraft(submit) {
   const e = state.orderEdit; if (!e) return;
   const lines = (e.lines || []).filter(l => l.itemId && l.qty > 0).map(l => ({ itemId: l.itemId, itemName: supplyItemName(l.itemId), size: l.size || '', qty: l.qty, forWhom: l.forWhom || null }));
-  if (submit && !lines.length) { alert('Add at least one line before submitting.'); return; }
+  if (submit && !lines.length) { uiToast('Add at least one line before submitting.'); return; }
   try {
     const oid = await DB.supplyOrderSave(e.id, e.schoolId, e.supplierId, e.notes || null, lines);
     if (submit) { await DB.supplyOrderSubmit(oid); notifySupplyAdmins(e.schoolId, lines.length); }
     state.orderEdit = null;
     toast && toast(submit ? 'Order submitted' : 'Draft saved');
     state.supplyOrders = await DB.loadSupplyOrders(); renderShop();
-  } catch (err) { alert('Could not save order: ' + (err.message || err)); }
+  } catch (err) { uiToast('Could not save order: ' + (err.message || err)); }
 }
 async function shopOrderSubmit(id) {
   const o = (state.supplyOrders || []).find(x => x.id === id);
   try { await DB.supplyOrderSubmit(id); if (o) notifySupplyAdmins(o.schoolId, (o.lines || []).length); toast && toast('Order submitted'); state.supplyOrders = await DB.loadSupplyOrders(); renderShop(); }
-  catch (err) { alert('Could not submit: ' + (err.message || err)); }
+  catch (err) { uiToast('Could not submit: ' + (err.message || err)); }
 }
 async function shopOrderCancel(id) {
-  if (!confirm('Cancel this order?')) return;
+  if (!await uiConfirm('Cancel this order?')) return;
   try { await DB.supplyOrderCancel(id); toast && toast('Order cancelled'); state.supplyOrders = await DB.loadSupplyOrders(); renderShop(); }
-  catch (err) { alert('Could not cancel: ' + (err.message || err)); }
+  catch (err) { uiToast('Could not cancel: ' + (err.message || err)); }
 }
 async function shopOrderReceive(id) {
   const o = (state.supplyOrders || []).find(x => x.id === id);
-  if (!confirm('Confirm receipt? This adds the shipped quantities to your shop stock.')) return;
+  if (!await uiConfirm('Confirm receipt? This adds the shipped quantities to your shop stock.')) return;
   try {
     await DB.supplyOrderReceive(id, null);
     if (o) DB.supplyAdminIds().then(ids => { if (ids && ids.length) DB.sendPushNotification({ title: 'Order received', body: shopSchoolName(o.schoolId) + ' confirmed receipt', tag: 'supply', url: '#shop', targetUserIds: ids }); }).catch(() => {});
@@ -14761,7 +14822,7 @@ async function shopOrderReceive(id) {
     state.supplyOrders = await DB.loadSupplyOrders();
     if (o && state.shopStockSchool === o.schoolId) await loadShopStock(o.schoolId);
     renderShop();
-  } catch (err) { alert('Could not confirm receipt: ' + (err.message || err)); }
+  } catch (err) { uiToast('Could not confirm receipt: ' + (err.message || err)); }
 }
 function notifySupplyAdmins(schoolId, n) {
   DB.supplyAdminIds().then(ids => { if (ids && ids.length) DB.sendPushNotification({ title: 'New supply order', body: shopSchoolName(schoolId) + ' submitted an order (' + n + ' line' + (n === 1 ? '' : 's') + ')', tag: 'supply', url: '#shop', targetUserIds: ids }); }).catch(() => {});
@@ -14783,7 +14844,7 @@ async function supplyConfirmSubmit(id) {
     notifySchool(o, 'Order confirmed', 'Your order was confirmed' + (eta ? ', ETA ' + supplyFmtDate(eta) : ''));
     state.supplyEdit = null; toast && toast('Order confirmed');
     state.supplyOrders = await DB.loadSupplyOrders(); renderShop();
-  } catch (err) { alert('Could not confirm: ' + (err.message || err)); }
+  } catch (err) { uiToast('Could not confirm: ' + (err.message || err)); }
 }
 async function supplyShipSubmit(id) {
   const o = (state.supplyOrders || []).find(x => x.id === id); if (!o) return;
@@ -14798,7 +14859,7 @@ async function supplyShipSubmit(id) {
     state.supplyOrders = await DB.loadSupplyOrders();
     await loadSupplyContext(state.supplyActingSupplier);
     renderShop();
-  } catch (err) { alert('Could not ship: ' + (err.message || err)); }
+  } catch (err) { uiToast('Could not ship: ' + (err.message || err)); }
 }
 async function supplySetStatus(id, status) {
   const o = (state.supplyOrders || []).find(x => x.id === id);
@@ -14807,13 +14868,13 @@ async function supplySetStatus(id, status) {
     if (status === 'arrived') notifySchool(o, 'Order arrived', 'Your order has arrived — confirm receipt to add it to stock');
     toast && toast('Updated');
     state.supplyOrders = await DB.loadSupplyOrders(); renderShop();
-  } catch (err) { alert('Could not update: ' + (err.message || err)); }
+  } catch (err) { uiToast('Could not update: ' + (err.message || err)); }
 }
 async function supplyCancelOrder(id) {
-  if (!confirm('Cancel this order?')) return;
+  if (!await uiConfirm('Cancel this order?')) return;
   const o = (state.supplyOrders || []).find(x => x.id === id);
   try { await DB.supplyOrderCancel(id); notifySchool(o, 'Order cancelled', 'Your supply order was cancelled'); toast && toast('Cancelled'); state.supplyOrders = await DB.loadSupplyOrders(); renderShop(); }
-  catch (err) { alert('Could not cancel: ' + (err.message || err)); }
+  catch (err) { uiToast('Could not cancel: ' + (err.message || err)); }
 }
 
 // ── Stock filter / sort (stage 1) ──────────────────────────────────────────
@@ -14875,7 +14936,7 @@ function shopFilterClear() { state.shopFilter = Object.assign({}, SHOP_FILTER_DE
 function shopRefreshStockList() { const el = document.getElementById('shopStockList'); if (el) el.innerHTML = shopStockListHtml(can.editStock(state.shopStockSchool)); else renderShop(); }
 function shopFilterBarHtml() {
   const f = state.shopFilter;
-  const pill = (active, label, onclick) => `<button onclick="${onclick}" aria-pressed="${active}" style="padding:5px 11px;border:1px solid ${active ? 'var(--red)' : 'var(--grey-200)'};background:${active ? 'var(--red)' : 'transparent'};color:${active ? '#fff' : 'var(--grey-600,#444)'};border-radius:999px;font-size:12px;font-weight:600;cursor:pointer;">${escapeHtml(label)}</button>`;
+  const pill = (active, label, onclick) => `<button onclick="${onclick}" aria-pressed="${active}" style="padding:5px 11px;border:1px solid ${active ? 'var(--red)' : 'var(--grey-200)'};background:${active ? 'var(--red)' : 'transparent'};color:${active ? 'var(--white)' : 'var(--grey-600,#444)'};border-radius:999px;font-size:12px;font-weight:600;cursor:pointer;">${escapeHtml(label)}</button>`;
   const cats = state.shop.categories.slice().sort((a, b) => (a.sort - b.sort) || a.name.localeCompare(b.name));
   const sups = state.shop.suppliers.slice().sort((a, b) => a.name.localeCompare(b.name));
   const sel = 'padding:6px 8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;';
@@ -14912,7 +14973,7 @@ function shopStockListHtml(editable) {
   let html = `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:4px 0 6px;">
     <span aria-live="polite" style="font-size:12px;color:var(--grey-500);">Showing ${matched.length} of ${total} item${total === 1 ? '' : 's'}</span>
     ${shopFilterActive() ? `<button onclick="shopFilterClear()" style="font-size:12px;color:var(--red);background:transparent;border:none;cursor:pointer;padding:0;">Clear all</button>` : ''}</div>`;
-  if (chips.length) html += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">${chips.map(c => `<span style="font-size:11px;background:var(--off-white,#f5f5f5);border:1px solid var(--grey-200);border-radius:999px;padding:2px 8px;color:var(--grey-600,#555);">${escapeHtml(c)}</span>`).join('')}</div>`;
+  if (chips.length) html += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">${chips.map(c => `<span style="font-size:11px;background:var(--off-white,#f5f5f5);border:1px solid var(--grey-200);border-radius:999px;padding:2px 8px;color:var(--grey-600,var(--grey-500));">${escapeHtml(c)}</span>`).join('')}</div>`;
   if (!matched.length) {
     html += `<div class="empty"><h2>No items match your filters</h2><p>Try removing a filter or clearing them all.</p>${shopFilterActive() ? `<button class="btn" onclick="shopFilterClear()" style="margin-top:8px;padding:8px 14px;">Clear filters</button>` : ''}</div>`;
     return html;
@@ -15003,7 +15064,7 @@ function renderShopActivity() {
       <span style="min-width:0;"><strong>${escapeHtml(itemName(m.itemId))}</strong>${m.size ? ' <span style="color:var(--grey-500);">sz ' + escapeHtml(String(m.size)) + '</span>' : ''}
         <span style="color:var(--grey-500);"> · ${escapeHtml(kindLabel[m.kind] || m.kind)}${m.note ? ' · ' + escapeHtml(m.note) : ''}</span></span>
       <span style="display:flex;align-items:center;gap:10px;flex-shrink:0;">
-        <span style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${up ? 'var(--ok,#16a34a)' : 'var(--red)'};">${up ? '+' : ''}${m.delta}</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${up ? 'var(--ok,var(--ok))' : 'var(--red)'};">${up ? '+' : ''}${m.delta}</span>
         <span style="color:var(--grey-500);font-size:11px;">${fmt(m.createdAt)}</span></span></div>`;
   });
   html += `</div>`;
@@ -15012,7 +15073,7 @@ function renderShopActivity() {
 
 // Status visual config (colour + text label — never colour alone).
 function shopStatusCfg(status) {
-  return ({ healthy: ['var(--ok,#16a34a)', 'In stock'], low: ['var(--warn,#d97706)', 'Low'], out: ['var(--red,#D22C12)', 'Out'] })[status] || ['var(--grey-500)', '—'];
+  return ({ healthy: ['var(--ok,var(--ok))', 'In stock'], low: ['var(--warn,#d97706)', 'Low'], out: ['var(--red,#D22C12)', 'Out'] })[status] || ['var(--grey-500)', '—'];
 }
 function renderShopStockItem(it, editable) {
   const status = shopItemStatus(it);
@@ -15040,7 +15101,7 @@ function shopStockItemDetail(it, editable) {
   if (it.sized && !sizes.length) {
     body = `<p style="font-size:12px;color:var(--c-mt,#b8860b);">No size set chosen — edit this item on the Catalogue tab.</p>`;
   } else {
-    body = `<table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:8px;">
+    body = `<div class="table-scroll"><table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:8px;">
       <thead><tr style="color:var(--grey-500);font-size:10px;text-transform:uppercase;letter-spacing:.05em;">
         ${it.sized ? '<th style="text-align:left;padding:3px 6px;">Size</th>' : ''}
         <th style="text-align:left;padding:3px 6px;">In stock</th>
@@ -15064,7 +15125,7 @@ function shopStockItemDetail(it, editable) {
           style="width:64px;padding:5px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-family:'JetBrains Mono',monospace;text-align:center;"></td>
       </tr>`;
     }
-    body += `</tbody></table>`;
+    body += `</tbody></table></div>`;
   }
   return body + shopItemMovementsHtml(it.id);
 }
@@ -15078,7 +15139,7 @@ function shopItemMovementsHtml(itemId) {
     const up = m.delta >= 0;
     h += `<div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;padding:2px 0;">
       <span style="color:var(--grey-500);min-width:0;">${escapeHtml(kindLabel[m.kind] || m.kind)}${m.size ? ' · sz ' + escapeHtml(String(m.size)) : ''}${m.note ? ' · ' + escapeHtml(m.note) : ''}</span>
-      <span style="flex-shrink:0;"><span style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${up ? 'var(--ok,#16a34a)' : 'var(--red)'};">${up ? '+' : ''}${m.delta}</span> <span style="color:var(--grey-500);">${fmt(m.createdAt)}</span></span></div>`;
+      <span style="flex-shrink:0;"><span style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${up ? 'var(--ok,var(--ok))' : 'var(--red)'};">${up ? '+' : ''}${m.delta}</span> <span style="color:var(--grey-500);">${fmt(m.createdAt)}</span></span></div>`;
   });
   return h + `</div>`;
 }
@@ -15122,8 +15183,8 @@ async function shopSetStock(itemId, size, field, value) {
       await DB.saveStockThreshold(sid, itemId, size, r.reorderLevel || 0, r.targetLevel || 0);
     }
   } catch (e) {
-    if (typeof navigator !== 'undefined' && navigator && navigator.onLine === false) alert("You're offline — stock changes aren't saved while offline. Reconnect and re-enter this count.");
-    else alert('Could not save: ' + (e.message || e));
+    if (typeof navigator !== 'undefined' && navigator && navigator.onLine === false) uiToast("You're offline — stock changes aren't saved while offline. Reconnect and re-enter this count.");
+    else uiToast('Could not save: ' + (e.message || e));
     return;
   }
   // threshold path keeps focus — live-refresh this card's status + the nav low badge in place
@@ -15235,9 +15296,9 @@ function shopEmailReorder(supKey) {
 }
 
 // ── Special orders (custom one-off orders for a student) ────────────────────
-const SO_STATUS = { need_to_order: ['Need to order', '#b9710f', '#fff7ed'], ordered: ['Ordered', '#1d4ed8', '#eff6ff'], arrived: ['Arrived', '#2e7d32', '#e8f5e9'], paid: ['Paid', '#555', '#ededeb'] };
+const SO_STATUS = { need_to_order: ['Need to order', '#b9710f', '#fff7ed'], ordered: ['Ordered', '#1d4ed8', '#eff6ff'], arrived: ['Arrived', '#2e7d32', '#e8f5e9'], paid: ['Paid', 'var(--grey-500)', '#ededeb'] };
 const SO_FLOW = ['need_to_order', 'ordered', 'arrived', 'paid'];
-function soStatusPill(s) { const x = SO_STATUS[s] || [s, '#777', '#eee']; return `<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:700;color:${x[1]};background:${x[2]};">${escapeHtml(x[0])}</span>`; }
+function soStatusPill(s) { const x = SO_STATUS[s] || [s, '#777', 'var(--grey-100)']; return `<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:700;color:${x[1]};background:${x[2]};">${escapeHtml(x[0])}</span>`; }
 function soStatusLabel(s) { return (SO_STATUS[s] || [s])[0]; }
 function soItemSizes(item) { return (item ? shopItemSizes(item) : []).filter(s => s !== '' && s != null); }
 
@@ -15292,7 +15353,7 @@ function soFindOrder(id) { return (state.specialOrders || []).find(o => o.id ===
 
 function openSpecialOrder(id) {
   const sid = state.shopStockSchool;
-  if (!can.editStock(sid)) { alert('You can only manage orders for your own school.'); return; }
+  if (!can.editStock(sid)) { uiToast('You can only manage orders for your own school.'); return; }
   const o = id ? soFindOrder(id) : null;
   state._soEdit = { id: id || '', schoolId: sid };
   const items = shopActiveItems();
@@ -15334,12 +15395,12 @@ function soOnItemChange() {
 async function saveSpecialOrder() {
   const d = state._soEdit || {};
   const sid = d.schoolId || state.shopStockSchool;
-  if (!can.editStock(sid)) { alert('You can only manage orders for your own school.'); return; }
+  if (!can.editStock(sid)) { uiToast('You can only manage orders for your own school.'); return; }
   const itemId = auditGetVal('soItem');
   const item = (state.shop.items || []).find(i => i.id === itemId);
   const student = auditGetVal('soStudent').trim();
-  if (!item) { alert('Choose an item.'); return; }
-  if (!student) { alert("Enter the student's name."); return; }
+  if (!item) { uiToast('Choose an item.'); return; }
+  if (!student) { uiToast("Enter the student's name."); return; }
   const row = {
     school_id: sid, item_id: item.id, item_name: item.name,
     supplier_id: auditGetVal('soSupplier') || null, size: auditGetVal('soSize') || null,
@@ -15349,7 +15410,7 @@ async function saveSpecialOrder() {
   let res;
   if (d.id) res = await DB.specialOrders.update(d.id, row);
   else { row.created_by = state.user && state.user.id; res = await DB.specialOrders.create(row); }
-  if (res && res.error) { alert('Could not save the order: ' + res.error); return; }
+  if (res && res.error) { uiToast('Could not save the order: ' + res.error); return; }
   closeModal('modalSpecialOrder');
   state.specialOrders = await DB.specialOrders.list(sid);
   renderShop();
@@ -15394,16 +15455,16 @@ async function updateSpecialOrderStatus(id, status) {
   const sid = state.shopStockSchool;
   if (!can.editStock(sid)) return;
   const res = await DB.specialOrders.update(id, { status });
-  if (res && res.error) { alert('Could not update: ' + res.error); return; }
+  if (res && res.error) { uiToast('Could not update: ' + res.error); return; }
   const o = soFindOrder(id); if (o) o.status = status;
   renderShop();
 }
 async function deleteSpecialOrder() {
   const d = state._soEdit || {}; if (!d.id) return;
   if (!can.editStock(d.schoolId)) return;
-  if (!confirm('Delete this special order?')) return;
+  if (!await uiConfirm('Delete this special order?')) return;
   const res = await DB.specialOrders.remove(d.id);
-  if (res && res.error) { alert('Could not delete: ' + res.error); return; }
+  if (res && res.error) { uiToast('Could not delete: ' + res.error); return; }
   closeModal('modalSpecialOrder');
   state.specialOrders = await DB.specialOrders.list(d.schoolId);
   renderShop();
@@ -15448,14 +15509,14 @@ function shopBuildOrderSheet() {
     let blockTotal = 0;
     inner += `<div class="supplier-block"><h2 class="block-title">${escapeHtml(sup ? sup.name : 'No supplier set')}</h2>
       ${contact ? `<div class="muted">${escapeHtml(contact)}</div>` : ''}
-      <table><thead><tr><th>Item</th><th>SKU</th><th>Size</th><th class="num">In stock</th><th class="num">Order qty</th>${anyCost ? '<th class="num">Unit cost</th><th class="num">Line total</th>' : ''}</tr></thead><tbody>`;
+      <div class="table-scroll"><table><thead><tr><th>Item</th><th>SKU</th><th>Size</th><th class="num">In stock</th><th class="num">Order qty</th>${anyCost ? '<th class="num">Unit cost</th><th class="num">Line total</th>' : ''}</tr></thead><tbody>`;
     for (const r of bySup[k]) {
       const lineTotal = (r.unitCost != null) ? r.unitCost * r.orderQty : null;
       if (lineTotal != null) blockTotal += lineTotal;
       inner += `<tr><td>${escapeHtml(r.itemName)}</td><td>${escapeHtml(r.sku)}</td><td>${escapeHtml(String(r.size || ''))}</td>
         <td class="num">${r.qty}</td><td class="num">${r.orderQty}</td>${anyCost ? `<td class="num">${r.unitCost != null ? money(r.unitCost) : '—'}</td><td class="num">${lineTotal != null ? money(lineTotal) : '—'}</td>` : ''}</tr>`;
     }
-    inner += `</tbody></table>${anyCost ? `<div class="totals">Order total: ${money(blockTotal)}</div>` : ''}</div>`;
+    inner += `</tbody></table></div>${anyCost ? `<div class="totals">Order total: ${money(blockTotal)}</div>` : ''}</div>`;
   }
   return `<div class="print-doc">${inner}</div>`;
 }
@@ -15465,7 +15526,7 @@ function shopBuildPrintStockList() {
   const chips = shopActiveFilterChips();
   let inner = shopPrintHead('Stock list', shopSchoolName(state.shopStockSchool));
   if (chips.length) inner += `<div class="filters-summary"><strong>Filters:</strong> ${chips.map(escapeHtml).join(' · ')}</div>`;
-  inner += `<table><thead><tr><th>Item</th><th>SKU</th><th>Category</th><th>Size</th><th class="num">In stock</th><th class="num">Reorder at</th><th class="num">Target</th><th>Status</th></tr></thead><tbody>`;
+  inner += `<div class="table-scroll"><table><thead><tr><th>Item</th><th>SKU</th><th>Category</th><th>Size</th><th class="num">In stock</th><th class="num">Reorder at</th><th class="num">Target</th><th>Status</th></tr></thead><tbody>`;
   for (const it of matched) {
     const cat = shopCat(it.categoryId);
     for (const sz of shopItemSizes(it)) {
@@ -15475,7 +15536,7 @@ function shopBuildPrintStockList() {
         <td class="num">${r.qty || 0}</td><td class="num">${r.reorderLevel || 0}</td><td class="num">${r.targetLevel || 0}</td><td>${st}</td></tr>`;
     }
   }
-  inner += `</tbody></table>`;
+  inner += `</tbody></table></div>`;
   return `<div class="print-doc">${inner}</div>`;
 }
 // The printable value report.
@@ -15484,9 +15545,9 @@ function shopBuildPrintValue() {
   const money = n => '$' + (Number(n) || 0).toFixed(2);
   const total = rows.reduce((a, r) => a + (r.totalValue || 0), 0);
   let inner = shopPrintHead('Stock value', shopSchoolName(state.shopStockSchool));
-  inner += `<table><thead><tr><th>Category</th><th class="num">On hand</th><th class="num">Value</th></tr></thead><tbody>`;
+  inner += `<div class="table-scroll"><table><thead><tr><th>Category</th><th class="num">On hand</th><th class="num">Value</th></tr></thead><tbody>`;
   rows.slice().sort((a, b) => b.totalValue - a.totalValue).forEach(r => { inner += `<tr><td>${escapeHtml(r.category)}</td><td class="num">${r.totalQty}</td><td class="num">${money(r.totalValue)}</td></tr>`; });
-  inner += `</tbody></table><div class="totals">Total: ${money(total)}</div>`;
+  inner += `</tbody></table></div><div class="totals">Total: ${money(total)}</div>`;
   return `<div class="print-doc">${inner}</div>`;
 }
 function shopPrint(kind) {
@@ -15550,15 +15611,15 @@ async function shopDoTransfer() {
   const from = g('transferFrom'), to = g('transferTo');
   const itemSize = g('transferItem'), qty = parseInt(g('transferQty'), 10) || 0;
   const note = (g('transferNote') || '').trim();
-  if (!from || !to) { alert('Pick both schools.'); return; }
-  if (from === to) { alert('Source and destination must be different schools.'); return; }
-  if (!itemSize) { alert('Pick an item.'); return; }
-  if (qty <= 0) { alert('Enter a quantity of 1 or more.'); return; }
+  if (!from || !to) { uiToast('Pick both schools.'); return; }
+  if (from === to) { uiToast('Source and destination must be different schools.'); return; }
+  if (!itemSize) { uiToast('Pick an item.'); return; }
+  if (qty <= 0) { uiToast('Enter a quantity of 1 or more.'); return; }
   const sep = itemSize.indexOf('|');
   const itemId = sep >= 0 ? itemSize.slice(0, sep) : itemSize;
   const size = sep >= 0 ? itemSize.slice(sep + 1) : '';
   try { await DB.transferStock(from, to, itemId, size, qty, note || null); }
-  catch (e) { alert('Transfer failed: ' + (e.message || e)); return; }
+  catch (e) { uiToast('Transfer failed: ' + (e.message || e)); return; }
   if (typeof toast === 'function') toast('Transferred ' + qty);
   try { state.shopTransfers = await DB.loadTransfers(60); } catch (e) {}
   if (state.shopStockSchool === from || state.shopStockSchool === to) {
@@ -15614,7 +15675,7 @@ function renderStocktakeCounting(sess) {
     const swatch = it.gradeRef && typeof beltSwatch === 'function' ? beltSwatch(it.gradeRef, 14) : '';
     html += `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:8px 12px;margin-bottom:6px;">
       <div style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;margin-bottom:4px;">${swatch}${escapeHtml(it.name)}</div>
-      <table style="width:100%;border-collapse:collapse;font-size:13px;"><tbody>`;
+      <div class="table-scroll"><table style="width:100%;border-collapse:collapse;font-size:13px;"><tbody>`;
     if (it.sized && !sizes.length) {
       html += `<tr><td style="color:var(--c-mt,#b8860b);font-size:12px;">No size set — fix on the Catalogue tab.</td></tr>`;
     } else {
@@ -15631,7 +15692,7 @@ function renderStocktakeCounting(sess) {
         </tr>`;
       }
     }
-    html += `</tbody></table></div>`;
+    html += `</tbody></table></div></div>`;
   }
   return html;
 }
@@ -15661,7 +15722,7 @@ function renderStocktakeReview(sess) {
     html += `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 12px;${i ? 'border-top:1px solid var(--grey-200);' : ''}font-size:13px;">
       <span><strong>${escapeHtml(d.name)}</strong>${d.size ? ' <span style="color:var(--grey-500);">sz ' + escapeHtml(String(d.size)) + '</span>' : ''}</span>
       <span style="display:flex;align-items:center;gap:10px;"><span style="color:var(--grey-500);font-size:12px;">${d.onHand} → ${d.counted}</span>
-        <span style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${up ? 'var(--ok,#16a34a)' : 'var(--red)'};">${up ? '+' : ''}${d.delta}</span></span></div>`;
+        <span style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${up ? 'var(--ok,var(--ok))' : 'var(--red)'};">${up ? '+' : ''}${d.delta}</span></span></div>`;
   });
   html += `</div><button class="btn btn-black" onclick="shopCloseStocktake()" style="padding:9px 16px;">Close & apply ${diffs.length} adjustment${diffs.length === 1 ? '' : 's'}</button>`;
   return html;
@@ -15671,7 +15732,7 @@ async function shopStartStocktake() {
   const sid = state.shopStockSchool;
   if (!can.editStock(sid)) return;
   let sess; try { sess = await DB.createStocktakeSession(sid, null); }
-  catch (e) { alert('Could not start: ' + (e.message || e)); return; }
+  catch (e) { uiToast('Could not start: ' + (e.message || e)); return; }
   state.stocktakeSession = sess; state.stocktakeCounts = {}; state._stocktakeReview = false;
   renderShop();
 }
@@ -15691,14 +15752,14 @@ async function shopSetStocktakeCount(itemId, size, value) {
   const n = Math.max(0, parseInt(raw, 10) || 0);
   state.stocktakeCounts[key] = n;
   try { await DB.saveStocktakeCount(sess.id, sess.schoolId, itemId, size, n); }
-  catch (e) { alert('Could not save count: ' + (e.message || e)); }
+  catch (e) { uiToast('Could not save count: ' + (e.message || e)); }
 }
 function shopReviewStocktake() { state._stocktakeReview = true; renderShop(); }
 function shopBackToCounting() { state._stocktakeReview = false; renderShop(); }
 async function shopCloseStocktake() {
   const sess = state.stocktakeSession; if (!sess) return;
   let n; try { n = await DB.closeStocktake(sess.id); }
-  catch (e) { alert('Could not close: ' + (e.message || e)); return; }
+  catch (e) { uiToast('Could not close: ' + (e.message || e)); return; }
   try {
     if (state.shopStockSchool === sess.schoolId) {
       state.shopStock = await DB.loadSchoolStock(sess.schoolId);
@@ -15711,8 +15772,8 @@ async function shopCloseStocktake() {
   renderShop();
 }
 async function shopAbandonStocktake(id) {
-  if (!confirm('Abandon this stocktake? Any counts entered will be discarded.')) return;
-  try { await DB.deleteStocktakeSession(id); } catch (e) { alert('Could not abandon: ' + (e.message || e)); return; }
+  if (!await uiConfirm('Abandon this stocktake? Any counts entered will be discarded.')) return;
+  try { await DB.deleteStocktakeSession(id); } catch (e) { uiToast('Could not abandon: ' + (e.message || e)); return; }
   if (state.stocktakeSession && state.stocktakeSession.id === id) { state.stocktakeSession = null; state.stocktakeCounts = {}; state._stocktakeReview = false; }
   try { state.stocktakeSessions = await DB.loadStocktakeSessions(state.shopStockSchool); } catch (e) {}
   renderShop();
@@ -15734,7 +15795,7 @@ function renderShopValue() {
     <div style="font-size:12px;color:var(--grey-500);">${hereQty} item${hereQty === 1 ? '' : 's'} on hand · valued at each item's catalogue unit cost</div>
   </div>`;
   if (here.length) {
-    html += `<table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:8px;">
+    html += `<div class="table-scroll"><table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:8px;">
       <thead><tr style="color:var(--grey-500);font-size:10px;text-transform:uppercase;letter-spacing:.05em;text-align:left;">
         <th style="padding:4px 6px;">Category</th><th style="padding:4px 6px;text-align:right;">On hand</th><th style="padding:4px 6px;text-align:right;">Value</th></tr></thead><tbody>`;
     here.slice().sort((a, b) => b.totalValue - a.totalValue).forEach(r => {
@@ -15742,7 +15803,7 @@ function renderShopValue() {
         <td style="padding:5px 6px;text-align:right;font-family:'JetBrains Mono',monospace;">${r.totalQty}</td>
         <td style="padding:5px 6px;text-align:right;font-family:'JetBrains Mono',monospace;">${money(r.totalValue)}</td></tr>`;
     });
-    html += `</tbody></table>`;
+    html += `</tbody></table></div>`;
   } else {
     html += `<p style="font-size:13px;color:var(--grey-500);">No stock value yet for this school. Set unit costs on the Catalogue and count stock in.</p>`;
   }
@@ -15753,13 +15814,13 @@ function renderShopValue() {
     const grand = schools.reduce((a, s) => a + bySchool[s], 0);
     if (schools.length) {
       html += `<h3 style="font-family:'Oswald',sans-serif;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin:22px 0 8px;">Across the network</h3>
-        <table style="width:100%;border-collapse:collapse;font-size:13px;"><tbody>`;
+        <div class="table-scroll"><table style="width:100%;border-collapse:collapse;font-size:13px;"><tbody>`;
       schools.forEach(s => {
         html += `<tr style="border-top:1px solid var(--grey-200);cursor:pointer;" onclick="shopSwitchSchool('${s}')"><td style="padding:6px;">${escapeHtml(shopSchoolName(s))}</td>
           <td style="padding:6px;text-align:right;font-family:'JetBrains Mono',monospace;">${money(bySchool[s])}</td></tr>`;
       });
       html += `<tr style="border-top:2px solid var(--grey-300);font-weight:700;"><td style="padding:6px;">Total</td>
-        <td style="padding:6px;text-align:right;font-family:'JetBrains Mono',monospace;">${money(grand)}</td></tr></tbody></table>`;
+        <td style="padding:6px;text-align:right;font-family:'JetBrains Mono',monospace;">${money(grand)}</td></tr></tbody></table></div>`;
     }
   }
   return html;
@@ -15880,10 +15941,10 @@ function shopCaptureItemForm() {
 async function shopItemPickPhoto(input) {
   const file = input.files && input.files[0];
   if (!file || !state.shopEdit || !state.shopEdit.data) return;
-  if (file.size > 8 * 1024 * 1024) { alert('Image too large (max 8 MB).'); input.value = ''; return; }
+  if (file.size > 8 * 1024 * 1024) { uiToast('Image too large (max 8 MB).', 'error'); input.value = ''; return; }
   shopCaptureItemForm();
   try { state.shopEdit.data.imageUrl = await resizeImageSquare(file, 256); }
-  catch (e) { alert('Could not process image: ' + (e.message || e)); return; }
+  catch (e) { uiToast('Could not process image: ' + (e.message || e)); return; }
   renderShop();
 }
 function shopItemRemovePhoto() {
@@ -15911,14 +15972,14 @@ async function shopSaveItem() {
     sizeSetId: sized ? (g('shopItemSizeSet').value || null) : null,
     gradeRef: sized ? (g('shopItemGrade').value || null) : null,
   });
-  if (!draft.name) { alert('Give the item a name.'); return; }
-  if (sized && !draft.sizeSetId) { alert('Choose a size set for a sized item.'); return; }
+  if (!draft.name) { uiToast('Give the item a name.'); return; }
+  if (sized && !draft.sizeSetId) { uiToast('Choose a size set for a sized item.'); return; }
   try {
     const saved = await DB.saveItem(draft);
     const i = state.shop.items.findIndex(x => x.id === saved.id);
     if (i >= 0) state.shop.items[i] = saved; else state.shop.items.push(saved);
     state.shopEdit = null; renderShop();
-  } catch (e) { alert('Could not save item: ' + (e.message || e)); }
+  } catch (e) { uiToast('Could not save item: ' + (e.message || e)); }
 }
 async function shopToggleArchive(id) {
   const it = state.shop.items.find(i => i.id === id);
@@ -15928,7 +15989,7 @@ async function shopToggleArchive(id) {
     const i = state.shop.items.findIndex(x => x.id === saved.id);
     if (i >= 0) state.shop.items[i] = saved;
     renderShop();
-  } catch (e) { alert('Could not update item: ' + (e.message || e)); }
+  } catch (e) { uiToast('Could not update item: ' + (e.message || e)); }
 }
 
 // ── CSV import (catalogue items + opening stock counts) ──
@@ -16147,37 +16208,37 @@ async function shopSaveSupplier() {
     notes: g('shopSupNotes').value.trim() || null,
     isInternal: !!(g('shopSupInternal') && g('shopSupInternal').checked),
   });
-  if (!draft.name) { alert('Give the supplier a name.'); return; }
+  if (!draft.name) { uiToast('Give the supplier a name.'); return; }
   try {
     const saved = await DB.saveSupplier(draft);
     const i = state.shop.suppliers.findIndex(x => x.id === saved.id);
     if (i >= 0) state.shop.suppliers[i] = saved; else state.shop.suppliers.push(saved);
     state.shopEdit = null; renderShop();
-  } catch (e) { alert('Could not save supplier: ' + (e.message || e)); }
+  } catch (e) { uiToast('Could not save supplier: ' + (e.message || e)); }
 }
 async function shopDeleteSupplier(id) {
-  if (!confirm('Delete this supplier? Items keep their other details but lose this supplier link.')) return;
+  if (!await uiConfirm('Delete this supplier? Items keep their other details but lose this supplier link.')) return;
   try { await DB.deleteSupplier(id); state.shop.suppliers = state.shop.suppliers.filter(s => s.id !== id); renderShop(); }
-  catch (e) { alert('Could not delete: ' + (e.message || e)); }
+  catch (e) { uiToast('Could not delete: ' + (e.message || e)); }
 }
 
 async function shopAddCategory() {
   const name = (prompt('New category name:') || '').trim();
   if (!name) return;
   try { const saved = await DB.saveCategory({ name }); state.shop.categories.push(saved); renderShop(); }
-  catch (e) { alert('Could not add: ' + (e.message || e)); }
+  catch (e) { uiToast('Could not add: ' + (e.message || e)); }
 }
 async function shopRenameCategory(id) {
   const c = shopCat(id); if (!c) return;
   const name = (prompt('Rename category:', c.name) || '').trim();
   if (!name || name === c.name) return;
   try { const saved = await DB.saveCategory(Object.assign({}, c, { name })); const i = state.shop.categories.findIndex(x => x.id === id); if (i >= 0) state.shop.categories[i] = saved; renderShop(); }
-  catch (e) { alert('Could not rename: ' + (e.message || e)); }
+  catch (e) { uiToast('Could not rename: ' + (e.message || e)); }
 }
 async function shopDeleteCategory(id) {
-  if (!confirm('Delete this category? Items in it become uncategorised.')) return;
+  if (!await uiConfirm('Delete this category? Items in it become uncategorised.')) return;
   try { await DB.deleteCategory(id); state.shop.categories = state.shop.categories.filter(c => c.id !== id); renderShop(); }
-  catch (e) { alert('Could not delete: ' + (e.message || e)); }
+  catch (e) { uiToast('Could not delete: ' + (e.message || e)); }
 }
 
 function renderShopSizeSetEditor() {
@@ -16199,20 +16260,20 @@ async function shopSaveSizeSet() {
   const g = id => document.getElementById(id);
   const name = g('shopSetName').value.trim();
   const sizes = g('shopSetSizes').value.split(',').map(s => s.trim()).filter(Boolean);
-  if (!name) { alert('Give the size set a name.'); return; }
-  if (!sizes.length) { alert('Add at least one size.'); return; }
+  if (!name) { uiToast('Give the size set a name.'); return; }
+  if (!sizes.length) { uiToast('Add at least one size.'); return; }
   const draft = Object.assign({}, state.shopEdit.data, { name, sizes });
   try {
     const saved = await DB.saveSizeSet(draft);
     const i = state.shop.sizeSets.findIndex(x => x.id === saved.id);
     if (i >= 0) state.shop.sizeSets[i] = saved; else state.shop.sizeSets.push(saved);
     state.shopEdit = null; renderShop();
-  } catch (e) { alert('Could not save size set: ' + (e.message || e)); }
+  } catch (e) { uiToast('Could not save size set: ' + (e.message || e)); }
 }
 async function shopDeleteSizeSet(id) {
-  if (!confirm('Delete this size set? Items using it will need a new one.')) return;
+  if (!await uiConfirm('Delete this size set? Items using it will need a new one.')) return;
   try { await DB.deleteSizeSet(id); state.shop.sizeSets = state.shop.sizeSets.filter(z => z.id !== id); renderShop(); }
-  catch (e) { alert('Could not delete: ' + (e.message || e)); }
+  catch (e) { uiToast('Could not delete: ' + (e.message || e)); }
 }
 
 // ============================================================================
@@ -16339,7 +16400,7 @@ function allItemsScored(snapshot, responses) {
   const scored = all.filter(it => itemIsScoredType(it) && itemVisible(it, responses));
   return scored.every(it => itemAnswered(it, (responses || {})[it.id]));
 }
-function scoreColor(pct) { return pct >= 80 ? '#2e7d32' : pct >= 60 ? '#d48a1a' : '#d62828'; }
+function scoreColor(pct) { return pct >= 80 ? '#2e7d32' : pct >= 60 ? '#d48a1a' : 'var(--red)'; }
 function scoreBg(pct) { return pct >= 80 ? '#e8f5e9' : pct >= 60 ? '#fff7ed' : '#fdeaea'; }
 function fmtPct(pct) { return (Math.round((Number(pct) || 0) * 10) / 10).toFixed(1) + '%'; }
 
@@ -16348,19 +16409,19 @@ function scoreRing(pct) {
   const p = Math.max(0, Math.min(100, Number(pct) || 0));
   const r = 26, c = 2 * Math.PI * r, off = c * (1 - p / 100), col = scoreColor(p);
   return `<svg width="66" height="66" viewBox="0 0 66 66" aria-hidden="true">
-    <circle cx="33" cy="33" r="${r}" fill="none" stroke="#eee" stroke-width="6"/>
+    <circle cx="33" cy="33" r="${r}" fill="none" stroke="var(--grey-100)" stroke-width="6"/>
     <circle cx="33" cy="33" r="${r}" fill="none" stroke="${col}" stroke-width="6" stroke-linecap="round"
       stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" transform="rotate(-90 33 33)"/>
     <text x="33" y="37" text-anchor="middle" font-size="13" font-weight="800" fill="${col}">${Math.round(p)}%</text></svg>`;
 }
 function statusPill(s) {
-  const m = { draft: ['Draft', '#777', '#f0f0ee'], in_progress: ['In progress', '#b9710f', '#fff7ed'], completed: ['Completed', '#2e7d32', '#e8f5e9'], open: ['Open', '#c62828', '#fdeaea'] };
-  const x = m[s] || [s, '#777', '#eee'];
+  const m = { draft: ['Draft', '#777', '#f0f0ee'], in_progress: ['In progress', '#b9710f', '#fff7ed'], completed: ['Completed', '#2e7d32', '#e8f5e9'], open: ['Open', 'var(--red)', '#fdeaea'] };
+  const x = m[s] || [s, '#777', 'var(--grey-100)'];
   return `<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:700;color:${x[1]};background:${x[2]};">${escapeHtml(x[0])}</span>`;
 }
 function priorityPill(p) {
-  const m = { low: ['Low', '#2e7d32', '#e8f5e9'], medium: ['Medium', '#b9710f', '#fff7ed'], high: ['High', '#c62828', '#fdeaea'], critical: ['Critical', '#fff', '#b71c1c'] };
-  const x = m[p] || [p, '#777', '#eee'];
+  const m = { low: ['Low', '#2e7d32', '#e8f5e9'], medium: ['Medium', '#b9710f', '#fff7ed'], high: ['High', 'var(--red)', '#fdeaea'], critical: ['Critical', 'var(--white)', '#b71c1c'] };
+  const x = m[p] || [p, '#777', 'var(--grey-100)'];
   return `<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:700;color:${x[1]};background:${x[2]};">${escapeHtml(x[0])}</span>`;
 }
 // Capitalise the first letter of a dropdown label ("in progress" → "In progress").
@@ -16387,11 +16448,11 @@ function auditTrendSvg(points, w, h) {
   const x = i => pad + (n === 1 ? iw / 2 : (iw * i) / (n - 1));
   const y = v => pad + ih - (ih * Math.max(0, Math.min(100, v))) / 100;
   const path = points.map((p, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ',' + y(p.value).toFixed(1)).join(' ');
-  const dots = points.map((p, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p.value).toFixed(1)}" r="3.2" fill="#d62828"/>`).join('');
-  const vlabels = points.map((p, i) => `<text x="${x(i).toFixed(1)}" y="${y(p.value).toFixed(1) - 7}" font-size="9" text-anchor="middle" fill="#555">${Math.round(p.value)}</text>`).join('');
+  const dots = points.map((p, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p.value).toFixed(1)}" r="3.2" fill="var(--red)"/>`).join('');
+  const vlabels = points.map((p, i) => `<text x="${x(i).toFixed(1)}" y="${y(p.value).toFixed(1) - 7}" font-size="9" text-anchor="middle" fill="var(--grey-500)">${Math.round(p.value)}</text>`).join('');
   const xlabels = points.map((p, i) => `<text x="${x(i).toFixed(1)}" y="${h - 9}" font-size="9" text-anchor="middle" fill="#999">${escapeHtml(p.label)}</text>`).join('');
-  const grid = [0, 50, 100].map(v => `<line x1="${pad}" y1="${y(v)}" x2="${w - pad}" y2="${y(v)}" stroke="#eee"/><text x="${pad - 5}" y="${y(v) + 3}" font-size="8" text-anchor="end" fill="#bbb">${v}</text>`).join('');
-  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;">${grid}<path d="${path}" fill="none" stroke="#d62828" stroke-width="2"/>${dots}${vlabels}${xlabels}</svg>`;
+  const grid = [0, 50, 100].map(v => `<line x1="${pad}" y1="${y(v)}" x2="${w - pad}" y2="${y(v)}" stroke="var(--grey-100)"/><text x="${pad - 5}" y="${y(v) + 3}" font-size="8" text-anchor="end" fill="#bbb">${v}</text>`).join('');
+  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;">${grid}<path d="${path}" fill="none" stroke="var(--red)" stroke-width="2"/>${dots}${vlabels}${xlabels}</svg>`;
 }
 function auditBarsSvg(rows, w) {
   if (!rows || !rows.length) return `<div style="font-size:12px;color:var(--grey-500);padding:8px 0;">No completed audits to compare yet.</div>`;
@@ -16449,14 +16510,14 @@ function paintAuditHomeCard() {
   const overdueCount = sorted.filter(actionOverdue).length;
   let h = `<div style="border:1px solid var(--grey-200);border-radius:var(--r-md);padding:10px 12px;margin-bottom:12px;background:var(--white);">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-      <div style="font-weight:700;font-size:13px;">☑ Your corrective actions${overdueCount ? ` <span style="color:#c62828;">· ${overdueCount} overdue</span>` : ''}</div>
+      <div style="font-weight:700;font-size:13px;">☑ Your corrective actions${overdueCount ? ` <span style="color:var(--red);">· ${overdueCount} overdue</span>` : ''}</div>
       <button class="btn btn-ghost" style="font-size:11px;padding:2px 8px;" onclick="gotoMyActions()">View all</button></div>`;
   sorted.slice(0, 4).forEach(a => {
     const od = actionOverdue(a);
     const due = a.due_date ? `${od ? 'Overdue · ' : ''}Due ${auditDate(a.due_date)}` : 'No due date';
     h += `<div onclick="gotoMyActions()" style="display:flex;justify-content:space-between;gap:8px;align-items:center;padding:7px 8px;border-radius:8px;border:1px solid ${od ? '#f3c4c0' : 'var(--grey-100)'};background:${od ? '#fdeced' : 'var(--off-white,#fafafa)'};margin-bottom:5px;cursor:pointer;">
       <div style="min-width:0;"><div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(a.description || 'Action')}</div>
-        <div style="font-size:11px;color:${od ? '#c62828' : 'var(--grey-500)'};font-weight:${od ? '700' : '400'};margin-top:1px;">${escapeHtml(auditSchoolName(a.school_id))} · ${due}</div></div>
+        <div style="font-size:11px;color:${od ? 'var(--red)' : 'var(--grey-500)'};font-weight:${od ? '700' : '400'};margin-top:1px;">${escapeHtml(auditSchoolName(a.school_id))} · ${due}</div></div>
       ${statusPill(a.status)}</div>`;
   });
   if (sorted.length > 4) h += `<div style="font-size:11px;color:var(--grey-500);text-align:center;margin-top:2px;">+${sorted.length - 4} more</div>`;
@@ -16518,7 +16579,7 @@ function renderAuditHub(main) {
   html += `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px;">
     ${statCard(thisMonth.length, 'This month')}
     ${statCard(avg == null ? '—' : fmtPct(avg), 'Avg score', avg == null ? null : scoreColor(avg))}
-    ${statCard(openActions, 'Open actions', openActions ? '#c62828' : null)}</div>`;
+    ${statCard(openActions, 'Open actions', openActions ? 'var(--red)' : null)}</div>`;
   html += `<div style="display:flex;gap:8px;margin-bottom:10px;">`;
   if (can.addAudits()) html += `<button class="btn btn-primary" style="flex:1;" onclick="gotoAudit('new')">+ Start new audit</button>`;
   html += `<button class="btn btn-black" onclick="gotoAudit('dashboard')">Dashboard</button></div>`;
@@ -16612,16 +16673,16 @@ async function beginAudit() {
   const schoolEl = document.getElementById('auditNewSchool'), tplEl = document.getElementById('auditNewTemplate');
   const schoolId = schoolEl ? schoolEl.value : state.schoolId;
   const templateId = tplEl ? tplEl.value : '';
-  if (!schoolId) { alert('Pick a school first.'); return; }
-  if (!templateId) { alert('Pick a template first.'); return; }
+  if (!schoolId) { uiToast('Pick a school first.'); return; }
+  if (!templateId) { uiToast('Pick a template first.'); return; }
   const tpl = (state.auditData.templates || []).find(t => t.id === templateId);
-  if (!tpl) { alert('That template is no longer available.'); return; }
+  if (!tpl) { uiToast('That template is no longer available.', 'error'); return; }
   const row = {
     template_id: templateId, template_snapshot: tpl.sections || [], school_id: schoolId,
     auditor_id: state.user && state.user.id, status: 'draft', responses: {}, started_at: new Date().toISOString(),
   };
   const res = await DB.audits.createAudit(row);
-  if (res.error) { alert('Could not start the audit: ' + res.error); return; }
+  if (res.error) { uiToast('Could not start the audit: ' + res.error); return; }
   state.currentAudit = res.data; state.auditData = null; state.auditView = 'conduct'; renderAudits();
 }
 
@@ -16712,7 +16773,7 @@ function renderConductorItem(a, it, readOnly) {
       h += isImg
         ? `<img src="${r.upload}" style="max-width:100%;max-height:200px;border-radius:8px;border:1px solid var(--grey-200);">`
         : `<div style="font-size:12px;color:var(--grey-600);">📎 ${escapeHtml(r.uploadName || 'attachment')}</div>`;
-      if (!readOnly) h += `<div><button class="btn btn-ghost" style="font-size:11px;padding:2px 8px;margin-top:4px;color:#c62828;" onclick="clearAuditUpload('${it.id}')">Remove attachment</button></div>`;
+      if (!readOnly) h += `<div><button class="btn btn-ghost" style="font-size:11px;padding:2px 8px;margin-top:4px;color:var(--red);" onclick="clearAuditUpload('${it.id}')">Remove attachment</button></div>`;
     } else {
       h += auditFileButton('📎 Attach photo/file', `setAuditUpload('${it.id}',this)`, '*/*', isMobileDevice(), readOnly);
     }
@@ -16730,7 +16791,7 @@ function auditAnswerInput(a, it, r, readOnly) {
     let h = `<div style="display:flex;flex-wrap:wrap;gap:6px;">`;
     for (let v = 0; v <= maxv; v++) {
       const on = isScored(r) && Number(r.score) === v;
-      h += `<button onclick="setAuditScore('${it.id}',${v})" ${readOnly ? 'disabled' : ''} style="min-width:36px;height:36px;border-radius:8px;border:1px solid ${on ? '#d62828' : 'var(--grey-300)'};background:${on ? '#d62828' : 'var(--white)'};color:${on ? '#fff' : 'var(--ink)'};font-weight:700;font-size:14px;${readOnly ? 'opacity:.55;' : 'cursor:pointer;'}">${v}</button>`;
+      h += `<button onclick="setAuditScore('${it.id}',${v})" ${readOnly ? 'disabled' : ''} style="min-width:36px;height:36px;border-radius:8px;border:1px solid ${on ? 'var(--red)' : 'var(--grey-300)'};background:${on ? 'var(--red)' : 'var(--white)'};color:${on ? 'var(--white)' : 'var(--ink)'};font-weight:700;font-size:14px;${readOnly ? 'opacity:.55;' : 'cursor:pointer;'}">${v}</button>`;
     }
     return h + `</div>`;
   }
@@ -16744,7 +16805,7 @@ function auditAnswerInput(a, it, r, readOnly) {
     let h = `<div style="display:flex;gap:8px;flex-wrap:wrap;">`;
     (it.options || []).slice(0, 2).forEach(o => {
       const on = r.optionId === o.id;
-      h += `<button onclick="setAuditChoice('${it.id}','${escapeHtml(o.id)}')" ${readOnly ? 'disabled' : ''} style="flex:1;min-width:120px;padding:10px;border-radius:8px;border:1px solid ${on ? '#d62828' : 'var(--grey-300)'};background:${on ? '#d62828' : 'var(--white)'};color:${on ? '#fff' : 'var(--ink)'};font-weight:600;font-size:13px;${readOnly ? 'opacity:.55;' : 'cursor:pointer;'}">${escapeHtml(o.label)}</button>`;
+      h += `<button onclick="setAuditChoice('${it.id}','${escapeHtml(o.id)}')" ${readOnly ? 'disabled' : ''} style="flex:1;min-width:120px;padding:10px;border-radius:8px;border:1px solid ${on ? 'var(--red)' : 'var(--grey-300)'};background:${on ? 'var(--red)' : 'var(--white)'};color:${on ? 'var(--white)' : 'var(--ink)'};font-weight:600;font-size:13px;${readOnly ? 'opacity:.55;' : 'cursor:pointer;'}">${escapeHtml(o.label)}</button>`;
     });
     return h + `</div>`;
   }
@@ -16769,7 +16830,7 @@ function auditAnswerInput(a, it, r, readOnly) {
   if (t === 'photo') {
     if (r.photo) {
       let h = `<img src="${r.photo}" alt="audit photo" style="max-width:100%;max-height:260px;border-radius:8px;border:1px solid var(--grey-200);">`;
-      if (!readOnly) h += `<div><button class="btn btn-ghost" style="font-size:11px;padding:2px 8px;margin-top:4px;color:#c62828;" onclick="clearAuditPhoto('${it.id}')">Remove photo</button></div>`;
+      if (!readOnly) h += `<div><button class="btn btn-ghost" style="font-size:11px;padding:2px 8px;margin-top:4px;color:var(--red);" onclick="clearAuditPhoto('${it.id}')">Remove photo</button></div>`;
       return h;
     }
     const cap = it.capture_only || isMobileDevice();
@@ -16818,7 +16879,7 @@ async function setAuditPhoto(itemId, input) {
   const a = state.currentAudit; if (!a || a.status === 'completed') return;
   const f = input && input.files && input.files[0]; if (!f) return;
   try { const data = await compressImage(f, 1280, 0.7); const r = _audGet(itemId); r.photo = data; r.photoName = f.name || 'photo.jpg'; scheduleAuditSave(); renderAudits(); }
-  catch (e) { alert('Could not read that image.'); }
+  catch (e) { uiToast('Could not read that image.', 'error'); }
 }
 function clearAuditPhoto(itemId) {
   const a = state.currentAudit; if (!a || a.status === 'completed') return;
@@ -16828,7 +16889,7 @@ async function setAuditUpload(itemId, input) {
   const a = state.currentAudit; if (!a || a.status === 'completed') return;
   const f = input && input.files && input.files[0]; if (!f) return;
   try { const data = await compressImage(f, 1600, 0.72); const r = _audGet(itemId); r.upload = data; r.uploadName = f.name || 'attachment'; scheduleAuditSave(); renderAudits(); }
-  catch (e) { alert('Could not read that file.'); }
+  catch (e) { uiToast('Could not read that file.', 'error'); }
 }
 function clearAuditUpload(itemId) {
   const a = state.currentAudit; if (!a || a.status === 'completed') return;
@@ -16877,19 +16938,19 @@ async function saveAuditDraftNow() {
 }
 async function completeAudit() {
   const a = state.currentAudit; if (!a) return;
-  if (!allItemsScored(a.template_snapshot || [], a.responses || {})) { alert('Score every item before completing the audit.'); return; }
-  if (!confirm('This will finalise the audit. Continue?')) return;
+  if (!allItemsScored(a.template_snapshot || [], a.responses || {})) { uiToast('Score every item before completing the audit.'); return; }
+  if (!await uiConfirm('This will finalise the audit. Continue?')) return;
   const sc = computeAuditScore(a.template_snapshot || [], a.responses || {});
   const patch = { status: 'completed', completed_at: new Date().toISOString(), total_score: Math.round(sc.pct * 100) / 100, responses: a.responses || {} };
   const res = await DB.audits.saveAudit(a.id, patch);
-  if (res.error) { alert('Could not complete the audit: ' + res.error); return; }
+  if (res.error) { uiToast('Could not complete the audit: ' + res.error); return; }
   Object.assign(a, patch);
   state.currentAuditId = a.id; state.auditData = null; state.auditView = 'detail'; renderAudits();
 }
 async function openAuditConductor(id) {
   let a = (state.auditData && state.auditData.audits || []).find(x => x.id === id);
   if (!a) a = await DB.audits.getAudit(id);
-  if (!a) { alert('Audit not found.'); return; }
+  if (!a) { uiToast('Audit not found.', 'error'); return; }
   state.currentAudit = a; state.auditView = 'conduct'; renderAudits();
 }
 
@@ -16946,10 +17007,10 @@ function renderAuditDetail(main) {
   html += myActions.length ? myActions.map(x => actionRow(x, false)).join('') : `<div style="font-size:13px;color:var(--grey-500);padding:6px 0;">No actions raised for this audit.</div>`;
   main.innerHTML = html;
 }
-function deleteDraftAudit(id) {
-  if (!confirm('Delete this draft audit? This cannot be undone.')) return;
+async function deleteDraftAudit(id) {
+  if (!await uiConfirm('Delete this draft audit? This cannot be undone.')) return;
   DB.audits.deleteAudit(id).then(res => {
-    if (res.error) { alert('Could not delete: ' + res.error); return; }
+    if (res.error) { uiToast('Could not delete: ' + res.error); return; }
     state.currentAudit = null; state.currentAuditId = null; state.auditData = null; state.auditView = 'list'; renderAudits();
   });
 }
@@ -16958,7 +17019,7 @@ function deleteDraftAudit(id) {
 function actionMiniBtn() { return 'font-size:11px;padding:3px 10px;'; }
 function actionRow(a, showSchool) {
   const overdue = actionOverdue(a);
-  const due = a.due_date ? `<span style="color:${overdue ? '#c62828' : 'var(--grey-500)'};font-weight:${overdue ? '700' : '400'};">Due ${auditDate(a.due_date)}${overdue ? ' · overdue' : ''}</span>` : '';
+  const due = a.due_date ? `<span style="color:${overdue ? 'var(--red)' : 'var(--grey-500)'};font-weight:${overdue ? '700' : '400'};">Due ${auditDate(a.due_date)}${overdue ? ' · overdue' : ''}</span>` : '';
   const work = canWorkAction(a);
   let trans = '';
   if (work) {
@@ -17057,7 +17118,7 @@ function renderTemplateManager(main) {
     const manage = canManageTemplate(t);
     const scopeBadge = t.scope === 'global'
       ? `<span style="font-size:10px;padding:1px 7px;border-radius:8px;background:#eef;color:#3949ab;font-weight:700;">Global</span>`
-      : `<span style="font-size:10px;padding:1px 7px;border-radius:8px;background:#f0f0ee;color:#555;font-weight:700;">${escapeHtml(auditSchoolName(t.school_id))}</span>`;
+      : `<span style="font-size:10px;padding:1px 7px;border-radius:8px;background:#f0f0ee;color:var(--grey-500);font-weight:700;">${escapeHtml(auditSchoolName(t.school_id))}</span>`;
     html += `<div style="background:var(--white);border:1px solid var(--grey-200);border-radius:var(--r-md);padding:11px 12px;margin-bottom:8px;${t.is_active === false ? 'opacity:.6;' : ''}">
       <div style="min-width:0;"><div style="font-weight:600;font-size:13px;">${escapeHtml(t.title)}</div>
         <div style="font-size:11px;color:var(--grey-500);margin-top:3px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${scopeBadge}<span>${n} item${n === 1 ? '' : 's'}</span>${t.is_active === false ? '<span>· inactive</span>' : ''}</div></div>
@@ -17065,7 +17126,7 @@ function renderTemplateManager(main) {
         ${manage ? `<button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="openTemplateEditor('${t.id}')">Edit</button>` : ''}
         ${manage ? `<button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="toggleTemplateActive('${t.id}')">${t.is_active === false ? 'Activate' : 'Deactivate'}</button>` : ''}
         ${can.addAudits() ? `<button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="duplicateTemplate('${t.id}')">Duplicate</button>` : ''}
-        ${manage ? `<button class="btn btn-ghost" style="${actionMiniBtn()};color:#c62828;" onclick="removeTemplate('${t.id}')">Delete</button>` : ''}
+        ${manage ? `<button class="btn btn-ghost" style="${actionMiniBtn()};color:var(--red);" onclick="removeTemplate('${t.id}')">Delete</button>` : ''}
       </div></div>`;
   });
   main.innerHTML = html;
@@ -17073,13 +17134,13 @@ function renderTemplateManager(main) {
 async function toggleTemplateActive(id) {
   const t = (state.auditData.templates || []).find(x => x.id === id); if (!t) return;
   const res = await DB.audits.setTemplateActive(id, t.is_active === false);
-  if (res.error) { alert('Could not update: ' + res.error); return; }
+  if (res.error) { uiToast('Could not update: ' + res.error); return; }
   state.auditData = null; renderAudits();
 }
 async function removeTemplate(id) {
-  if (!confirm('Delete this template? Existing audits keep their own snapshot and are unaffected.')) return;
+  if (!await uiConfirm('Delete this template? Existing audits keep their own snapshot and are unaffected.')) return;
   const res = await DB.audits.deleteTemplate(id);
-  if (res.error) { alert('Could not delete. Templates already used by an audit can be deactivated instead.\n\n' + res.error); return; }
+  if (res.error) { uiToast('Could not delete. Templates already used by an audit can be deactivated instead.\n\n' + res.error); return; }
   state.auditData = null; renderAudits();
 }
 function duplicateTemplate(id) {
@@ -17106,7 +17167,7 @@ function openTemplateEditor(id) {
   if (!id) state.editingTemplate = newTemplateDraft();
   else {
     const t = (state.auditData.templates || []).find(x => x.id === id);
-    if (!t) { alert('Template not found.'); return; }
+    if (!t) { uiToast('Template not found.', 'error'); return; }
     state.editingTemplate = JSON.parse(JSON.stringify(t));
   }
   state.auditView = 'editor'; renderAudits();
@@ -17141,7 +17202,7 @@ function renderTemplateEditor(main) {
         <input value="${escapeHtml(sec.title || '')}" oninput="tplSectionField(${si},'title',this.value)" placeholder="Section ${si + 1} title" style="${auditInputStyle()};flex:1;font-weight:600;">
         <button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="tplMoveSection(${si},-1)" ${si === 0 ? 'disabled' : ''}>↑</button>
         <button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="tplMoveSection(${si},1)" ${si === (t.sections.length - 1) ? 'disabled' : ''}>↓</button>
-        <button class="btn btn-ghost" style="${actionMiniBtn()};color:#c62828;" onclick="tplRemoveSection(${si})">✕</button>
+        <button class="btn btn-ghost" style="${actionMiniBtn()};color:var(--red);" onclick="tplRemoveSection(${si})">✕</button>
       </div>`;
     (sec.items || []).forEach((it, ii) => { html += tplItemCard(t, si, ii, it); });
     html += `<button class="btn btn-ghost" style="${actionMiniBtn()};margin-top:4px;" onclick="tplAddItem(${si})">+ Add question</button></div>`;
@@ -17175,7 +17236,7 @@ function tplItemCard(t, si, ii, it) {
     <input value="${escapeHtml(it.label || '')}" oninput="tplItemField(${si},${ii},'label',this.value)" placeholder="Question ${ii + 1}" style="${auditInputStyle()};flex:1;font-size:13px;">
     <button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="tplMoveItem(${si},${ii},-1)" ${ii === 0 ? 'disabled' : ''}>↑</button>
     <button class="btn btn-ghost" style="${actionMiniBtn()}" onclick="tplMoveItem(${si},${ii},1)" ${ii === last ? 'disabled' : ''}>↓</button>
-    <button class="btn btn-ghost" style="${actionMiniBtn()};color:#c62828;" onclick="tplRemoveItem(${si},${ii})">✕</button></div>`;
+    <button class="btn btn-ghost" style="${actionMiniBtn()};color:var(--red);" onclick="tplRemoveItem(${si},${ii})">✕</button></div>`;
   h += `<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap;">
     <span style="font-size:11px;color:var(--grey-500);">Type</span>
     <select onchange="setItemType(${si},${ii},this.value)" style="${auditInputStyle()};flex:1;min-width:160px;font-size:12px;padding:6px 8px;">
@@ -17193,7 +17254,7 @@ function tplItemCard(t, si, ii, it) {
   if (it.reference_image) {
     h += `<div style="font-size:11px;color:var(--grey-500);margin-bottom:3px;">“Good” example</div>
       <img src="${it.reference_image}" alt="example" style="max-width:100%;max-height:140px;border-radius:6px;border:1px solid var(--grey-200);">
-      <div><button class="btn btn-ghost" style="${actionMiniBtn()};color:#c62828;" onclick="tplClearReference(${si},${ii})">Remove example</button></div>`;
+      <div><button class="btn btn-ghost" style="${actionMiniBtn()};color:var(--red);" onclick="tplClearReference(${si},${ii})">Remove example</button></div>`;
   } else {
     h += auditFileButton('🖼 Add a “what good looks like” image', `tplSetReference(${si},${ii},this)`, 'image/*', false, false);
   }
@@ -17208,7 +17269,7 @@ function tplOptionsEditor(si, ii, it, type) {
     h += `<div style="display:flex;gap:5px;align-items:center;margin-bottom:4px;">
       <input value="${escapeHtml(o.label || '')}" oninput="tplOptField(${si},${ii},${oi},'label',this.value)" placeholder="Option ${oi + 1}" style="${auditInputStyle()};flex:1;font-size:12px;padding:6px 8px;">
       <input type="number" value="${Number(o.score) || 0}" oninput="tplOptField(${si},${ii},${oi},'score',this.value)" title="Score" style="${auditInputStyle()};width:58px;font-size:12px;text-align:center;padding:6px;">
-      <button class="btn btn-ghost" style="${actionMiniBtn()};color:#c62828;" onclick="tplRemoveOption(${si},${ii},${oi})" ${type === 'radio' && opts.length <= 2 ? 'disabled' : ''}>✕</button></div>`;
+      <button class="btn btn-ghost" style="${actionMiniBtn()};color:var(--red);" onclick="tplRemoveOption(${si},${ii},${oi})" ${type === 'radio' && opts.length <= 2 ? 'disabled' : ''}>✕</button></div>`;
   });
   if (!(type === 'radio' && opts.length >= 2)) h += `<button class="btn btn-ghost" style="${actionMiniBtn()};margin-top:2px;" onclick="tplAddOption(${si},${ii})">+ Add option</button>`;
   return h + `</div>`;
@@ -17263,7 +17324,7 @@ function setItemType(si, ii, type) {
 function tplAddOption(si, ii) { const t = state.editingTemplate; const it = t && t.sections[si] && t.sections[si].items[ii]; if (!it) return; it.options = it.options || []; if (itemType(it) === 'radio' && it.options.length >= 2) return; it.options.push({ id: auditUid(), label: '', score: 0 }); renderAudits(); }
 function tplRemoveOption(si, ii, oi) { const t = state.editingTemplate; const it = t && t.sections[si] && t.sections[si].items[ii]; if (!it || !it.options) return; if (itemType(it) === 'radio' && it.options.length <= 2) return; it.options.splice(oi, 1); renderAudits(); }
 function tplOptField(si, ii, oi, f, v) { const t = state.editingTemplate; const it = t && t.sections[si] && t.sections[si].items[ii]; if (!it || !it.options || !it.options[oi]) return; it.options[oi][f] = (f === 'score' ? (v === '' || v === '-' ? 0 : Number(v)) : v); }
-async function tplSetReference(si, ii, input) { const t = state.editingTemplate; const it = t && t.sections[si] && t.sections[si].items[ii]; if (!it) return; const f = input && input.files && input.files[0]; if (!f) return; try { const data = await compressImage(f, 1280, 0.7); it.reference_image = data; it.reference_name = f.name || 'example.jpg'; renderAudits(); } catch (e) { alert('Could not read that image.'); } }
+async function tplSetReference(si, ii, input) { const t = state.editingTemplate; const it = t && t.sections[si] && t.sections[si].items[ii]; if (!it) return; const f = input && input.files && input.files[0]; if (!f) return; try { const data = await compressImage(f, 1280, 0.7); it.reference_image = data; it.reference_name = f.name || 'example.jpg'; renderAudits(); } catch (e) { uiToast('Could not read that image.', 'error'); } }
 function tplClearReference(si, ii) { const t = state.editingTemplate; const it = t && t.sections[si] && t.sections[si].items[ii]; if (!it) return; delete it.reference_image; delete it.reference_name; renderAudits(); }
 function tplToggleCondition(si, ii, on) {
   const t = state.editingTemplate; const it = t && t.sections[si] && t.sections[si].items[ii]; if (!it) return;
@@ -17276,7 +17337,7 @@ function tplCondValue(si, ii, op, value) { const t = state.editingTemplate; cons
 function tplCondOp(si, ii, op) { const t = state.editingTemplate; const it = t && t.sections[si] && t.sections[si].items[ii]; if (!it || !it.visible_if) return; it.visible_if.op = op; }
 function tplCondNum(si, ii, v) { const t = state.editingTemplate; const it = t && t.sections[si] && t.sections[si].items[ii]; if (!it || !it.visible_if) return; it.visible_if.value = (v === '' ? '' : Number(v)); }
 function tplAddSection() { const t = state.editingTemplate; if (!t) return; t.sections = t.sections || []; t.sections.push({ id: auditUid(), title: '', order: t.sections.length + 1, items: [] }); renderAudits(); }
-function tplRemoveSection(si) { const t = state.editingTemplate; if (!t) return; if (!confirm('Remove this section and its items?')) return; t.sections.splice(si, 1); renderAudits(); }
+async function tplRemoveSection(si) { const t = state.editingTemplate; if (!t) return; if (!await uiConfirm('Remove this section and its items?')) return; t.sections.splice(si, 1); renderAudits(); }
 function tplMoveSection(si, dir) { const t = state.editingTemplate; if (!t) return; const j = si + dir; if (j < 0 || j >= t.sections.length) return; const s = t.sections, tmp = s[si]; s[si] = s[j]; s[j] = tmp; renderAudits(); }
 function tplAddItem(si) { const t = state.editingTemplate; if (!t || !t.sections[si]) return; t.sections[si].items = t.sections[si].items || []; t.sections[si].items.push({ id: auditUid(), label: '', max_score: 5, order: t.sections[si].items.length + 1 }); renderAudits(); }
 function tplRemoveItem(si, ii) { const t = state.editingTemplate; if (!t || !t.sections[si]) return; t.sections[si].items.splice(ii, 1); renderAudits(); }
@@ -17306,7 +17367,7 @@ function validateTemplate(t) {
 async function saveTemplate() {
   const t = state.editingTemplate; if (!t) return;
   const errs = validateTemplate(t);
-  if (errs.length) { alert('Fix these first:\n• ' + errs.join('\n• ')); return; }
+  if (errs.length) { uiToast('Fix these first:\n• ' + errs.join('\n• ')); return; }
   (t.sections || []).forEach((s, i) => {
     s.order = i + 1;
     (s.items || []).forEach((it, j) => {
@@ -17324,7 +17385,7 @@ async function saveTemplate() {
   };
   if (t.id) row.id = t.id; else row.created_by = state.user && state.user.id;
   const res = await DB.audits.saveTemplate(row);
-  if (res.error) { alert('Could not save template: ' + res.error); return; }
+  if (res.error) { uiToast('Could not save template: ' + res.error); return; }
   state.editingTemplate = null; state.auditData = null; state.auditView = 'templates'; renderAudits();
 }
 
@@ -17354,8 +17415,8 @@ function renderAuditDashboard(main) {
   html += `<div class="ir-section"><div class="ir-section-title" style="margin-bottom:8px;">Latest score by school</div>${auditBarsSvg(bars, 320)}</div>`;
   html += `<div class="section-sub">Actions</div>`;
   html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;">
-    ${statCard(openN, 'Open', openN ? '#c62828' : null)}
-    ${statCard(overdueN, 'Overdue', overdueN ? '#c62828' : null)}
+    ${statCard(openN, 'Open', openN ? 'var(--red)' : null)}
+    ${statCard(overdueN, 'Overdue', overdueN ? 'var(--red)' : null)}
     ${statCard(doneMonth, 'Done this month', '#2e7d32')}
     ${statCard(rate + '%', 'Completion rate')}</div>`;
   html += `<div class="section-sub">Recent audits</div>`;
@@ -17418,12 +17479,12 @@ async function saveAuditAction() {
   if (d.editId && d.restricted) {
     const patch = { status, evidence_notes: auditGetVal('aaEvidence') || null, completed_at: status === 'completed' ? new Date().toISOString() : null };
     const res = await DB.audits.updateAction(d.editId, patch);
-    if (res.error) { alert('Could not save the action: ' + res.error); return; }
+    if (res.error) { uiToast('Could not save the action: ' + res.error); return; }
     closeModal('modalAuditAction'); state.auditData = null; state.auditSignals = null; renderAudits();
     return;
   }
   const desc = auditGetVal('aaDesc').trim();
-  if (!desc) { alert('Describe what needs to be done.'); return; }
+  if (!desc) { uiToast('Describe what needs to be done.', 'success'); return; }
   const row = {
     description: desc, assigned_to: auditGetVal('aaAssignee') || null, priority: auditGetVal('aaPriority'),
     status, due_date: auditGetVal('aaDue') || null, evidence_notes: auditGetVal('aaEvidence') || null,
@@ -17432,21 +17493,21 @@ async function saveAuditAction() {
   let res;
   if (d.editId) res = await DB.audits.updateAction(d.editId, row);
   else { row.audit_id = d.auditId; row.school_id = d.schoolId; row.item_id = d.itemId || null; row.created_by = state.user && state.user.id; res = await DB.audits.createAction(row); }
-  if (res.error) { alert('Could not save the action: ' + res.error); return; }
+  if (res.error) { uiToast('Could not save the action: ' + res.error); return; }
   closeModal('modalAuditAction'); state.auditData = null; state.auditSignals = null; renderAudits();
 }
 async function deleteAuditAction() {
   const d = state._actionDraft || {}; if (!d.editId) return;
-  if (!confirm('Delete this action?')) return;
+  if (!await uiConfirm('Delete this action?')) return;
   const res = await DB.audits.deleteAction(d.editId);
-  if (res.error) { alert('Could not delete (only open actions can be deleted): ' + res.error); return; }
+  if (res.error) { uiToast('Could not delete (only open actions can be deleted): ' + res.error); return; }
   closeModal('modalAuditAction'); state.auditData = null; state.auditSignals = null; renderAudits();
 }
 async function transitionAction(id, status) {
   const patch = { status };
   if (status === 'completed') patch.completed_at = new Date().toISOString();
   const res = await DB.audits.updateAction(id, patch);
-  if (res.error) { alert('Could not update: ' + res.error); return; }
+  if (res.error) { uiToast('Could not update: ' + res.error); return; }
   state.auditData = null; state.auditSignals = null; renderAudits();
 }
 
@@ -17468,12 +17529,12 @@ const BRAND_DEFAULTS = {
   themeColor: '#000000',
   backgroundColor: '#f5f2ec',
   palette: { // mirrors styles.css :root
-    primary: '#d22c12', primaryHover: '#b3250f', primaryDark: '#931e0c', primarySoft: '#fbe8e4',
+    primary: 'var(--red)', primaryHover: '#b3250f', primaryDark: '#931e0c', primarySoft: '#fbe8e4',
     accent: '#62a3db', accentLight: '#6ec1e4', gold: '#c9a14a', ok: '#2d7a4a', warn: '#d48a1a',
-    black: '#010101', black2: '#1a1a1a', black3: '#2a2a2a', white: '#ffffff', offWhite: '#f5f5f4',
+    black: '#010101', black2: 'var(--black-2)', black3: '#2a2a2a', white: 'var(--white)', offWhite: '#f5f5f4',
     grey100: '#e6e7e8', grey200: '#d3d5d8', grey300: '#a7abb0', grey400: '#69727d', grey500: '#3f444b',
   },
-  classColours: { mln: '#4a8fbf', ln: '#2c6a9b', karate: '#000000', jmt: '#d48a1a', mt: '#d62828', lmt: '#e57373', mtf: '#8c1818', sanda: '#5a3a8b', sparring: '#2d5a3c', kata: '#c9a14a', bjj: '#4a7a4a', sc: '#4a4845', plates: '#6e6c68' },
+  classColours: { mln: '#4a8fbf', ln: '#2c6a9b', karate: '#000000', jmt: '#d48a1a', mt: 'var(--red)', lmt: '#e57373', mtf: '#8c1818', sanda: '#5a3a8b', sparring: '#2d5a3c', kata: '#c9a14a', bjj: '#4a7a4a', sc: '#4a4845', plates: '#6e6c68' },
   radius: { sm: '2px', md: '4px', lg: '6px' },
   shadows: { card: '0 1px 2px rgba(0,0,0,0.06), 0 2px 8px rgba(0,0,0,0.04)', modal: '0 8px 32px rgba(0,0,0,0.16)' },
   fonts: { body: "'Open Sans', system-ui, sans-serif", head: "'Oswald', sans-serif", mono: "'JetBrains Mono', monospace" },
@@ -17554,6 +17615,11 @@ function deriveDark(pal) {
     '--black-2': '#dfe1e5', '--black-3': '#c7cad0',
     '--grey-100': '#2b2e35', '--grey-200': '#3a3e46', '--grey-300': '#565b64',
     '--grey-400': '#9aa0aa', '--grey-500': '#cfd3d9',
+    // v110/v111 tokens — without these the new accents stayed light-theme in dark mode
+    '--grey-50': '#15171a', '--grey-600': '#e6e8eb',
+    '--red-50': '#33150f', '--red-700': '#e0654f',
+    '--amber-50': '#2e2410', '--amber-500': '#e6a23c', '--amber-600': '#d18b2a',
+    '--amber-700': '#c07a20', '--amber-800': '#a96a1a',
     '--red': pal.primary, '--red-2': pal.primaryHover, '--red-3': pal.primaryDark, '--red-soft': '#2a1a17',
     '--blue': pal.accent, '--blue-light': pal.accentLight || pal.accent, '--gold': pal.gold, '--ok': pal.ok, '--warn': pal.warn,
   };
@@ -17691,7 +17757,7 @@ function _brandMergeDefaults(b) {
 }
 
 function openBrandingPanel() {
-  if (!can.switchAnySchool()) { alert('Only a superadmin can change portal branding.'); return; }
+  if (!can.switchAnySchool()) { uiToast('Only a superadmin can change portal branding.'); return; }
   state._brandDraft = _brandMergeDefaults(state.brand);
   state._brandTab = state._brandTab || 'theme';
   state._brandPrevDark = document.body.classList.contains('dark-mode'); // restored on close
@@ -17783,7 +17849,7 @@ function _renderBrandingPanelLegacy() {
 
   // logo + login + favicon (v1)
   h += sec('Logo & images');
-  h += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;"><img src="' + (d.logo || 'krmas-logo.svg') + '" alt="" style="height:34px;width:auto;background:#eee;border-radius:4px;padding:2px 6px;"><label class="btn btn-sm" style="cursor:pointer;">Upload logo (SVG/PNG)<input type="file" accept="image/svg+xml,image/png,image/jpeg,image/webp" onchange="brandUpload(\'logo\', this)" style="display:none;"></label>' + (d.logo ? '<button class="btn btn-sm" onclick="brandClearImage(\'logo\')" style="color:var(--red);">Remove</button>' : '') + '</div>';
+  h += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;"><img src="' + (d.logo || 'krmas-logo.svg') + '" alt="" style="height:34px;width:auto;background:var(--grey-100);border-radius:4px;padding:2px 6px;"><label class="btn btn-sm" style="cursor:pointer;">Upload logo (SVG/PNG)<input type="file" accept="image/svg+xml,image/png,image/jpeg,image/webp" onchange="brandUpload(\'logo\', this)" style="display:none;"></label>' + (d.logo ? '<button class="btn btn-sm" onclick="brandClearImage(\'logo\')" style="color:var(--red);">Remove</button>' : '') + '</div>';
   h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px;">'
     + '<label class="btn btn-sm" style="cursor:pointer;">Login background<input type="file" accept="image/png,image/jpeg,image/webp" onchange="brandUpload(\'loginBg\', this)" style="display:none;"></label>'
     + (d.loginBg ? '<button class="btn btn-sm" onclick="brandClearImage(\'loginBg\')" style="color:var(--red);">Clear bg</button>' : '')
@@ -17854,7 +17920,7 @@ function brandUpload(field, input) {
       if (out.length > 700000) { try { out = cv.toDataURL('image/jpeg', 0.7); } catch (e) {} }
       brandSet(field, out); renderBrandingPanel();
     };
-    img.onerror = () => alert('Could not read that image.');
+    img.onerror = () => uiToast('Could not read that image.', 'error');
     img.src = r.result;
   };
   r.readAsDataURL(file);
@@ -17863,11 +17929,11 @@ function brandUpload(field, input) {
 function brandClearImage(field) { brandSet(field, null); renderBrandingPanel(); }
 
 async function brandPublish() {
-  if (!can.switchAnySchool()) { alert('Only a superadmin can change portal branding.'); return; }
+  if (!can.switchAnySchool()) { uiToast('Only a superadmin can change portal branding.'); return; }
   const d = state._brandDraft; if (!d) return;
   const cText = contrastRatio(d.palette.black, d.palette.white);
   const cBtn = contrastRatio(d.palette.white, d.palette.primary);
-  if ((cText < 4.5 || cBtn < 3) && !confirm('Some colours are low-contrast and may be hard to read. Publish anyway?')) return;
+  if ((cText < 4.5 || cBtn < 3) && !await uiConfirm('Some colours are low-contrast and may be hard to read. Publish anyway?')) return;
   d.enabled = true; d.updatedBy = (state.user && state.user.name) || null; d.updatedAt = new Date().toISOString();
   state.brand = _brandClone(d);
   try { localStorage.setItem('krmas-brand', JSON.stringify(state.brand)); } catch (e) {}
@@ -17875,11 +17941,11 @@ async function brandPublish() {
   _brandRestoreDark();
   applyBrand(state.brand);
   closeModal('modalBranding');
-  alert('Branding published. Everyone will see it on their next load.');
+  uiToast('Branding published. Everyone will see it on their next load.', 'success');
 }
 
-function brandResetDefaults() {
-  if (!confirm('Reset all branding back to the KRMAS defaults? Publish afterwards to apply for everyone.')) return;
+async function brandResetDefaults() {
+  if (!await uiConfirm('Reset all branding back to the KRMAS defaults? Publish afterwards to apply for everyone.')) return;
   state._brandDraft = _brandClone(BRAND_DEFAULTS);
   applyBrand(state._brandDraft);
   renderBrandingPanel();
@@ -17911,17 +17977,17 @@ function closeBrandingPanel() {
 // One-tap starting themes. Applying a preset sets brand+accent+status and smart-derives
 // the hover/dark/soft shades from the primary colour.
 const BRAND_PRESETS = [
-  { id: 'krmas',    name: 'KRMAS Red',  primary: '#d22c12', accent: '#62a3db', gold: '#c9a14a' },
+  { id: 'krmas',    name: 'KRMAS Red',  primary: 'var(--red)', accent: '#62a3db', gold: '#c9a14a' },
   { id: 'midnight', name: 'Midnight',   primary: '#3b82f6', accent: '#22d3ee', gold: '#eab308' },
-  { id: 'forest',   name: 'Forest',     primary: '#16a34a', accent: '#65a30d', gold: '#ca8a04' },
-  { id: 'ocean',    name: 'Ocean',      primary: '#0ea5e9', accent: '#14b8a6', gold: '#f59e0b' },
+  { id: 'forest',   name: 'Forest',     primary: 'var(--ok)', accent: '#65a30d', gold: '#ca8a04' },
+  { id: 'ocean',    name: 'Ocean',      primary: '#0ea5e9', accent: '#14b8a6', gold: 'var(--amber-500)' },
   { id: 'crimson',  name: 'Crimson',    primary: '#dc2626', accent: '#fb7185', gold: '#d97706' },
   { id: 'violet',   name: 'Violet',     primary: '#7c3aed', accent: '#a855f7', gold: '#eab308' },
-  { id: 'slate',    name: 'Slate',      primary: '#475569', accent: '#0ea5e9', gold: '#f59e0b' },
-  { id: 'sunset',   name: 'Sunset',     primary: '#ea580c', accent: '#f59e0b', gold: '#facc15' },
-  { id: 'rose',     name: 'Rose',       primary: '#e11d48', accent: '#fb7185', gold: '#f59e0b' },
+  { id: 'slate',    name: 'Slate',      primary: '#475569', accent: '#0ea5e9', gold: 'var(--amber-500)' },
+  { id: 'sunset',   name: 'Sunset',     primary: '#ea580c', accent: 'var(--amber-500)', gold: '#facc15' },
+  { id: 'rose',     name: 'Rose',       primary: '#e11d48', accent: '#fb7185', gold: 'var(--amber-500)' },
   { id: 'teal',     name: 'Teal',       primary: '#0d9488', accent: '#22d3ee', gold: '#eab308' },
-  { id: 'indigo',   name: 'Indigo',     primary: '#4f46e5', accent: '#818cf8', gold: '#f59e0b' },
+  { id: 'indigo',   name: 'Indigo',     primary: '#4f46e5', accent: '#818cf8', gold: 'var(--amber-500)' },
   { id: 'mono',     name: 'Mono',       primary: '#111827', accent: '#6b7280', gold: '#9ca3af' },
 ];
 
@@ -18012,7 +18078,7 @@ function renderBrandPreview() {
   const d = state._brandDraft || {};
   el.innerHTML =
     '<div style="border-radius:var(--r-md);overflow:hidden;border:1px solid var(--grey-200);">'
-    + '<div style="background:var(--red);color:#fff;padding:8px 10px;display:flex;align-items:center;gap:8px;">'
+    + '<div style="background:var(--red);color:var(--white);padding:8px 10px;display:flex;align-items:center;gap:8px;">'
       + '<img src="' + (d.logo || 'krmas-logo.svg') + '" alt="" style="height:20px;width:auto;background:rgba(255,255,255,.9);border-radius:4px;padding:1px 4px;">'
       + '<span style="font-family:var(--font-head);font-weight:700;font-size:14px;">' + escapeHtml(d.appName || 'App name') + '</span>'
     + '</div>'
@@ -18020,15 +18086,15 @@ function renderBrandPreview() {
       + '<div style="font-family:var(--font-head);font-weight:700;font-size:14px;color:var(--black);margin-bottom:3px;">Sample card</div>'
       + '<div style="font-family:var(--font-body);font-size:12px;color:var(--black-2);margin-bottom:9px;">Body text on a card surface — the quick brown fox.</div>'
       + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:9px;">'
-        + '<span style="background:var(--red);color:#fff;font-size:11px;font-weight:600;padding:6px 11px;border-radius:var(--r-sm);">Primary</span>'
+        + '<span style="background:var(--red);color:var(--white);font-size:11px;font-weight:600;padding:6px 11px;border-radius:var(--r-sm);">Primary</span>'
         + '<span style="background:var(--white);color:var(--black-2);border:1px solid var(--grey-200);font-size:11px;font-weight:600;padding:6px 11px;border-radius:var(--r-sm);">Ghost</span>'
-        + '<span style="background:var(--warn);color:#fff;font-size:11px;font-weight:600;padding:6px 11px;border-radius:var(--r-sm);">Warning</span>'
+        + '<span style="background:var(--warn);color:var(--white);font-size:11px;font-weight:600;padding:6px 11px;border-radius:var(--r-sm);">Warning</span>'
       + '</div>'
       + '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:9px;">'
         + '<span style="background:#dcfce7;color:var(--ok);font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;">Success</span>'
         + '<span style="background:var(--red-soft);color:var(--red-3);font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;">Soft</span>'
-        + '<span style="background:var(--gold);color:#fff;font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;">Gold</span>'
-        + '<span style="background:var(--blue);color:#fff;font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;">Accent</span>'
+        + '<span style="background:var(--gold);color:var(--white);font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;">Gold</span>'
+        + '<span style="background:var(--blue);color:var(--white);font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;">Accent</span>'
       + '</div>'
       + '<input type="text" value="Input field" readonly style="width:100%;box-sizing:border-box;padding:8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;font-family:var(--font-body);background:var(--off-white);color:var(--black);">'
       + '<div style="display:flex;gap:4px;margin-top:9px;">'
@@ -18123,7 +18189,7 @@ function _brandTabShape(d) {
 }
 
 function _brandTabImages(d) {
-  const imgPrev = (src, ht) => src ? '<img src="' + src + '" alt="" style="height:' + ht + 'px;width:auto;max-width:96px;background:#eee;border-radius:4px;border:1px solid var(--grey-200);">' : '<span style="font-size:11px;color:var(--grey-400);">none</span>';
+  const imgPrev = (src, ht) => src ? '<img src="' + src + '" alt="" style="height:' + ht + 'px;width:auto;max-width:96px;background:var(--grey-100);border-radius:4px;border:1px solid var(--grey-200);">' : '<span style="font-size:11px;color:var(--grey-400);">none</span>';
   const tile = (field, label, accept, prev, note) =>
     '<div style="border:1px solid var(--grey-200);border-radius:var(--r-md);padding:10px;margin-bottom:8px;">'
     + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">'
@@ -18167,7 +18233,7 @@ function renderBrandingPanel() {
   const tabs = [['theme', 'Presets'], ['identity', 'Identity'], ['colour', 'Colours'], ['type', 'Type'], ['shape', 'Shape'], ['images', 'Images'], ['advanced', 'Advanced']];
 
   const tabBar = '<div style="display:flex;gap:4px;overflow-x:auto;padding-bottom:8px;margin-bottom:4px;-webkit-overflow-scrolling:touch;">'
-    + tabs.map(([id, label]) => '<button onclick="brandSetTab(\'' + id + '\')" style="flex:0 0 auto;padding:7px 13px;border:1px solid ' + (tab === id ? 'var(--red)' : 'var(--grey-200)') + ';background:' + (tab === id ? 'var(--red)' : 'var(--white)') + ';color:' + (tab === id ? '#fff' : 'var(--black-2)') + ';border-radius:999px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;">' + label + '</button>').join('')
+    + tabs.map(([id, label]) => '<button onclick="brandSetTab(\'' + id + '\')" style="flex:0 0 auto;padding:7px 13px;border:1px solid ' + (tab === id ? 'var(--red)' : 'var(--grey-200)') + ';background:' + (tab === id ? 'var(--red)' : 'var(--white)') + ';color:' + (tab === id ? 'var(--white)' : 'var(--black-2)') + ';border-radius:999px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;">' + label + '</button>').join('')
     + '</div>';
 
   const dk = state._brandPreviewDark;
@@ -18175,8 +18241,8 @@ function renderBrandingPanel() {
     + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">'
       + '<span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-400);">Live preview</span>'
       + '<div style="display:flex;border:1px solid var(--grey-200);border-radius:999px;overflow:hidden;">'
-        + '<button onclick="brandSetPreviewDark(false)" style="padding:4px 11px;border:none;background:' + (dk ? 'var(--white)' : 'var(--red)') + ';color:' + (dk ? 'var(--grey-500)' : '#fff') + ';font-size:11px;font-weight:600;cursor:pointer;">Light</button>'
-        + '<button onclick="brandSetPreviewDark(true)" style="padding:4px 11px;border:none;background:' + (dk ? 'var(--red)' : 'var(--white)') + ';color:' + (dk ? '#fff' : 'var(--grey-500)') + ';font-size:11px;font-weight:600;cursor:pointer;">Dark</button>'
+        + '<button onclick="brandSetPreviewDark(false)" style="padding:4px 11px;border:none;background:' + (dk ? 'var(--white)' : 'var(--red)') + ';color:' + (dk ? 'var(--grey-500)' : 'var(--white)') + ';font-size:11px;font-weight:600;cursor:pointer;">Light</button>'
+        + '<button onclick="brandSetPreviewDark(true)" style="padding:4px 11px;border:none;background:' + (dk ? 'var(--red)' : 'var(--white)') + ';color:' + (dk ? 'var(--white)' : 'var(--grey-500)') + ';font-size:11px;font-weight:600;cursor:pointer;">Dark</button>'
       + '</div>'
     + '</div>'
     + '<div id="brandPreview"></div>'
@@ -18295,14 +18361,14 @@ function classDisplayName(c) {
 // ---------- self-assign (the trigger surface for the supervision rule) ----------
 async function assignMeToClass(dateKey) {
   if (!state.user) { openLogin(); return; }
-  if (!hasRole('instructor')) { alert('Only instructors can assign themselves to a class.'); return; }
+  if (!hasRole('instructor')) { uiToast('Only instructors can assign themselves to a class.'); return; }
   const c = classForDateKey(dateKey);
   if (!c) return;
-  if (isMyClass(c)) { alert('You are already assigned to this class.'); return; }
+  if (isMyClass(c)) { uiToast('You are already assigned to this class.'); return; }
   const role = firstOpenRole(c);
-  if (!role) { alert('This class is already fully staffed.'); return; }
+  if (!role) { uiToast('This class is already fully staffed.'); return; }
   const myId = myInstructorId();
-  if (!myId) { alert('Your account is not linked to an instructor profile, so you can\'t self-assign.'); return; }
+  if (!myId) { uiToast('Your account is not linked to an instructor profile, so you can\'t self-assign.'); return; }
   const existing = state.edits[dateKey] || {};
   const status = existing.status === 'needs-cover' ? 'confirmed' : (existing.status || 'confirmed');
   state.edits[dateKey] = { ...existing, [role]: myId, status };
@@ -18353,7 +18419,7 @@ async function confirmSupervisor() {
   await saveEdits();
   closeModal('modalSupervisor');
   if (state.view === 'roster') renderDay();
-  if (!val) alert('Flagged: this class has no accredited instructor present. It now shows a warning on the roster and appears in the superadmin supervision report.');
+  if (!val) uiToast('Flagged: this class has no accredited instructor present. It now shows a warning on the roster and appears in the superadmin supervision report.');
 }
 
 // ---------- cross-school aggregation (superadmin) ----------
@@ -18422,7 +18488,7 @@ async function refreshUnsupervisedDashboard() {
   try { list = await computeUnsupervisedAcrossSchools(14); } catch (e) { el.innerHTML = ''; return; }
   if (!list.length) { el.innerHTML = ''; return; }
   const schools = new Set(list.map(x => x.schoolId)).size;
-  el.innerHTML = `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#fff4e511;border:1px solid #f59e0b33;border-left:4px solid #f59e0b;border-radius:var(--r-sm);margin-bottom:6px;font-size:13px;font-weight:600;flex-wrap:wrap;">
+  el.innerHTML = `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#fff4e511;border:1px solid #f59e0b33;border-left:4px solid var(--amber-500);border-radius:var(--r-sm);margin-bottom:6px;font-size:13px;font-weight:600;flex-wrap:wrap;">
     <span>⚠</span><span style="flex:1;">${list.length} class${list.length !== 1 ? 'es' : ''} without an accredited instructor present across ${schools} school${schools !== 1 ? 's' : ''} (next 2 weeks)</span>
     <button class="btn btn-sm" onclick="openUnsupervisedReport()">View report</button>
   </div>`;
@@ -18430,7 +18496,7 @@ async function refreshUnsupervisedDashboard() {
 
 // Printable report (superadmin) — every flagged class across all schools.
 async function openUnsupervisedReport() {
-  if (!can.switchAnySchool()) { alert('Superadmin only.'); return; }
+  if (!can.switchAnySchool()) { uiToast('Superadmin only.'); return; }
   let list = [];
   try { list = await computeUnsupervisedAcrossSchools(28); } catch (e) {}
   const rows = list.map(r => `<tr>
@@ -18448,11 +18514,11 @@ async function openUnsupervisedReport() {
     </style></head><body>
     <h1>${escapeHtml(title)}</h1>
     <p class="sub">Classes with a non-accredited instructor and no accredited instructor present · next 4 weeks · generated ${escapeHtml(isoDate(new Date()))}</p>
-    ${list.length ? `<table><thead><tr><th>School</th><th>Date</th><th>Class</th><th>Instructor</th><th>Accredited present</th></tr></thead><tbody>${rows}</tbody></table>`
+    ${list.length ? `<div class="table-scroll"><table><thead><tr><th>School</th><th>Date</th><th>Class</th><th>Instructor</th><th>Accredited present</th></tr></thead><tbody>${rows}</tbody></table></div>`
       : `<div class="empty">✓ No supervision gaps — every staffed class has an accredited instructor present.</div>`}
   </body></html>`;
   const w = window.open('', '_blank', 'width=1100,height=800');
-  if (!w) { alert('Allow pop-ups for this site to print the report.'); return; }
+  if (!w) { uiToast('Allow pop-ups for this site to print the report.'); return; }
   w.document.write(html); w.document.close();
   setTimeout(() => { try { w.focus(); w.print(); } catch (e) {} }, 500);
 }
