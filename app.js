@@ -2633,7 +2633,7 @@ function pinClear() { state.pinInput = state.pinInput.slice(0, -1); renderPinDis
 function renderPinDisplay() {
   let html = '';
   for (let i = 0; i < 4; i++) html += `<span class="dot ${i < state.pinInput.length ? '' : 'empty-dot'}"></span>`;
-  document.getElementById('pinDisplay').innerHTML = html;
+  const pinEl = document.getElementById('pinDisplay'); if (pinEl) pinEl.innerHTML = html; // legacy PIN UI removed; guard for any stale caller
 }
 
 // Legacy PIN entry is no longer used for sign-in (magic-link is the boundary).
@@ -9061,7 +9061,8 @@ function renderFeed() {
   const nb = document.getElementById('noticeBanners');
   if (nb) nb.innerHTML = ''; // feed embeds its own notices — avoid duplicate banners
   const main = document.getElementById('mainContent');
-  const visiblePosts = (state.feed || []).filter(canSeePost);
+  const visiblePosts = (state.feed || []).filter(canSeePost).filter(p => !p.archived);
+  const archivedPosts = (state.feed || []).filter(canSeePost).filter(p => p.archived);
 
   let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
     <h1 class="section-head" style="margin:0;">Feed</h1>
@@ -9109,6 +9110,21 @@ function renderFeed() {
     if (state.feedHasMore && visiblePosts.length >= 50) {
       html += `<button class="btn" style="width:100%;margin-top:8px;" onclick="loadMoreFeed()">Load more</button>`;
     }
+  }
+
+  // ── Archived posts (expired posts tucked away; recoverable) ──
+  if (archivedPosts.length) {
+    html += `<div style="margin:4px 0 10px;">
+      <button class="btn btn-ghost btn-sm" style="width:100%;color:var(--grey-500);" onclick="state._showArchivedFeed = !state._showArchivedFeed; renderFeed();">
+        🗄 Archived (${archivedPosts.length}) ${state._showArchivedFeed ? '▴ hide' : '▾ show'}
+      </button>`;
+    if (state._showArchivedFeed) {
+      const sortedArch = [...archivedPosts].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+      html += `<div style="opacity:.72;">`;
+      for (const post of sortedArch) html += renderFeedPost(post);
+      html += `</div>`;
+    }
+    html += `</div>`;
   }
 
   // ── Calendar (below posts) ──
@@ -9411,13 +9427,30 @@ function openPostMenu(postId) {
   const isMe = state.user?.id === post.authorId;
   const canDel = isMe || can.editRoster();
   const canEd  = isMe;
+  const expired = post.expiresAt && post.expiresAt < isoDate(new Date());
+  const canArch = canDel && (expired || post.archived); // archive once expired; unarchive any time
   document.getElementById('actionSheetBody').innerHTML = `
     <h3>Post options</h3>
     ${canEd  ? `<div class="action-sheet-row" onclick="closeModal('modalActions');openPostEditor('${postId}')"><div class="icon">✎</div><div>Edit post</div></div>` : ''}
+    ${canArch ? `<div class="action-sheet-row" onclick="closeModal('modalActions');archiveFeedPost('${postId}', ${post.archived ? 'false' : 'true'})"><div class="icon">🗄</div><div>${post.archived ? 'Unarchive post' : 'Archive post'}</div></div>` : ''}
     ${canDel ? `<div class="action-sheet-row danger" onclick="closeModal('modalActions');deleteFeedPost('${postId}')"><div class="icon">×</div><div>Delete post</div></div>` : ''}
     <button class="btn btn-ghost" style="width:100%;margin-top:8px;" onclick="closeModal('modalActions')">Cancel</button>
   `;
   openModal('modalActions');
+}
+
+// Archive/unarchive an expired feed post (kept, not deleted — reachable via the
+// feed's Archived section). Same permission as delete: author or roster admin.
+async function archiveFeedPost(postId, val) {
+  const post = state.feed.find(p => p.id === postId);
+  if (!post) return;
+  const isMe = state.user?.id === post.authorId;
+  if (!isMe && !can.editRoster()) return;
+  post.archived = !!val;
+  const ok = await DB.saveFeedPost(post);
+  if (!ok) { post.archived = !val; uiToast('Could not update the post — try again', 'error'); return; }
+  uiToast(val ? 'Post archived' : 'Post restored to the feed', 'success');
+  renderFeed();
 }
 
 async function deleteFeedPost(postId) {
@@ -14746,7 +14779,7 @@ function renderSupplyDashboard(supId) {
 function shopOrderNew() {
   const internal = supplyInternalSuppliers();
   const os = orderableSchools();
-  if (!os.length) { toast && toast('You can only place orders for a school you administer'); return; }
+  if (!os.length) { uiToast('You can only place orders for a school you administer'); return; }
   const sid = os.indexOf(state.shopStockSchool) !== -1 ? state.shopStockSchool : os[0];
   state.orderEdit = { id: null, schoolId: sid, supplierId: internal[0] ? internal[0].id : null, notes: '', lines: [] };
   renderShop();
@@ -14787,7 +14820,7 @@ function orderEditSeedFromReorder() {
       }
     });
   });
-  if (!added) toast && toast(state.shopStockSchool === sid ? 'Nothing below reorder level for this supplier' : 'Open this school on the Stock tab first to seed its reorder list');
+  if (!added) uiToast(state.shopStockSchool === sid ? 'Nothing below reorder level for this supplier' : 'Open this school on the Stock tab first to seed its reorder list');
   renderShop();
 }
 async function shopOrderSaveDraft(submit) {
@@ -14798,18 +14831,18 @@ async function shopOrderSaveDraft(submit) {
     const oid = await DB.supplyOrderSave(e.id, e.schoolId, e.supplierId, e.notes || null, lines);
     if (submit) { await DB.supplyOrderSubmit(oid); notifySupplyAdmins(e.schoolId, lines.length); }
     state.orderEdit = null;
-    toast && toast(submit ? 'Order submitted' : 'Draft saved');
+    uiToast(submit ? 'Order submitted' : 'Draft saved');
     state.supplyOrders = await DB.loadSupplyOrders(); renderShop();
   } catch (err) { uiToast('Could not save order: ' + (err.message || err)); }
 }
 async function shopOrderSubmit(id) {
   const o = (state.supplyOrders || []).find(x => x.id === id);
-  try { await DB.supplyOrderSubmit(id); if (o) notifySupplyAdmins(o.schoolId, (o.lines || []).length); toast && toast('Order submitted'); state.supplyOrders = await DB.loadSupplyOrders(); renderShop(); }
+  try { await DB.supplyOrderSubmit(id); if (o) notifySupplyAdmins(o.schoolId, (o.lines || []).length); uiToast('Order submitted'); state.supplyOrders = await DB.loadSupplyOrders(); renderShop(); }
   catch (err) { uiToast('Could not submit: ' + (err.message || err)); }
 }
 async function shopOrderCancel(id) {
   if (!await uiConfirm('Cancel this order?')) return;
-  try { await DB.supplyOrderCancel(id); toast && toast('Order cancelled'); state.supplyOrders = await DB.loadSupplyOrders(); renderShop(); }
+  try { await DB.supplyOrderCancel(id); uiToast('Order cancelled'); state.supplyOrders = await DB.loadSupplyOrders(); renderShop(); }
   catch (err) { uiToast('Could not cancel: ' + (err.message || err)); }
 }
 async function shopOrderReceive(id) {
@@ -14818,7 +14851,7 @@ async function shopOrderReceive(id) {
   try {
     await DB.supplyOrderReceive(id, null);
     if (o) DB.supplyAdminIds().then(ids => { if (ids && ids.length) DB.sendPushNotification({ title: 'Order received', body: shopSchoolName(o.schoolId) + ' confirmed receipt', tag: 'supply', url: '#shop', targetUserIds: ids }); }).catch(() => {});
-    toast && toast('Receipt confirmed — stock updated');
+    uiToast('Receipt confirmed — stock updated');
     state.supplyOrders = await DB.loadSupplyOrders();
     if (o && state.shopStockSchool === o.schoolId) await loadShopStock(o.schoolId);
     renderShop();
@@ -14842,7 +14875,7 @@ async function supplyConfirmSubmit(id) {
   try {
     await DB.supplyOrderConfirm(id, eta, lines);
     notifySchool(o, 'Order confirmed', 'Your order was confirmed' + (eta ? ', ETA ' + supplyFmtDate(eta) : ''));
-    state.supplyEdit = null; toast && toast('Order confirmed');
+    state.supplyEdit = null; uiToast('Order confirmed');
     state.supplyOrders = await DB.loadSupplyOrders(); renderShop();
   } catch (err) { uiToast('Could not confirm: ' + (err.message || err)); }
 }
@@ -14855,7 +14888,7 @@ async function supplyShipSubmit(id) {
   try {
     await DB.supplyOrderShip(id, trk, car, eta, lines);
     notifySchool(o, 'Order shipped', 'Your order is on its way' + (trk ? ' · ' + trk : '') + (eta ? ' · ETA ' + supplyFmtDate(eta) : ''));
-    state.supplyEdit = null; toast && toast('Marked shipped — stock posted out');
+    state.supplyEdit = null; uiToast('Marked shipped — stock posted out');
     state.supplyOrders = await DB.loadSupplyOrders();
     await loadSupplyContext(state.supplyActingSupplier);
     renderShop();
@@ -14866,14 +14899,14 @@ async function supplySetStatus(id, status) {
   try {
     await DB.supplyOrderSetStatus(id, status);
     if (status === 'arrived') notifySchool(o, 'Order arrived', 'Your order has arrived — confirm receipt to add it to stock');
-    toast && toast('Updated');
+    uiToast('Updated');
     state.supplyOrders = await DB.loadSupplyOrders(); renderShop();
   } catch (err) { uiToast('Could not update: ' + (err.message || err)); }
 }
 async function supplyCancelOrder(id) {
   if (!await uiConfirm('Cancel this order?')) return;
   const o = (state.supplyOrders || []).find(x => x.id === id);
-  try { await DB.supplyOrderCancel(id); notifySchool(o, 'Order cancelled', 'Your supply order was cancelled'); toast && toast('Cancelled'); state.supplyOrders = await DB.loadSupplyOrders(); renderShop(); }
+  try { await DB.supplyOrderCancel(id); notifySchool(o, 'Order cancelled', 'Your supply order was cancelled'); uiToast('Cancelled'); state.supplyOrders = await DB.loadSupplyOrders(); renderShop(); }
   catch (err) { uiToast('Could not cancel: ' + (err.message || err)); }
 }
 
@@ -15250,7 +15283,7 @@ function shopCopyReorder(blockId) {
   const el = document.getElementById(blockId);
   if (!el) return;
   const text = el.innerText || el.textContent || '';
-  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => toast && toast('Copied'), () => {});
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => uiToast('Copied'), () => {});
 }
 function shopExportReorderCsv(supKey) {
   const sup = supKey === '_none' ? null : shopSupplier(supKey);
@@ -15281,7 +15314,7 @@ function shopEmailReorder(supKey) {
   const sid = state.shopStockSchool;
   const sup = supKey === '_none' ? null : shopSupplier(supKey);
   const lines = shopReorderLines(sid).filter(l => (l.supplierId || '_none') === supKey);
-  if (!lines.length) { if (typeof toast === 'function') toast('Nothing to order for this supplier'); return; }
+  if (!lines.length) { uiToast('Nothing to order for this supplier'); return; }
   const school = shopSchoolName(sid);
   const itemsTxt = lines.map(l => {
     const sizeTxt = l.size ? ' \u2014 size ' + l.size : '';
@@ -15620,7 +15653,7 @@ async function shopDoTransfer() {
   const size = sep >= 0 ? itemSize.slice(sep + 1) : '';
   try { await DB.transferStock(from, to, itemId, size, qty, note || null); }
   catch (e) { uiToast('Transfer failed: ' + (e.message || e)); return; }
-  if (typeof toast === 'function') toast('Transferred ' + qty);
+  uiToast('Transferred ' + qty);
   try { state.shopTransfers = await DB.loadTransfers(60); } catch (e) {}
   if (state.shopStockSchool === from || state.shopStockSchool === to) {
     try { state.shopStock = await DB.loadSchoolStock(state.shopStockSchool); state.shopMovements = await DB.loadMovements(state.shopStockSchool, null, 50); } catch (e) {}
@@ -15768,7 +15801,7 @@ async function shopCloseStocktake() {
     state.stocktakeSessions = await DB.loadStocktakeSessions(state.shopStockSchool);
   } catch (e) {}
   state.stocktakeSession = null; state.stocktakeCounts = {}; state._stocktakeReview = false;
-  if (typeof toast === 'function') toast(n ? ('Stocktake closed — ' + n + ' adjusted') : 'Stocktake closed');
+  uiToast(n ? ('Stocktake closed — ' + n + ' adjusted') : 'Stocktake closed');
   renderShop();
 }
 async function shopAbandonStocktake(id) {

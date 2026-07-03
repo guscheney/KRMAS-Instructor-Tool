@@ -386,7 +386,7 @@ const DB = (() => {
           id, school_id, author_id, author_name, author_role,
           body, media_urls, target_scope, target_ids,
           like_count, comment_count, pinned, edited,
-          notice_type, required_reading, expires_at,
+          notice_type, required_reading, expires_at, archived,
           created_at, updated_at
         `)
         .or(`school_id.eq.${schoolId},target_scope.eq.network`)
@@ -419,6 +419,7 @@ const DB = (() => {
       noticeType:      row.notice_type || null,
       requiredReading: row.required_reading || false,
       expiresAt:       row.expires_at || null,
+      archived:        row.archived || false,
       pinned:       row.pinned || false,
       edited:       row.edited || false,
       createdAt:    row.created_at,
@@ -440,6 +441,7 @@ const DB = (() => {
       notice_type:      post.noticeType || null,
       required_reading: post.requiredReading || false,
       expires_at:       post.expiresAt || null,
+      archived:         post.archived || false,
       pinned:       post.pinned || false,
       edited:       post.edited || false,
       created_at:   post.createdAt || new Date().toISOString(),
