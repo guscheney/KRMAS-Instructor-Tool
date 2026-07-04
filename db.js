@@ -466,6 +466,32 @@ const DB = (() => {
     }
   }
 
+  // v117: archiving is a TARGETED UPDATE, not a whole-row upsert. Postgres
+  // evaluates the INSERT policy on upserts, and feed_posts_insert requires
+  // author_id = auth.uid() with no admin clause — so an admin archiving someone
+  // else's post failed RLS (silently, thanks to a truthiness bug in the caller).
+  // A plain UPDATE hits only the update policy: author OR admin. It also can't
+  // clobber concurrent edits to other fields.
+  async function setPostArchived(post, val) {
+    if (!isSB()) {
+      const key = 'feed:' + (post.schoolId || 'network');
+      const arr = (await lGet(key)) || [];
+      const idx = arr.findIndex(p => p.id === post.id);
+      if (idx !== -1) { arr[idx] = { ...arr[idx], archived: !!val }; await lSet(key, arr); }
+      return true;
+    }
+    try {
+      const { error } = await sbClient().from('feed_posts')
+        .update({ archived: !!val, updated_at: new Date().toISOString() })
+        .eq('id', post.id);
+      if (error) throw error;
+      return true;
+    } catch (e) {
+      console.warn('[DB] setPostArchived failed:', e.message);
+      return { error: e.message || 'update failed' };
+    }
+  }
+
   async function deleteFeedPost(id) {
     if (!isSB()) return false; // can't easily delete from local array without schoolId
     try {
@@ -1370,6 +1396,22 @@ const DB = (() => {
       if (error) throw new Error(error.message);
       return 'resolves';
     });
+    // v117: column probes — each detects a specific unrun migration from inside
+    // the app (the feed-archive incident: archives silently failed because a
+    // column-level failure was invisible until a live user noticed).
+    const colProbes = [
+      ['feed_posts', 'archived',   'sql/24_feed_archive.sql'],
+      ['feed_posts', 'publish_at', 'sql/26_feed_scheduling.sql'],
+      ['suppliers',  'is_internal','sql/22_supply_chain.sql'],
+      ['school_integrations', 'config', 'sql/23_ai_assistant.sql'],
+    ];
+    for (const [tbl, col, mig] of colProbes) {
+      await probe(`column: ${tbl}.${col}`, async () => {
+        const { error } = await sb.from(tbl).select(col, { head: true, count: 'exact' }).limit(1);
+        if (error) throw new Error(error.message + ' — run ' + mig);
+        return 'present';
+      });
+    }
     await probe('edge fn: aquila (reachability)', async () => {
       const { error } = await sb.functions.invoke('aquila', { body: { action: '__ping' } });
       // Any structured error means the function EXISTS and answered; only a
@@ -2194,7 +2236,7 @@ const DB = (() => {
     saveNotice, deleteNotice,
 
     // Feed
-    loadFeedPosts, saveFeedPost, deleteFeedPost,
+    loadFeedPosts, saveFeedPost, setPostArchived, deleteFeedPost,
     loadComments, saveComment, deleteComment,
     toggleLike, loadMyLikes,
     loadAcksForPosts, saveAck, loadMyAcks,

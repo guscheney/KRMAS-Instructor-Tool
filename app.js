@@ -9264,7 +9264,7 @@ function renderFeed() {
     (state.feed || [])
       .filter(p => !p.archived && p.expiresAt && p.expiresAt < cutoff && (p.authorId === state.user.id || can.editRoster()))
       .slice(0, 20)
-      .forEach(p => { p.archived = true; const pr = DB.saveFeedPost(p); if (pr && pr.catch) pr.catch(() => { p.archived = false; }); });
+      .forEach(p => { p.archived = true; const pr = DB.setPostArchived(p, true); if (pr && pr.then) pr.then(res => { if (res !== true) p.archived = false; }).catch(() => { p.archived = false; }); });
   }
   // v113 scheduling: future-published posts are visible only to their author.
   const scheduledHidden = p => p.publishAt && p.publishAt > _today && !(state.user && p.authorId === state.user.id);
@@ -9657,8 +9657,16 @@ async function archiveFeedPost(postId, val) {
   const isMe = state.user?.id === post.authorId;
   if (!isMe && !can.editRoster()) return;
   post.archived = !!val;
-  const ok = await DB.saveFeedPost(post);
-  if (!ok) { post.archived = !val; uiToast('Could not update the post — try again', 'error'); return; }
+  // v117: targeted update (not upsert — see DB.setPostArchived) and an explicit
+  // `!== true` check: the failure shape is a TRUTHY {error} object, which the old
+  // `if (!ok)` sailed past — archives looked successful and reappeared on reload.
+  const res = await DB.setPostArchived(post, !!val);
+  if (res !== true) {
+    post.archived = !val;
+    uiToast('Could not update the post' + (res && res.error ? ' — ' + res.error : '') + '. Try again.', 'error');
+    renderFeed();
+    return;
+  }
   uiToast(val ? 'Post archived' : 'Post restored to the feed', 'success');
   renderFeed();
 }
@@ -9956,6 +9964,8 @@ function startRealtimeFeed() {
         noticeType:      payload.new.notice_type || null,
         requiredReading: payload.new.required_reading || false,
         expiresAt:       payload.new.expires_at || null,
+        archived:        payload.new.archived || false,
+        publishAt:       payload.new.publish_at || null,
         pinned:       payload.new.pinned || false,
         edited:       false,
         createdAt:    payload.new.created_at,
