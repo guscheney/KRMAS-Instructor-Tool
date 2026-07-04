@@ -7208,7 +7208,7 @@ async function maybeIssueBeltForCandidate(session, sessionId, candidate) {
     const school = session.schoolId || state.schoolId;
     if (!school || !can.editStock(school)) return;              // actor can't write this school's stock
     if (!state.shop || !Array.isArray(state.shop.items)) return; // shop data not loaded for this user
-    const item = state.shop.items.find(it => it && !it.archived && it.gradeRef === newGrade);
+    const item = state.shop.items.find(it => it && !it.archived && it.gradeRef === newGrade && shopItemAtSchool(it, school));
     if (!item) return;                                          // belt grade not in the catalogue
     const target = newGrade + '|' + size;
     if (candidate.beltIssued === target) return;                // already issued for this exact grade+size
@@ -7894,7 +7894,7 @@ async function saveStocktake() {
 // loaded for this school — so the belt order keeps working for everyone.
 function beltStockCount(grade, size) {
   if (state.shop && state.shop.items && state.shop.items.length && state.shopStockSchool === state.schoolId) {
-    const it = state.shop.items.find(i => !i.archived && i.gradeRef === grade);
+    const it = state.shop.items.find(i => !i.archived && i.gradeRef === grade && shopItemAtSchool(i, state.schoolId));
     if (it) {
       const r = (state.shopStock || []).find(x => x.itemId === it.id && x.size === String(size));
       return r ? r.qty : 0;
@@ -14567,6 +14567,12 @@ function shopBeltGrades() {
   return out;
 }
 function shopActiveItems() { return state.shop.items.filter(i => !i.archived); }
+// Catalogue scoping (migration 30): an item with schoolId null is network-wide;
+// one with a schoolId only shows in that school's stock/ordering views. The
+// Catalogue tab and Transfers deliberately stay unscoped — they're the network
+// management surfaces where you see and administer everything.
+function shopItemAtSchool(it, sid) { return !it.schoolId || it.schoolId === sid; }
+function shopSchoolItems(sid) { return shopActiveItems().filter(it => shopItemAtSchool(it, sid || state.shopStockSchool)); }
 
 // ── dispatch ──
 function renderShop() {
@@ -15185,7 +15191,7 @@ function shopItemStatus(it) { if (shopItemTotalQty(it) <= 0) return 'out'; retur
 function shopMatchedItems() {
   const f = state.shopFilter || SHOP_FILTER_DEFAULTS;
   const q = (f.q || '').trim().toLowerCase();
-  const list = shopActiveItems().filter(it => {
+  const list = shopSchoolItems().filter(it => {
     if (q && ((it.name + ' ' + (it.sku || '')).toLowerCase().indexOf(q) < 0)) return false;
     if (f.cats && f.cats.length && !f.cats.includes(it.categoryId || '')) return false;
     if (f.supplier && (it.supplierId || '') !== f.supplier) return false;
@@ -15259,7 +15265,7 @@ function shopFilterBarHtml() {
 }
 function shopStockListHtml(editable) {
   const matched = shopMatchedItems();
-  const total = shopActiveItems().length;
+  const total = shopSchoolItems().length;
   const chips = shopActiveFilterChips();
   let html = `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:4px 0 6px;">
     <span aria-live="polite" style="font-size:12px;color:var(--grey-500);">Showing ${matched.length} of ${total} item${total === 1 ? '' : 's'}</span>
@@ -15327,7 +15333,7 @@ function renderShopStock() {
     return html;
   }
 
-  const items = shopActiveItems();
+  const items = shopSchoolItems();
   if (!items.length) {
     html += `<div class="empty"><h2>No items yet</h2><p>${can.manageShop() ? 'Add items on the Catalogue tab.' : 'A shop admin needs to add items to the catalogue first.'}</p></div>`;
     return html;
@@ -15529,7 +15535,7 @@ function renderShopReorder() {
 
   // collect low lines
   const lines = []; // {supplierId, itemName, size, qty, reorderLevel, unit, gradeRef}
-  for (const it of shopActiveItems()) {
+  for (const it of shopSchoolItems()) {
     for (const sz of shopItemSizes(it)) {
       const r = shopStockRow(it.id, sz);
       if (r && r.reorderLevel > 0 && r.qty <= r.reorderLevel)
@@ -15585,7 +15591,7 @@ function shopCopyReorder(blockId) {
 function shopExportReorderCsv(supKey) {
   const sup = supKey === '_none' ? null : shopSupplier(supKey);
   const rows = [['Item', 'Size', 'In stock', 'Reorder at', 'Target', 'Order qty', 'Unit', 'Supplier']];
-  for (const it of shopActiveItems()) {
+  for (const it of shopSchoolItems()) {
     if ((it.supplierId || '_none') !== supKey) continue;
     for (const sz of shopItemSizes(it)) {
       const r = shopStockRow(it.id, sz);
@@ -15686,7 +15692,7 @@ function openSpecialOrder(id) {
   if (!can.editStock(sid)) { uiToast('You can only manage orders for your own school.'); return; }
   const o = id ? soFindOrder(id) : null;
   state._soEdit = { id: id || '', schoolId: sid };
-  const items = shopActiveItems();
+  const items = shopSchoolItems(sid);
   const itemSel = document.getElementById('soItem');
   if (itemSel) itemSel.innerHTML = `<option value="">\u2014 choose an item \u2014</option>` + items.map(it => `<option value="${escapeHtml(it.id)}" ${o && o.item_id === it.id ? 'selected' : ''}>${escapeHtml(it.name)}</option>`).join('');
   const supSel = document.getElementById('soSupplier');
@@ -15810,7 +15816,7 @@ function shopPrintHead(title, subtitle) {
 // Low lines for the order sheet (carries itemId + unit cost so we can total).
 function shopReorderLines(sid) {
   const lines = [];
-  for (const it of shopActiveItems()) {
+  for (const it of shopSchoolItems(sid)) {
     for (const sz of shopItemSizes(it)) {
       const r = shopStockRow(it.id, sz);
       if (r && r.reorderLevel > 0 && r.qty <= r.reorderLevel) {
@@ -16000,7 +16006,7 @@ function renderStocktakeCounting(sess) {
     </div></div>
     <p style="font-size:12px;color:var(--grey-500);margin:0 0 10px;">Enter what you physically count. Blank lines aren't changed; on-hand is shown for reference.</p>`;
   const counts = state.stocktakeCounts || {};
-  for (const it of shopActiveItems()) {
+  for (const it of shopSchoolItems()) {
     const sizes = shopItemSizes(it);
     const swatch = it.gradeRef && typeof beltSwatch === 'function' ? beltSwatch(it.gradeRef, 14) : '';
     html += `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:8px 12px;margin-bottom:6px;">
@@ -16182,18 +16188,45 @@ function shopMarginBadgeHtml(it) {
   const color = m.dollar < 0 ? 'var(--red)' : 'var(--ok,var(--ok))';
   return `<span style="font-size:11px;font-weight:700;color:${color};">· margin $${m.dollar.toFixed(2)} (${m.pct.toFixed(0)}%)</span>`;
 }
-function renderShopCatalogue() {
-  if (!can.manageShop()) return `<div class="empty"><h2>No access</h2></div>`;
-  if (state.shopEdit && state.shopEdit.kind === 'item') return renderShopItemEditor();
-  if (state.shopImport && state.shopImport.kind === 'catalogue') return renderShopImportPanel();
-
-  let html = `<div style="margin:12px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-    <button class="btn btn-black" onclick="shopNewItem()" style="padding:8px 14px;">+ Add item</button>
-    <button class="btn" onclick="openSmaiSearch('catalogue')" style="padding:8px 14px;">🔎 Find on SMAI</button>
-    <button class="btn" onclick="shopCatalogueActions()" aria-label="More actions" title="More actions" style="margin-left:auto;padding:6px 11px;font-size:15px;line-height:1;min-width:38px;">⋯</button></div>`;
-  const items = state.shop.items.slice().sort((a, b) => a.name.localeCompare(b.name));
-  if (!items.length) { html += `<div class="empty"><h2>No items</h2><p>Add your first catalogue item.</p></div>`; return html; }
-
+const SHOP_CAT_FILTER_DEFAULTS = { q: '', cat: 'all', sup: 'all', scope: 'all', archived: 'active' };
+function shopCatFilter() { return state.shopCatFilter || (state.shopCatFilter = Object.assign({}, SHOP_CAT_FILTER_DEFAULTS)); }
+function setShopCatFilter(field, value) { shopCatFilter()[field] = value; renderShop(); }
+let _shopCatSearchTimer = null;
+function shopCatSearchInput(q) {
+  shopCatFilter().q = q;
+  clearTimeout(_shopCatSearchTimer);
+  // debounced list-only refresh so the search box keeps focus (same pattern as the Stock tab)
+  _shopCatSearchTimer = setTimeout(() => {
+    const el = document.getElementById('shopCatList');
+    if (el) el.innerHTML = shopCatalogueListHtml();
+  }, 250);
+}
+function shopCatMatchedItems() {
+  const f = shopCatFilter();
+  const q = (f.q || '').trim().toLowerCase();
+  return state.shop.items.filter(it => {
+    if (f.archived === 'active' && it.archived) return false;
+    if (f.archived === 'archived' && !it.archived) return false;
+    if (q && ((it.name + ' ' + (it.sku || '')).toLowerCase().indexOf(q) < 0)) return false;
+    if (f.cat !== 'all' && (it.categoryId || '_none') !== f.cat) return false;
+    if (f.sup !== 'all' && (it.supplierId || '_none') !== f.sup) return false;
+    if (f.scope === 'network' && it.schoolId) return false;
+    if (f.scope !== 'all' && f.scope !== 'network' && it.schoolId !== f.scope) return false;
+    return true;
+  }).sort((a, b) => a.name.localeCompare(b.name));
+}
+function shopCatScopeBadge(it) {
+  if (!it.schoolId) return '';   // network-wide is the norm — badge only the exceptions
+  const schools = (typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS : []);
+  const s = schools.find(x => x.id === it.schoolId);
+  return `<span style="display:inline-block;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:700;background:var(--grey-100);color:var(--grey-500);vertical-align:middle;">🏫 ${escapeHtml(s ? s.name : it.schoolId)}</span>`;
+}
+function shopCatalogueListHtml() {
+  const items = shopCatMatchedItems();
+  const totalActive = state.shop.items.filter(i => !i.archived).length;
+  if (!state.shop.items.length) return `<div class="empty"><h2>No items</h2><p>Add your first catalogue item.</p></div>`;
+  let html = `<p style="font-size:12px;color:var(--grey-500);margin:0 0 8px;" aria-live="polite">${items.length} of ${totalActive} item${totalActive === 1 ? '' : 's'}${shopCatFilter().archived === 'archived' ? ' (archived)' : ''}</p>`;
+  if (!items.length) return html + `<div class="empty"><h2>No matches</h2><p>No catalogue items match the current search/filters.</p></div>`;
   for (const it of items) {
     const cat = shopCat(it.categoryId); const sup = shopSupplier(it.supplierId);
     const swatch = it.gradeRef && typeof beltSwatch === 'function' ? beltSwatch(it.gradeRef, 16) : '';
@@ -16201,6 +16234,7 @@ function renderShopCatalogue() {
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         ${it.imageUrl ? `<img src="${it.imageUrl}" alt="" style="width:32px;height:32px;border-radius:var(--r-sm);object-fit:cover;border:1px solid var(--grey-200);flex-shrink:0;">` : ''}
         ${swatch}<strong style="font-size:14px;">${escapeHtml(it.name)}</strong>
+        ${shopCatScopeBadge(it)}
         ${it.sized ? `<span style="font-size:11px;color:var(--grey-500);">sized${shopSizeSet(it.sizeSetId) ? ' · ' + escapeHtml(shopSizeSet(it.sizeSetId).name) : ''}</span>` : `<span style="font-size:11px;color:var(--grey-500);">single qty</span>`}
         ${cat ? `<span style="font-size:11px;color:var(--grey-500);">· ${escapeHtml(cat.name)}</span>` : ''}
         ${sup ? `<span style="font-size:11px;color:var(--grey-500);">· ${escapeHtml(sup.name)}</span>` : ''}
@@ -16218,6 +16252,47 @@ function renderShopCatalogue() {
   }
   return html;
 }
+function renderShopCatalogue() {
+  if (!can.manageShop()) return `<div class="empty"><h2>No access</h2></div>`;
+  if (state.shopEdit && state.shopEdit.kind === 'item') return renderShopItemEditor();
+  if (state.shopImport && state.shopImport.kind === 'catalogue') return renderShopImportPanel();
+
+  const f = shopCatFilter();
+  const schools = (typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS : []);
+  const selStyle = 'padding:6px 10px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;background:var(--white);max-width:160px;';
+  let html = `<div style="margin:12px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+    <button class="btn btn-black" onclick="shopNewItem()" style="padding:8px 14px;">+ Add item</button>
+    <button class="btn" onclick="openSmaiSearch('catalogue')" style="padding:8px 14px;">🔎 Find on SMAI</button>
+    <button class="btn" onclick="shopCatalogueActions()" aria-label="More actions" title="More actions" style="margin-left:auto;padding:6px 11px;font-size:15px;line-height:1;min-width:38px;">⋯</button></div>`;
+
+  html += `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">
+    <input id="shopCatSearch" value="${escapeHtml(f.q || '')}" placeholder="Search name or SKU…" oninput="shopCatSearchInput(this.value)" aria-label="Search catalogue"
+      style="flex:1;min-width:170px;padding:8px 10px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;">
+    <select onchange="setShopCatFilter('cat',this.value)" aria-label="Filter by category" style="${selStyle}">
+      <option value="all"${f.cat === 'all' ? ' selected' : ''}>All categories</option>
+      <option value="_none"${f.cat === '_none' ? ' selected' : ''}>No category</option>
+      ${state.shop.categories.map(c => `<option value="${c.id}"${f.cat === c.id ? ' selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+    </select>
+    <select onchange="setShopCatFilter('sup',this.value)" aria-label="Filter by supplier" style="${selStyle}">
+      <option value="all"${f.sup === 'all' ? ' selected' : ''}>All suppliers</option>
+      <option value="_none"${f.sup === '_none' ? ' selected' : ''}>No supplier</option>
+      ${state.shop.suppliers.map(s => `<option value="${s.id}"${f.sup === s.id ? ' selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}
+    </select>
+    <select onchange="setShopCatFilter('scope',this.value)" aria-label="Filter by school availability" style="${selStyle}">
+      <option value="all"${f.scope === 'all' ? ' selected' : ''}>All scopes</option>
+      <option value="network"${f.scope === 'network' ? ' selected' : ''}>All-schools items</option>
+      ${schools.map(s => `<option value="${escapeHtml(s.id)}"${f.scope === s.id ? ' selected' : ''}>${escapeHtml(s.name)} only</option>`).join('')}
+    </select>
+    <select onchange="setShopCatFilter('archived',this.value)" aria-label="Show active or archived" style="${selStyle}">
+      <option value="active"${f.archived === 'active' ? ' selected' : ''}>Active</option>
+      <option value="archived"${f.archived === 'archived' ? ' selected' : ''}>Archived</option>
+      <option value="all"${f.archived === 'all' ? ' selected' : ''}>Both</option>
+    </select>
+  </div>`;
+
+  html += `<div id="shopCatList">${shopCatalogueListHtml()}</div>`;
+  return html;
+}
 
 function renderShopItemEditor() {
   const d = state.shopEdit.data;
@@ -16228,6 +16303,11 @@ function renderShopItemEditor() {
     <h3 style="margin:0 0 4px;font-size:16px;">${d.id ? 'Edit item' : 'New item'}</h3>
     <label style="${lbl}">Name</label>
     <input id="shopItemName" value="${escapeHtml(d.name || '')}" style="${inp}">
+    <label style="${lbl}">Available to</label>
+    <select id="shopItemScope" style="${inp}">
+      <option value=""${!d.schoolId ? ' selected' : ''}>All schools</option>
+      ${(typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS : []).map(s => `<option value="${escapeHtml(s.id)}"${d.schoolId === s.id ? ' selected' : ''}>${escapeHtml(s.name)} only</option>`).join('')}
+    </select>
     <label style="${lbl}">Category</label>
     <select id="shopItemCat" style="${inp}"><option value="">— none —</option>
       ${state.shop.categories.map(c => `<option value="${c.id}"${c.id === d.categoryId ? ' selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}</select>
@@ -16307,6 +16387,7 @@ function shopCaptureItemForm() {
     gradeRef: sized ? (g('shopItemGrade') ? g('shopItemGrade').value || null : null) : null,
     retailPrice: g('shopItemRetail') && g('shopItemRetail').value !== '' ? Number(g('shopItemRetail').value) : null,
     buyPrice: g('shopItemBuy') && g('shopItemBuy').value !== '' ? Number(g('shopItemBuy').value) : null,
+    schoolId: g('shopItemScope') ? (g('shopItemScope').value || null) : null,
   });
 }
 async function shopItemPickPhoto(input) {
@@ -16344,6 +16425,7 @@ async function shopSaveItem() {
     gradeRef: sized ? (g('shopItemGrade').value || null) : null,
     retailPrice: g('shopItemRetail') && g('shopItemRetail').value !== '' ? Number(g('shopItemRetail').value) : null,
     buyPrice: g('shopItemBuy') && g('shopItemBuy').value !== '' ? Number(g('shopItemBuy').value) : null,
+    schoolId: g('shopItemScope') ? (g('shopItemScope').value || null) : null,
   });
   if (!draft.name) { uiToast('Give the item a name.'); return; }
   if (sized && !draft.sizeSetId) { uiToast('Choose a size set for a sized item.'); return; }
@@ -16407,8 +16489,8 @@ function _csvHeaderIndex(headerCells, synonyms) {
   return idx;
 }
 const _SHOP_IMPORT_COLS = {
-  catalogue: { syn: { name:['name','item','item name','product'], category:['category','cat'], supplier:['supplier','vendor'], unitCost:['unit cost','cost','price','unit cost ($)'], unit:['unit','uom'], sku:['sku','code'], sized:['sized','has sizes'], sizeSet:['size set','sizeset','sizes'], gradeRef:['belt grade','grade','belt'], retailPrice:['retail price','rrp','retail'], buyPrice:['buy price','wholesale price','wholesale','buy'] }, req:['name'],
-    header:'name, category, supplier, unit cost, unit, sku, sized, size set, belt grade, retail price, buy price', note:'A row matched by SKU (or by name if no SKU) UPDATES that item\'s price fields instead of skipping it — safe to re-run for a supplier price refresh. New categories/suppliers named in the CSV are created automatically; size sets must already exist and are matched by name.' },
+  catalogue: { syn: { name:['name','item','item name','product'], category:['category','cat'], supplier:['supplier','vendor'], unitCost:['unit cost','cost','price','unit cost ($)'], unit:['unit','uom'], sku:['sku','code'], sized:['sized','has sizes'], sizeSet:['size set','sizeset','sizes'], gradeRef:['belt grade','grade','belt'], retailPrice:['retail price','rrp','retail'], buyPrice:['buy price','wholesale price','wholesale','buy'], school:['school','available to','scope'] }, req:['name'],
+    header:'name, category, supplier, unit cost, unit, sku, sized, size set, belt grade, retail price, buy price, school', note:'A row matched by SKU (or by name if no SKU) UPDATES that item\'s price fields instead of skipping it — safe to re-run for a supplier price refresh. New categories/suppliers named in the CSV are created automatically; size sets must already exist and are matched by name. The school column scopes an item to one school (name or id, blank = all schools).' },
   stock: { syn: { item:['item','name','item name','product','sku'], size:['size','sz'], qty:['quantity','qty','count','on hand','on-hand'] }, req:['item','qty'],
     header:'item (name or SKU), size, quantity', note:'Each row sets the on-hand count for that item + size at the selected school (the difference is recorded as an adjustment). Items are matched by name or SKU.' },
 }
@@ -16525,6 +16607,9 @@ async function shopRunCatalogueImport() {
       cat = await ensureCategory(get(row, 'category').trim());
       sup = await ensureSupplier(get(row, 'supplier').trim());
     } catch (e) { errors.push(name + ': could not create category/supplier — ' + (e.message || e)); skipped++; continue; }
+    const schoolRaw = idx.school != null ? get(row, 'school').trim() : '';
+    const schoolMatch = schoolRaw ? (typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS : []).find(s => s.id === schoolRaw || (s.name && s.name.toLowerCase() === schoolRaw.toLowerCase())) : null;
+    if (schoolRaw && !schoolMatch) { errors.push(name + ': unknown school "' + schoolRaw + '" — imported as all-schools'); }
     const draft = {
       name,
       categoryId: cat ? cat.id : null,
@@ -16537,6 +16622,7 @@ async function shopRunCatalogueImport() {
       gradeRef: sized ? (get(row, 'gradeRef').trim() || null) : null,
       retailPrice: retailPrice === undefined ? null : retailPrice,
       buyPrice: buyPrice === undefined ? null : buyPrice,
+      schoolId: schoolMatch ? schoolMatch.id : null,
     };
     if (draft.sized && !draft.sizeSetId) { errors.push(name + ': marked sized but no matching size set'); skipped++; continue; }
     try { const saved = await DB.saveItem(draft); state.shop.items.push(saved); created++; }
@@ -16585,7 +16671,7 @@ async function shopRunStockImport() {
 // this is a live lookup against SMAI's public feed, not a catalogue sync.
 let _smaiSearchTimer = null;
 function openSmaiSearch(mode) {
-  state._smai = { mode, query: '', loading: false, results: [], error: null, product: null, productLoading: false, productError: null, basket: [] };
+  state._smai = { mode, query: '', loading: false, results: [], error: null, product: null, productLoading: false, productError: null, basket: [], scope: null };
   const box = document.getElementById('smaiSearchBox'); if (box) box.value = '';
   const results = document.getElementById('smaiResults'); if (results) results.innerHTML = '';
   const vp = document.getElementById('smaiVariantPicker'); if (vp) { vp.style.display = 'none'; vp.innerHTML = ''; }
@@ -16670,16 +16756,17 @@ function smaiRenderVariantPicker() {
         <span style="font-family:'JetBrains Mono',monospace;font-size:13px;">$${v.price != null ? Number(v.price).toFixed(2) : '—'}</span>
         ${isSpecial
           ? `<button class="btn btn-sm btn-primary" onclick="smaiConfirmAdd(${i})">Use this</button>`
-          : `<input type="number" min="1" value="1" id="smaiQty-${i}" style="width:48px;padding:4px;border:1px solid var(--grey-200);border-radius:6px;text-align:center;font-family:'JetBrains Mono',monospace;">
-             <button class="btn btn-sm btn-primary" onclick="smaiStageVariant(${i})">+ Add to list</button>`}
+          : `<button class="btn btn-sm btn-primary" onclick="smaiStageVariant(${i})">+ Add to list</button>`}
       </span></div>`;
   });
   vp.innerHTML = html;
 }
 // Match-or-create the catalogue item behind a picked SMAI variant. Matches by
 // SKU (stable across re-lookups) so searching the same product twice never
-// creates a duplicate catalogue item.
-async function shopEnsureSmaiItem(product, variant) {
+// creates a duplicate catalogue item. schoolId scopes the item's availability
+// (null = all schools) — only applied on CREATE; an existing item keeps its
+// scope so a lookup from one school never silently re-scopes a shared item.
+async function shopEnsureSmaiItem(product, variant, schoolId) {
   const name = variant.title ? `${product.title} — ${variant.title}` : product.title;
   const existing = shopBySku(state.shop.items, variant.sku) || shopByName(state.shop.items, name);
   if (existing) {
@@ -16698,27 +16785,26 @@ async function shopEnsureSmaiItem(product, variant) {
     name, categoryId: cat ? cat.id : null, supplierId: sup ? sup.id : null,
     unitCost: null, unit: null, sku: variant.sku || null, sized: false, sizeSetId: null, gradeRef: null,
     retailPrice: variant.price != null ? Number(variant.price) : null, buyPrice: null, imageUrl: product.image || null,
+    schoolId: schoolId || null,
   };
   const saved = await DB.saveItem(draft);
   state.shop.items.push(saved);
   return saved;
 }
 
-// ── Catalogue/Stock mode: stage-then-commit basket, so several SMAI items —
-// across one or many searches — get added to stock in a single confirm rather
-// than forcing a close-and-reopen per item. ──
+// ── Catalogue mode: stage-then-commit list. This ONLY builds the catalogue —
+// no stock is touched (per Gus: "I'm just building out the catalogue"). Stock
+// arrives later through the Stock tab's Receive flow when goods physically
+// land. That's why there are no quantity inputs here any more. ──
 function smaiStageVariant(variantIdx) {
   const st = state._smai; if (!st || !st.product) return;
   const variant = st.product.variants[variantIdx]; if (!variant) return;
-  const qtyInput = document.getElementById(`smaiQty-${variantIdx}`);
-  const qty = Math.max(1, parseInt(qtyInput && qtyInput.value, 10) || 1);
   const productSnap = { title: st.product.title, productType: st.product.productType, image: st.product.image };
-  // Same SKU staged twice (e.g. bumped the qty input and clicked again) — merge into one line.
-  const existingLine = st.basket.find(l => l.variant.sku && l.variant.sku === variant.sku);
-  if (existingLine) existingLine.qty += qty;
-  else st.basket.push({ product: productSnap, variant, qty });
+  // Same SKU staged twice — it's already on the list, nothing to merge (no quantities).
+  if (st.basket.some(l => l.variant.sku && l.variant.sku === variant.sku)) { uiToast('Already on the list.'); return; }
+  st.basket.push({ product: productSnap, variant });
   smaiRenderBasket();
-  uiToast(`Added to list (${st.basket.reduce((s, l) => s + l.qty, 0)} item${st.basket.length === 1 && st.basket[0].qty === 1 ? '' : 's'} staged).`, 'success');
+  uiToast(`Added to list (${st.basket.length} item${st.basket.length === 1 ? '' : 's'} staged).`, 'success');
 }
 function smaiRemoveBasketLine(i) {
   const st = state._smai; if (!st || !st.basket) return;
@@ -16730,52 +16816,53 @@ function smaiRenderBasket() {
   const st = state._smai || {};
   if (!st.basket || !st.basket.length) { bk.style.display = 'none'; bk.innerHTML = ''; return; }
   bk.style.display = '';
-  const totalUnits = st.basket.reduce((s, l) => s + l.qty, 0);
-  let html = `<div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin-bottom:4px;">To add (${st.basket.length} item${st.basket.length === 1 ? '' : 's'}, ${totalUnits} unit${totalUnits === 1 ? '' : 's'})</div>`;
+  const schools = (typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS : []);
+  let html = `<div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin-bottom:4px;">To add to catalogue (${st.basket.length} item${st.basket.length === 1 ? '' : 's'})</div>`;
   st.basket.forEach((l, i) => {
     const name = l.variant.title ? `${l.product.title} — ${l.variant.title}` : l.product.title;
     html += `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 0;font-size:12px;">
-      <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(name)} <span style="color:var(--grey-500);">× ${l.qty}</span></span>
+      <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(name)}</span>
       <button type="button" class="btn btn-sm btn-ghost" style="color:var(--red);flex-shrink:0;" onclick="smaiRemoveBasketLine(${i})">Remove</button>
     </div>`;
   });
-  html += `<button class="btn btn-primary" style="width:100%;margin-top:8px;" onclick="smaiConfirmBasket()">Add ${totalUnits} unit${totalUnits === 1 ? '' : 's'} to stock</button>`;
+  html += `<div style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+    <label style="font-size:12px;color:var(--grey-500);flex-shrink:0;">Available to</label>
+    <select id="smaiScopeSel" style="flex:1;padding:6px 10px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;background:var(--white);">
+      <option value=""${!st.scope ? ' selected' : ''}>All schools</option>
+      ${schools.map(s => `<option value="${escapeHtml(s.id)}"${st.scope === s.id ? ' selected' : ''}>${escapeHtml(s.name)} only</option>`).join('')}
+    </select>
+  </div>
+  <button class="btn btn-primary" style="width:100%;margin-top:8px;" onclick="smaiConfirmBasket()">Add ${st.basket.length} item${st.basket.length === 1 ? '' : 's'} to catalogue</button>`;
   bk.innerHTML = html;
 }
 async function smaiConfirmBasket() {
   const st = state._smai; if (!st || !st.basket || !st.basket.length) return;
-  const sid = state.shopStockSchool;
-  if (!can.editStock(sid)) { uiToast('You can only manage stock for your own school.'); return; }
-  let itemsDone = 0, unitsDone = 0; const errors = [];
+  if (!can.manageShop()) { uiToast('Only shop admins can add catalogue items.'); return; }
+  const scopeSel = document.getElementById('smaiScopeSel');
+  const scope = (scopeSel && scopeSel.value) || null;   // null = all schools
+  st.scope = scope;
+  let itemsDone = 0; const errors = [];
   for (const line of st.basket) {
-    let item;
-    try { item = await shopEnsureSmaiItem(line.product, line.variant); }
-    catch (e) { errors.push((line.variant.title ? line.product.title + ' — ' + line.variant.title : line.product.title) + ': ' + (e.message || e)); continue; }
-    try {
-      const newQty = await DB.applyMovement(sid, item.id, '', line.qty, 'received', 'Received from SMAI', 'catalogue', null);
-      let r = shopStockRow(item.id, '');
-      if (!r) { r = { schoolId: sid, itemId: item.id, size: '', qty: 0, reorderLevel: 0, targetLevel: 0 }; state.shopStock.push(r); }
-      r.qty = (typeof newQty === 'number') ? newQty : (r.qty || 0) + line.qty;
-      (state.shopMovements = state.shopMovements || []).unshift({ id: 'tmp' + Date.now() + itemsDone, schoolId: sid, itemId: item.id, size: '', delta: line.qty, kind: 'received', note: 'Received from SMAI', createdAt: new Date().toISOString() });
-      itemsDone++; unitsDone += line.qty;
-    } catch (e) { errors.push(item.name + ': ' + (e.message || e)); }
+    try { await shopEnsureSmaiItem(line.product, line.variant, scope); itemsDone++; }
+    catch (e) { errors.push((line.variant.title ? line.product.title + ' — ' + line.variant.title : line.product.title) + ': ' + (e.message || e)); }
   }
   closeModal('modalSmaiSearch');
-  updateShopNavBadge();
-  if (errors.length) uiToast(`Added ${itemsDone} item(s), ${unitsDone} unit(s). ${errors.length} failed: ${errors.slice(0, 3).join('; ')}`, 'error');
-  else uiToast(`Added ${itemsDone} item${itemsDone === 1 ? '' : 's'} (${unitsDone} unit${unitsDone === 1 ? '' : 's'}) to stock.`, 'success');
+  if (errors.length) uiToast(`Added ${itemsDone} item(s) to the catalogue. ${errors.length} failed: ${errors.slice(0, 3).join('; ')}`, 'error');
+  else uiToast(`Added ${itemsDone} item${itemsDone === 1 ? '' : 's'} to the catalogue. Use Receive on the Stock tab when goods arrive.`, 'success');
   renderShop();
 }
 
-// Special-order mode: unchanged single, immediate add — an order is always one
-// item for one student, so staging a basket doesn't apply here.
+// Special-order mode: single, immediate pick. This ensures the CATALOGUE item
+// and hands it to the order form — it does NOT post stock (the unit hasn't
+// physically arrived yet; the order's own status flow tracks that, and Receive
+// on the Stock tab records the arrival when it lands).
 async function smaiConfirmAdd(variantIdx) {
   const st = state._smai; if (!st || !st.product) return;
   const variant = st.product.variants[variantIdx]; if (!variant) return;
   const sid = state.shopStockSchool;
-  if (!can.editStock(sid)) { uiToast('You can only manage stock for your own school.'); return; }
+  if (!can.editStock(sid)) { uiToast('You can only manage orders for your own school.'); return; }
   let item;
-  try { item = await shopEnsureSmaiItem(st.product, variant); }
+  try { item = await shopEnsureSmaiItem(st.product, variant, null); }   // special-order items go network-wide by default
   catch (e) { uiToast('Could not add this item: ' + (e.message || e)); return; }
 
   // Hand the ensured item back to the open special-order form and close the
@@ -16786,15 +16873,6 @@ async function smaiConfirmAdd(variantIdx) {
   }
   if (itemSel) itemSel.value = item.id;
   soOnItemChange();
-  // Per Gus's call: an item sourced via SMAI for a special order also lands in
-  // stock immediately (it's a real unit that now exists at the school, just
-  // earmarked for a student) — one unit, distinct 'received' ledger entry.
-  try {
-    const newQty = await DB.applyMovement(sid, item.id, '', 1, 'received', 'Received from SMAI (special order)', 'special_order', null);
-    let r = shopStockRow(item.id, '');
-    if (!r) { r = { schoolId: sid, itemId: item.id, size: '', qty: 0, reorderLevel: 0, targetLevel: 0 }; state.shopStock.push(r); }
-    r.qty = (typeof newQty === 'number') ? newQty : (r.qty || 0) + 1;
-  } catch (e) { uiToast('Item added, but could not update stock: ' + (e.message || e)); }
   closeModal('modalSmaiSearch');
   uiToast(`${item.name} added — finish the order details and save.`, 'success');
 }

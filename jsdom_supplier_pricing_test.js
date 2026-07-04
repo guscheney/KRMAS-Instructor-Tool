@@ -180,80 +180,72 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   ck('ensure: retail price refreshed on a re-lookup with a new price', ensured3.retailPrice === 64.95);
   ck('ensure: still no duplicate created for the price refresh', ev('state.shop.items.length') === 1);
 
-  // ── smaiStageVariant / basket: catalogue mode stages instead of committing immediately ──
+  // ── smaiStageVariant / basket: catalogue mode stages catalogue items, NO quantities, NO stock ──
   ev(`
-    state._smai = { mode: 'catalogue', product: ${JSON.stringify(product1)}, basket: [] };
-    const el = window.document.createElement('input'); el.id = 'smaiQty-0'; el.value = '4';
-    window.document.body.appendChild(el);
+    state._smai = { mode: 'catalogue', product: ${JSON.stringify(product1)}, basket: [], scope: null };
     document.body.insertAdjacentHTML('beforeend', '<div id="smaiBasket"></div>');
     window.__lastMovement = null;
   `);
   ev('smaiStageVariant(0)');
-  ck('staging does NOT touch the DB — no movement posted yet', ev('window.__lastMovement') === null);
-  ck('staged line added to the basket with the entered qty', ev('state._smai.basket.length') === 1 && ev('state._smai.basket[0].qty') === 4);
-  ck('basket panel renders the staged item + qty', /Focus Mitts.*4/.test(ev(`document.getElementById('smaiBasket').innerHTML`).replace(/\n/g, ' ')));
+  ck('staging does NOT touch the DB — no movement posted', ev('window.__lastMovement') === null);
+  ck('staged line added to the basket (no qty concept)', ev('state._smai.basket.length') === 1 && ev('state._smai.basket[0].qty') === undefined);
+  ck('basket panel renders the staged item', /Focus Mitts/.test(ev(`document.getElementById('smaiBasket').innerHTML`)));
+  ck('basket panel carries the scope selector', /smaiScopeSel/.test(ev(`document.getElementById('smaiBasket').innerHTML`)));
+  ck('basket button says catalogue, not stock', /to catalogue/.test(ev(`document.getElementById('smaiBasket').innerHTML`)));
 
   // stage a second, different product — basket should hold two lines (multi-item add)
   const product2 = ev(`({ title: 'Karate Belt', productType: 'Martial Arts Belts', variants: [ { id:2, sku:'KB-002', title:'240cm', price: '19.95', available: true } ] })`);
-  ev(`
-    document.getElementById('smaiQty-0').remove();
-    state._smai.product = ${JSON.stringify(product2)};
-    const el2 = window.document.createElement('input'); el2.id = 'smaiQty-0'; el2.value = '2';
-    window.document.body.appendChild(el2);
-  `);
+  ev(`state._smai.product = ${JSON.stringify(product2)};`);
   ev('smaiStageVariant(0)');
   ck('a second distinct product adds a second basket line', ev('state._smai.basket.length') === 2);
-  ck('basket totals across both lines correctly', ev('state._smai.basket.reduce((s,l)=>s+l.qty,0)') === 6);
 
-  // re-staging the SAME sku merges qty into the existing line rather than duplicating
-  ev(`
-    document.getElementById('smaiQty-0').remove();
-    state._smai.product = ${JSON.stringify(product1)};
-    const el3 = window.document.createElement('input'); el3.id = 'smaiQty-0'; el3.value = '1';
-    window.document.body.appendChild(el3);
-  `);
+  // re-staging the SAME sku is a no-op (already listed), not a duplicate
+  ev(`state._smai.product = ${JSON.stringify(product1)};`);
   ev('smaiStageVariant(0)');
-  ck('re-staging the same SKU merges into one line (no duplicate)', ev('state._smai.basket.length') === 2);
-  ck('merged line qty is summed', ev('state._smai.basket.find(l=>l.variant.sku==="FM-001").qty') === 5);
+  ck('re-staging the same SKU does not duplicate', ev('state._smai.basket.length') === 2);
 
   // remove a line
   ev('smaiRemoveBasketLine(1)');
   ck('remove-from-basket drops that line', ev('state._smai.basket.length') === 1);
 
-  // ── smaiConfirmBasket: commits every staged line in one go, one movement per line ──
+  // ── smaiConfirmBasket: creates catalogue items only — zero stock movements ──
   ev(`
     state.shop = { categories: [], sizeSets: [], suppliers: [], items: [] };
     state.shopStock = []; state.shopMovements = []; state.shopStockSchool = 'sch1';
-    can.editStock = () => true;
+    can.manageShop = () => true;
     let _sc2=0,_ss2=0,_si2=0;
     DB.saveCategory = async (c) => Object.assign({ id: c.id || ('CAT'+(++_sc2)) }, c);
     DB.saveSupplier = async (s) => Object.assign({ id: s.id || ('SUP'+(++_ss2)) }, s);
     DB.saveItem = async (it) => Object.assign({ id: it.id || ('ITEM'+(++_si2)) }, it);
     window.__movements = [];
     DB.applyMovement = async (sid,itemId,size,delta,kind,note,refType,refId) => { window.__movements.push({sid,itemId,size,delta,kind,note,refType,refId}); return delta; };
+    // scope selector set to a specific school (reuse the one the basket render created — a duplicate id would shadow it)
+    document.querySelectorAll('#smaiScopeSel').forEach(el => el.remove());
+    document.body.insertAdjacentHTML('beforeend', '<select id="smaiScopeSel"><option value="">All</option><option value="sch2" selected>School 2</option></select>');
     state._smai.basket = [
-      { product: ${JSON.stringify(product1)}, variant: ${JSON.stringify(product1.variants[0])}, qty: 3 },
-      { product: ${JSON.stringify(product2)}, variant: ${JSON.stringify(product2.variants[0])}, qty: 2 },
+      { product: ${JSON.stringify(product1)}, variant: ${JSON.stringify(product1.variants[0])} },
+      { product: ${JSON.stringify(product2)}, variant: ${JSON.stringify(product2.variants[0])} },
     ];
   `);
   await ev('smaiConfirmBasket()');
   await sleep(20);
-  ck('confirmBasket: posts one movement per staged line', ev('window.__movements.length') === 2);
-  ck('confirmBasket: both movements are kind=received', ev('window.__movements.every(m=>m.kind==="received")'));
-  ck('confirmBasket: quantities match what was staged', ev('window.__movements.map(m=>m.delta).sort().join(",")') === '2,3');
-  ck('confirmBasket: creates catalogue items for both distinct products', ev('state.shop.items.length') === 2);
+  ck('confirmBasket: NO stock movements posted (catalogue only)', ev('window.__movements.length') === 0);
+  ck('confirmBasket: stock rows untouched', ev('state.shopStock.length') === 0);
+  ck('confirmBasket: creates catalogue items for both products', ev('state.shop.items.length') === 2);
+  ck('confirmBasket: items scoped to the selected school', ev('state.shop.items.every(i=>i.schoolId==="sch2")'));
   ck('confirmBasket: closes the search modal when done', !ev(`document.getElementById('modalSmaiSearch').classList.contains('open')`));
 
-  // basket commit blocked without edit-stock permission
+  // basket commit blocked without manage-shop permission (catalogue write, not stock write)
   ev(`
-    can.editStock = () => false; window.__movements = [];
-    state._smai.basket = [ { product: ${JSON.stringify(product1)}, variant: ${JSON.stringify(product1.variants[0])}, qty: 1 } ];
+    can.manageShop = () => false; window.__prevItems = state.shop.items.length;
+    state._smai.basket = [ { product: ${JSON.stringify(product1)}, variant: { id:9, sku:'NEW-SKU', title:'', price:'5.00', available:true } } ];
   `);
   await ev('smaiConfirmBasket()');
   await sleep(20);
-  ck('confirmBasket: blocked when editStock() denies', ev('window.__movements.length') === 0);
+  ck('confirmBasket: blocked when manageShop() denies', ev('state.shop.items.length === window.__prevItems'));
+  ev(`can.manageShop = () => true;`);
 
-  // ── smaiConfirmAdd (special mode): still single, immediate — unaffected by the basket rework ──
+  // ── smaiConfirmAdd (special mode): ensures the catalogue item, injects into the form, NO stock ──
   ev(`can.editStock = () => true; window.__lastMovement = null; DB.applyMovement = async (sid,itemId,size,delta,kind,note,refType,refId) => { window.__lastMovement = {sid,itemId,size,delta,kind,note,refType,refId}; return delta; };`);
   ev(`
     // fresh soItem select to check option-injection + value-setting
@@ -261,21 +253,83 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     sel.innerHTML = '<option value="">— choose an item —</option>';
     window.document.body.appendChild(sel);
     window.soOnItemChange = window.soOnItemChange || function(){};
-    state._smai = { mode: 'special', product: ${JSON.stringify(product1)} };
+    state._smai = { mode: 'special', product: { title:'Headgear', productType:'Boxing Protective Equipment', variants:[{id:7,sku:'HG-007',title:'',price:'89.00',available:true}] } };
     window.__lastMovement = null;
   `);
   await ev('smaiConfirmAdd(0)');
   await sleep(20);
-  ck('smaiConfirmAdd (special): posts kind=received', ev('window.__lastMovement.kind') === 'received');
-  ck('smaiConfirmAdd (special): always exactly 1 unit', ev('window.__lastMovement.delta') === 1);
-  ck('smaiConfirmAdd (special): refType is special_order', ev('window.__lastMovement.refType') === 'special_order');
+  ck('smaiConfirmAdd (special): posts NO stock movement', ev('window.__lastMovement') === null);
   ck('smaiConfirmAdd (special): item option injected into #soItem', ev(`document.getElementById('soItem').value`) !== '');
-
-  // ── smaiConfirmAdd: blocked without edit-stock permission ──
-  ev(`can.editStock = () => false; window.__lastMovement = null; state._smai = { mode:'special', product: ${JSON.stringify(product1)} };`);
+  ck('smaiConfirmAdd (special): new item is network-wide by default', ev(`state.shop.items.find(i=>i.sku==='HG-007').schoolId`) == null);
+  // an EXISTING item picked again keeps whatever scope it already had (never silently re-scoped)
+  ev(`state._smai = { mode: 'special', product: ${JSON.stringify(product1)} };`);
   await ev('smaiConfirmAdd(0)');
   await sleep(20);
-  ck('smaiConfirmAdd: blocked when editStock() denies', ev('window.__lastMovement') === null);
+  ck('smaiConfirmAdd (special): re-picking an existing item keeps its scope', ev(`state.shop.items.find(i=>i.sku==='FM-001').schoolId`) === 'sch2');
+
+  // ── smaiConfirmAdd: blocked without edit-stock permission ──
+  ev(`can.editStock = () => false; window.__addBefore = state.shop.items.length; state._smai = { mode:'special', product: { title:'Blocked', productType:'X', variants:[{id:3,sku:'BLK-1',title:'',price:'1.00',available:true}] } };`);
+  await ev('smaiConfirmAdd(0)');
+  await sleep(20);
+  ck('smaiConfirmAdd: blocked when editStock() denies', ev('state.shop.items.length === window.__addBefore'));
+
+  // ── catalogue scoping helpers + school-context filtering ──
+  ev(`can.editStock = () => true;`);
+  ck('shopItemAtSchool: null scope visible everywhere', ev(`shopItemAtSchool({schoolId:null}, 'anySchool')`) === true);
+  ck('shopItemAtSchool: matching scope visible', ev(`shopItemAtSchool({schoolId:'sch1'}, 'sch1')`) === true);
+  ck('shopItemAtSchool: other scope hidden', ev(`shopItemAtSchool({schoolId:'sch1'}, 'sch2')`) === false);
+  ev(`
+    state.shop.items = [
+      { id:'n1', name:'Network Item', archived:false, schoolId:null },
+      { id:'s1', name:'School1 Item', archived:false, schoolId:'sch1' },
+      { id:'s2', name:'School2 Item', archived:false, schoolId:'sch2' },
+      { id:'a1', name:'Archived Item', archived:true, schoolId:null },
+    ];
+    state.shopStockSchool = 'sch1';
+  `);
+  ck('shopSchoolItems: default school shows network + own, hides other + archived',
+     ev(`shopSchoolItems().map(i=>i.id).sort().join(',')`) === 'n1,s1');
+  ck('shopSchoolItems: explicit school param respected',
+     ev(`shopSchoolItems('sch2').map(i=>i.id).sort().join(',')`) === 'n1,s2');
+
+  // ── catalogue search + filters ──
+  ev(`
+    state.shop.categories = [{ id:'catA', name:'Belts' }];
+    state.shop.suppliers = [{ id:'supA', name:'SMAI' }];
+    state.shop.items = [
+      { id:'i1', name:'Karate Belt Red', sku:'KB-R', archived:false, schoolId:null, categoryId:'catA', supplierId:'supA' },
+      { id:'i2', name:'Focus Mitts', sku:'FM-X', archived:false, schoolId:'sch1', categoryId:null, supplierId:null },
+      { id:'i3', name:'Old Gi', sku:'OG-1', archived:true, schoolId:null, categoryId:null, supplierId:null },
+    ];
+    state.shopCatFilter = null;
+  `);
+  ck('cat filter: default shows active only', ev(`shopCatMatchedItems().map(i=>i.id).sort().join(',')`) === 'i1,i2');
+  ev(`shopCatFilter().q = 'belt';`);
+  ck('cat filter: search matches name', ev(`shopCatMatchedItems().map(i=>i.id).join(',')`) === 'i1');
+  ev(`shopCatFilter().q = 'fm-x';`);
+  ck('cat filter: search matches SKU case-insensitively', ev(`shopCatMatchedItems().map(i=>i.id).join(',')`) === 'i2');
+  ev(`shopCatFilter().q = ''; shopCatFilter().cat = 'catA';`);
+  ck('cat filter: category filter works', ev(`shopCatMatchedItems().map(i=>i.id).join(',')`) === 'i1');
+  ev(`shopCatFilter().cat = '_none';`);
+  ck('cat filter: "no category" filter works', ev(`shopCatMatchedItems().map(i=>i.id).join(',')`) === 'i2');
+  ev(`shopCatFilter().cat = 'all'; shopCatFilter().sup = 'supA';`);
+  ck('cat filter: supplier filter works', ev(`shopCatMatchedItems().map(i=>i.id).join(',')`) === 'i1');
+  ev(`shopCatFilter().sup = 'all'; shopCatFilter().scope = 'network';`);
+  ck('cat filter: network-scope filter shows only all-schools items', ev(`shopCatMatchedItems().map(i=>i.id).join(',')`) === 'i1');
+  ev(`shopCatFilter().scope = 'sch1';`);
+  ck('cat filter: school-scope filter shows only that school item', ev(`shopCatMatchedItems().map(i=>i.id).join(',')`) === 'i2');
+  ev(`shopCatFilter().scope = 'all'; shopCatFilter().archived = 'archived';`);
+  ck('cat filter: archived view shows only archived', ev(`shopCatMatchedItems().map(i=>i.id).join(',')`) === 'i3');
+  ev(`state.shopCatFilter = null;`);
+  ev(`can.manageShop = () => true; state.shopEdit = null; state.shopImport = null;`);
+  const catRender = ev('renderShopCatalogue()');
+  ck('catalogue renders a search box', /shopCatSearch/.test(catRender));
+  ck('catalogue renders the scope filter', /All-schools items/.test(catRender));
+  ck('scope badge shows on school-scoped rows', /🏫/.test(ev('shopCatalogueListHtml()')));
+
+  // ── item editor carries the scope selector ──
+  ev(`state.shopEdit = { kind:'item', data: { name:'Scoped Thing', schoolId: null } };`);
+  ck('editor: scope selector present', /shopItemScope/.test(ev('renderShopItemEditor()')));
 
   // ── search results rendering (pure render, mocked DB.smai.search) ──
   ev(`can.editStock = () => true;`);
