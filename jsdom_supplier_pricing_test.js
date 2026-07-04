@@ -180,20 +180,81 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   ck('ensure: retail price refreshed on a re-lookup with a new price', ensured3.retailPrice === 64.95);
   ck('ensure: still no duplicate created for the price refresh', ev('state.shop.items.length') === 1);
 
-  // ── smaiConfirmAdd: catalogue mode posts a received movement with qty from the input ──
+  // ── smaiStageVariant / basket: catalogue mode stages instead of committing immediately ──
   ev(`
-    state._smai = { mode: 'catalogue', product: ${JSON.stringify(product1)} };
+    state._smai = { mode: 'catalogue', product: ${JSON.stringify(product1)}, basket: [] };
     const el = window.document.createElement('input'); el.id = 'smaiQty-0'; el.value = '4';
     window.document.body.appendChild(el);
+    document.body.insertAdjacentHTML('beforeend', '<div id="smaiBasket"></div>');
     window.__lastMovement = null;
   `);
-  await ev('smaiConfirmAdd(0)');
-  await sleep(20);
-  ck('smaiConfirmAdd (catalogue): posts kind=received', ev('window.__lastMovement.kind') === 'received');
-  ck('smaiConfirmAdd (catalogue): qty comes from the input', ev('window.__lastMovement.delta') === 4);
-  ck('smaiConfirmAdd (catalogue): refType is catalogue', ev('window.__lastMovement.refType') === 'catalogue');
+  ev('smaiStageVariant(0)');
+  ck('staging does NOT touch the DB — no movement posted yet', ev('window.__lastMovement') === null);
+  ck('staged line added to the basket with the entered qty', ev('state._smai.basket.length') === 1 && ev('state._smai.basket[0].qty') === 4);
+  ck('basket panel renders the staged item + qty', /Focus Mitts.*4/.test(ev(`document.getElementById('smaiBasket').innerHTML`).replace(/\n/g, ' ')));
 
-  // ── smaiConfirmAdd: special-order mode always adds exactly 1 and tags refType ──
+  // stage a second, different product — basket should hold two lines (multi-item add)
+  const product2 = ev(`({ title: 'Karate Belt', productType: 'Martial Arts Belts', variants: [ { id:2, sku:'KB-002', title:'240cm', price: '19.95', available: true } ] })`);
+  ev(`
+    document.getElementById('smaiQty-0').remove();
+    state._smai.product = ${JSON.stringify(product2)};
+    const el2 = window.document.createElement('input'); el2.id = 'smaiQty-0'; el2.value = '2';
+    window.document.body.appendChild(el2);
+  `);
+  ev('smaiStageVariant(0)');
+  ck('a second distinct product adds a second basket line', ev('state._smai.basket.length') === 2);
+  ck('basket totals across both lines correctly', ev('state._smai.basket.reduce((s,l)=>s+l.qty,0)') === 6);
+
+  // re-staging the SAME sku merges qty into the existing line rather than duplicating
+  ev(`
+    document.getElementById('smaiQty-0').remove();
+    state._smai.product = ${JSON.stringify(product1)};
+    const el3 = window.document.createElement('input'); el3.id = 'smaiQty-0'; el3.value = '1';
+    window.document.body.appendChild(el3);
+  `);
+  ev('smaiStageVariant(0)');
+  ck('re-staging the same SKU merges into one line (no duplicate)', ev('state._smai.basket.length') === 2);
+  ck('merged line qty is summed', ev('state._smai.basket.find(l=>l.variant.sku==="FM-001").qty') === 5);
+
+  // remove a line
+  ev('smaiRemoveBasketLine(1)');
+  ck('remove-from-basket drops that line', ev('state._smai.basket.length') === 1);
+
+  // ── smaiConfirmBasket: commits every staged line in one go, one movement per line ──
+  ev(`
+    state.shop = { categories: [], sizeSets: [], suppliers: [], items: [] };
+    state.shopStock = []; state.shopMovements = []; state.shopStockSchool = 'sch1';
+    can.editStock = () => true;
+    let _sc2=0,_ss2=0,_si2=0;
+    DB.saveCategory = async (c) => Object.assign({ id: c.id || ('CAT'+(++_sc2)) }, c);
+    DB.saveSupplier = async (s) => Object.assign({ id: s.id || ('SUP'+(++_ss2)) }, s);
+    DB.saveItem = async (it) => Object.assign({ id: it.id || ('ITEM'+(++_si2)) }, it);
+    window.__movements = [];
+    DB.applyMovement = async (sid,itemId,size,delta,kind,note,refType,refId) => { window.__movements.push({sid,itemId,size,delta,kind,note,refType,refId}); return delta; };
+    state._smai.basket = [
+      { product: ${JSON.stringify(product1)}, variant: ${JSON.stringify(product1.variants[0])}, qty: 3 },
+      { product: ${JSON.stringify(product2)}, variant: ${JSON.stringify(product2.variants[0])}, qty: 2 },
+    ];
+  `);
+  await ev('smaiConfirmBasket()');
+  await sleep(20);
+  ck('confirmBasket: posts one movement per staged line', ev('window.__movements.length') === 2);
+  ck('confirmBasket: both movements are kind=received', ev('window.__movements.every(m=>m.kind==="received")'));
+  ck('confirmBasket: quantities match what was staged', ev('window.__movements.map(m=>m.delta).sort().join(",")') === '2,3');
+  ck('confirmBasket: creates catalogue items for both distinct products', ev('state.shop.items.length') === 2);
+  ck('confirmBasket: closes the search modal when done', !ev(`document.getElementById('modalSmaiSearch').classList.contains('open')`));
+
+  // basket commit blocked without edit-stock permission
+  ev(`
+    can.editStock = () => false; window.__movements = [];
+    state._smai.basket = [ { product: ${JSON.stringify(product1)}, variant: ${JSON.stringify(product1.variants[0])}, qty: 1 } ];
+  `);
+  await ev('smaiConfirmBasket()');
+  await sleep(20);
+  ck('confirmBasket: blocked when editStock() denies', ev('window.__movements.length') === 0);
+
+  // ── smaiConfirmAdd (special mode): still single, immediate — unaffected by the basket rework ──
+  ev(`can.editStock = () => true; window.__lastMovement = null; DB.applyMovement = async (sid,itemId,size,delta,kind,note,refType,refId) => { window.__lastMovement = {sid,itemId,size,delta,kind,note,refType,refId}; return delta; };`);
   ev(`
     // fresh soItem select to check option-injection + value-setting
     const sel = window.document.createElement('select'); sel.id = 'soItem';
@@ -211,7 +272,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   ck('smaiConfirmAdd (special): item option injected into #soItem', ev(`document.getElementById('soItem').value`) !== '');
 
   // ── smaiConfirmAdd: blocked without edit-stock permission ──
-  ev(`can.editStock = () => false; window.__lastMovement = null; state._smai = { mode:'catalogue', product: ${JSON.stringify(product1)} };`);
+  ev(`can.editStock = () => false; window.__lastMovement = null; state._smai = { mode:'special', product: ${JSON.stringify(product1)} };`);
   await ev('smaiConfirmAdd(0)');
   await sleep(20);
   ck('smaiConfirmAdd: blocked when editStock() denies', ev('window.__lastMovement') === null);

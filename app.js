@@ -16585,10 +16585,11 @@ async function shopRunStockImport() {
 // this is a live lookup against SMAI's public feed, not a catalogue sync.
 let _smaiSearchTimer = null;
 function openSmaiSearch(mode) {
-  state._smai = { mode, query: '', loading: false, results: [], error: null, product: null, productLoading: false, productError: null };
+  state._smai = { mode, query: '', loading: false, results: [], error: null, product: null, productLoading: false, productError: null, basket: [] };
   const box = document.getElementById('smaiSearchBox'); if (box) box.value = '';
   const results = document.getElementById('smaiResults'); if (results) results.innerHTML = '';
   const vp = document.getElementById('smaiVariantPicker'); if (vp) { vp.style.display = 'none'; vp.innerHTML = ''; }
+  const bk = document.getElementById('smaiBasket'); if (bk) { bk.style.display = 'none'; bk.innerHTML = ''; }
   openModal('modalSmaiSearch');
   setTimeout(() => { try { document.getElementById('smaiSearchBox').focus(); } catch (e) {} }, 50);
 }
@@ -16666,7 +16667,7 @@ function smaiRenderVariantPicker() {
         ${isSpecial
           ? `<button class="btn btn-sm btn-primary" onclick="smaiConfirmAdd(${i})">Use this</button>`
           : `<input type="number" min="1" value="1" id="smaiQty-${i}" style="width:48px;padding:4px;border:1px solid var(--grey-200);border-radius:6px;text-align:center;font-family:'JetBrains Mono',monospace;">
-             <button class="btn btn-sm btn-primary" onclick="smaiConfirmAdd(${i})">Add to stock</button>`}
+             <button class="btn btn-sm btn-primary" onclick="smaiStageVariant(${i})">+ Add to list</button>`}
       </span></div>`;
   });
   vp.innerHTML = html;
@@ -16698,6 +16699,72 @@ async function shopEnsureSmaiItem(product, variant) {
   state.shop.items.push(saved);
   return saved;
 }
+
+// ── Catalogue/Stock mode: stage-then-commit basket, so several SMAI items —
+// across one or many searches — get added to stock in a single confirm rather
+// than forcing a close-and-reopen per item. ──
+function smaiStageVariant(variantIdx) {
+  const st = state._smai; if (!st || !st.product) return;
+  const variant = st.product.variants[variantIdx]; if (!variant) return;
+  const qtyInput = document.getElementById(`smaiQty-${variantIdx}`);
+  const qty = Math.max(1, parseInt(qtyInput && qtyInput.value, 10) || 1);
+  const productSnap = { title: st.product.title, productType: st.product.productType, image: st.product.image };
+  // Same SKU staged twice (e.g. bumped the qty input and clicked again) — merge into one line.
+  const existingLine = st.basket.find(l => l.variant.sku && l.variant.sku === variant.sku);
+  if (existingLine) existingLine.qty += qty;
+  else st.basket.push({ product: productSnap, variant, qty });
+  smaiRenderBasket();
+  uiToast(`Added to list (${st.basket.reduce((s, l) => s + l.qty, 0)} item${st.basket.length === 1 && st.basket[0].qty === 1 ? '' : 's'} staged).`, 'success');
+}
+function smaiRemoveBasketLine(i) {
+  const st = state._smai; if (!st || !st.basket) return;
+  st.basket.splice(i, 1);
+  smaiRenderBasket();
+}
+function smaiRenderBasket() {
+  const bk = document.getElementById('smaiBasket'); if (!bk) return;
+  const st = state._smai || {};
+  if (!st.basket || !st.basket.length) { bk.style.display = 'none'; bk.innerHTML = ''; return; }
+  bk.style.display = '';
+  const totalUnits = st.basket.reduce((s, l) => s + l.qty, 0);
+  let html = `<div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin-bottom:4px;">To add (${st.basket.length} item${st.basket.length === 1 ? '' : 's'}, ${totalUnits} unit${totalUnits === 1 ? '' : 's'})</div>`;
+  st.basket.forEach((l, i) => {
+    const name = l.variant.title ? `${l.product.title} — ${l.variant.title}` : l.product.title;
+    html += `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 0;font-size:12px;">
+      <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(name)} <span style="color:var(--grey-500);">× ${l.qty}</span></span>
+      <button type="button" class="btn btn-sm btn-ghost" style="color:var(--red);flex-shrink:0;" onclick="smaiRemoveBasketLine(${i})">Remove</button>
+    </div>`;
+  });
+  html += `<button class="btn btn-primary" style="width:100%;margin-top:8px;" onclick="smaiConfirmBasket()">Add ${totalUnits} unit${totalUnits === 1 ? '' : 's'} to stock</button>`;
+  bk.innerHTML = html;
+}
+async function smaiConfirmBasket() {
+  const st = state._smai; if (!st || !st.basket || !st.basket.length) return;
+  const sid = state.shopStockSchool;
+  if (!can.editStock(sid)) { uiToast('You can only manage stock for your own school.'); return; }
+  let itemsDone = 0, unitsDone = 0; const errors = [];
+  for (const line of st.basket) {
+    let item;
+    try { item = await shopEnsureSmaiItem(line.product, line.variant); }
+    catch (e) { errors.push((line.variant.title ? line.product.title + ' — ' + line.variant.title : line.product.title) + ': ' + (e.message || e)); continue; }
+    try {
+      const newQty = await DB.applyMovement(sid, item.id, '', line.qty, 'received', 'Received from SMAI', 'catalogue', null);
+      let r = shopStockRow(item.id, '');
+      if (!r) { r = { schoolId: sid, itemId: item.id, size: '', qty: 0, reorderLevel: 0, targetLevel: 0 }; state.shopStock.push(r); }
+      r.qty = (typeof newQty === 'number') ? newQty : (r.qty || 0) + line.qty;
+      (state.shopMovements = state.shopMovements || []).unshift({ id: 'tmp' + Date.now() + itemsDone, schoolId: sid, itemId: item.id, size: '', delta: line.qty, kind: 'received', note: 'Received from SMAI', createdAt: new Date().toISOString() });
+      itemsDone++; unitsDone += line.qty;
+    } catch (e) { errors.push(item.name + ': ' + (e.message || e)); }
+  }
+  closeModal('modalSmaiSearch');
+  updateShopNavBadge();
+  if (errors.length) uiToast(`Added ${itemsDone} item(s), ${unitsDone} unit(s). ${errors.length} failed: ${errors.slice(0, 3).join('; ')}`, 'error');
+  else uiToast(`Added ${itemsDone} item${itemsDone === 1 ? '' : 's'} (${unitsDone} unit${unitsDone === 1 ? '' : 's'}) to stock.`, 'success');
+  renderShop();
+}
+
+// Special-order mode: unchanged single, immediate add — an order is always one
+// item for one student, so staging a basket doesn't apply here.
 async function smaiConfirmAdd(variantIdx) {
   const st = state._smai; if (!st || !st.product) return;
   const variant = st.product.variants[variantIdx]; if (!variant) return;
@@ -16707,43 +16774,25 @@ async function smaiConfirmAdd(variantIdx) {
   try { item = await shopEnsureSmaiItem(st.product, variant); }
   catch (e) { uiToast('Could not add this item: ' + (e.message || e)); return; }
 
-  if (st.mode === 'special') {
-    // Hand the ensured item back to the open special-order form and close the
-    // search — the person still fills in student name / status and saves normally.
-    const itemSel = document.getElementById('soItem');
-    if (itemSel && !Array.from(itemSel.options).some(o => o.value === item.id)) {
-      itemSel.insertAdjacentHTML('beforeend', `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`);
-    }
-    if (itemSel) itemSel.value = item.id;
-    soOnItemChange();
-    // Per Gus's call: an item sourced via SMAI for a special order also lands in
-    // stock immediately (it's a real unit that now exists at the school, just
-    // earmarked for a student) — one unit, distinct 'received' ledger entry.
-    try {
-      const newQty = await DB.applyMovement(sid, item.id, '', 1, 'received', 'Received from SMAI (special order)', 'special_order', null);
-      let r = shopStockRow(item.id, '');
-      if (!r) { r = { schoolId: sid, itemId: item.id, size: '', qty: 0, reorderLevel: 0, targetLevel: 0 }; state.shopStock.push(r); }
-      r.qty = (typeof newQty === 'number') ? newQty : (r.qty || 0) + 1;
-    } catch (e) { uiToast('Item added, but could not update stock: ' + (e.message || e)); }
-    closeModal('modalSmaiSearch');
-    uiToast(`${item.name} added — finish the order details and save.`, 'success');
-    return;
+  // Hand the ensured item back to the open special-order form and close the
+  // search — the person still fills in student name / status and saves normally.
+  const itemSel = document.getElementById('soItem');
+  if (itemSel && !Array.from(itemSel.options).some(o => o.value === item.id)) {
+    itemSel.insertAdjacentHTML('beforeend', `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`);
   }
-
-  // Catalogue/Stock mode: entered quantity goes straight into this school's stock.
-  const qtyInput = document.getElementById(`smaiQty-${variantIdx}`);
-  const qty = Math.max(1, parseInt(qtyInput && qtyInput.value, 10) || 1);
+  if (itemSel) itemSel.value = item.id;
+  soOnItemChange();
+  // Per Gus's call: an item sourced via SMAI for a special order also lands in
+  // stock immediately (it's a real unit that now exists at the school, just
+  // earmarked for a student) — one unit, distinct 'received' ledger entry.
   try {
-    const newQty = await DB.applyMovement(sid, item.id, '', qty, 'received', 'Received from SMAI', 'catalogue', null);
+    const newQty = await DB.applyMovement(sid, item.id, '', 1, 'received', 'Received from SMAI (special order)', 'special_order', null);
     let r = shopStockRow(item.id, '');
     if (!r) { r = { schoolId: sid, itemId: item.id, size: '', qty: 0, reorderLevel: 0, targetLevel: 0 }; state.shopStock.push(r); }
-    r.qty = (typeof newQty === 'number') ? newQty : (r.qty || 0) + qty;
-    (state.shopMovements = state.shopMovements || []).unshift({ id: 'tmp' + Date.now(), schoolId: sid, itemId: item.id, size: '', delta: qty, kind: 'received', note: 'Received from SMAI', createdAt: new Date().toISOString() });
-  } catch (e) { uiToast('Item added to catalogue, but could not update stock: ' + (e.message || e)); closeModal('modalSmaiSearch'); renderShop(); return; }
+    r.qty = (typeof newQty === 'number') ? newQty : (r.qty || 0) + 1;
+  } catch (e) { uiToast('Item added, but could not update stock: ' + (e.message || e)); }
   closeModal('modalSmaiSearch');
-  updateShopNavBadge();
-  uiToast(`Added ${qty} × ${item.name} to stock.`, 'success');
-  renderShop();
+  uiToast(`${item.name} added — finish the order details and save.`, 'success');
 }
 
 function renderShopSuppliers() {
