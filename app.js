@@ -3994,6 +3994,10 @@ function openPlan(dateKey) {
   document.getElementById('planAssist').value    = existing.assist || (assistInstr ? assistInstr.name : '');
   document.getElementById('planJunior').value    = existing.junior || (juniorInstr ? juniorInstr.name : '');
   document.getElementById('planTheme').value     = existing.theme || (c.topicNum ? `Topic ${c.topicNum} — ${c.topicContent?.title || ''}` : '');
+  const _topicEl = document.getElementById('planTopic');
+  if (_topicEl) _topicEl.value = (existing.topic != null && existing.topic !== '') ? existing.topic : (c.topicNum || '');
+  const _genRow = document.getElementById('planGenRow');
+  if (_genRow) _genRow.style.display = canWritePlan(dateKey) ? '' : 'none';
   document.getElementById('planObjective').value = existing.objective || '';
   document.getElementById('planNotices').value   = existing.notices || '';
   document.getElementById('planWarmup').value    = existing.warmup || '';
@@ -4056,6 +4060,10 @@ function openGradingPlan(sessionId) {
   document.getElementById('planType').value       = existing.classType || sylLabel;
   document.getElementById('planTerm').value       = existing.term || '';
   document.getElementById('planWeek').value       = existing.week || '';
+  const _gTopicEl = document.getElementById('planTopic');
+  if (_gTopicEl) _gTopicEl.value = (existing.topic != null && existing.topic !== '') ? existing.topic : '';
+  const _gGenRow = document.getElementById('planGenRow');
+  if (_gGenRow) _gGenRow.style.display = '';
   document.getElementById('planLocation').value   = existing.location || s.location || '';
   document.getElementById('planInstructor').value = existing.instructor || (state.user?.name || '');
   document.getElementById('planAssist').value     = existing.assist || '';
@@ -4146,16 +4154,224 @@ async function savePlan(status) {
     cooldown: document.getElementById('planCooldown').value,
     notes: document.getElementById('planNotes').value,
     incidents: document.getElementById('planIncidents').value,
+    topic: (document.getElementById('planTopic') && document.getElementById('planTopic').value) || '',
     status,
     shared: !!shared,
     updatedBy: state.user ? state.user.name : 'unknown',
     updatedAt: new Date().toISOString()
   };
   await savePlans();
+  // ── corpus ingest (v126): every COMPLETED plan becomes a training example
+  // in its author's generation library. Fire-and-forget — a corpus hiccup
+  // must never block saving the actual plan.
+  if (status !== 'draft') { planCorpusIngest(state.plans[dateKey]).catch(e => console.warn('[corpus] ingest failed:', e.message || e)); }
   closeModal('modalPlan');
   if (isGrading) { if (state.view === 'grading') renderGrading(); }
   else if (state.view === 'plans') renderPlans();
   else if (state.view === 'roster') renderDay();
+}
+
+/* ================================================================
+   PLAN GENERATION FROM LIBRARY (plangen, v126)
+   ================================================================
+   Every instructor's completed plans accumulate into their own corpus
+   (corpus_plans, migration 33) — a personal "learning model" whose
+   training is transparent accumulation, not weights. plangen.js is the
+   engine; this module is the app glue: the ingest pipeline, the corpus
+   cache, the modal UI, and the sharing picker ("generate from another
+   instructor at my school, in their style"). Only Gus's founder archive
+   is ever seeded; everyone else starts at zero and builds by teaching. */
+
+// ── ingest pipeline: one completed plan -> one corpus row + refreshed stats ──
+function _planTopicNumber(plan) {
+  if (plan.topic !== '' && plan.topic != null && !isNaN(parseInt(plan.topic, 10))) return parseInt(plan.topic, 10);
+  const m = /topic\s*(\d+)/i.exec(plan.theme || '');
+  return m ? parseInt(m[1], 10) : null;
+}
+function _planLines(text) {
+  return String(text || '').split('\n').map(s => s.trim()).filter(Boolean);
+}
+async function planCorpusIngest(plan) {
+  if (!state.user || !state.user.id || !plan) return;
+  const warmup = _planLines(plan.warmup), drills = _planLines(plan.techniques), cooldown = _planLines(plan.cooldown);
+  if (!warmup.length && !drills.length) return;   // nothing usable to learn from
+  const term = parseInt(plan.term, 10), week = parseInt(plan.week, 10);
+  await DB.corpus.upsertPlan({
+    ownerId: state.user.id, sourceKey: plan.key, classType: plan.classType || 'unknown',
+    topic: _planTopicNumber(plan), theme: plan.theme || '', objective: plan.objective || '',
+    termWeek: (term && week) ? `T${term}W${week}` : null,
+    year: plan.date ? new Date(plan.date).getFullYear() : new Date().getFullYear(),
+    warmup, drills, cooldown,
+  });
+  _corpusCache.delete(state.user.id);   // stale — next generate reloads
+  await planCorpusRefreshStats();
+}
+// Recompute + persist this user's coverage stats (drives the picker + cold-start panel).
+async function planCorpusRefreshStats() {
+  if (!state.user || !state.user.id) return;
+  const style = (await DB.corpus.loadStyle(state.user.id)) || { ownerId: state.user.id };
+  const corpus = await planCorpusLoad(state.user.id, style);
+  const cov = PlanGen.coverage(corpus.plans);
+  const stats = {}; for (const c in cov) stats[c] = { plans: cov[c].plans, topics: cov[c].topics, unlocked: cov[c].unlocked };
+  await DB.corpus.saveStyle({ ownerId: state.user.id, ownerName: (state.user.name || state.user.email || 'Instructor'), seed: style.seed || null, stats });
+}
+
+// ── corpus loading with a per-session cache ──
+const _corpusCache = new Map();   // ownerId -> { plans, style }
+async function planCorpusLoad(ownerId, styleRow) {
+  if (_corpusCache.has(ownerId)) return _corpusCache.get(ownerId);
+  const rows = await DB.corpus.loadPlans(ownerId);
+  const style = styleRow || (await DB.corpus.loadStyle(ownerId));
+  const corpus = await PlanGen.assembleCorpus(rows, style, {});
+  _corpusCache.set(ownerId, corpus);
+  return corpus;
+}
+
+// ── modal ──
+let _pgState = null;   // { owners:[], result:null }
+async function openPlanGen() {
+  _pgState = { owners: [], result: null };
+  const status = document.getElementById('pgStatus');
+  document.getElementById('pgResult').innerHTML = '';
+  document.getElementById('pgUseBtn').style.display = 'none';
+  document.getElementById('pgGenerateBtn').style.display = '';
+  // Prefill from the plan form
+  const t = document.getElementById('planTopic'); document.getElementById('pgTopic').value = (t && t.value) || '';
+  document.getElementById('pgTheme').value = '';
+  openModal('modalPlanGen');
+  if (status) status.textContent = 'Loading libraries…';
+  let owners = [];
+  try { owners = await DB.corpus.listReadable(); } catch (e) { /* listed below as just self */ }
+  const meId = state.user && state.user.id;
+  if (meId && !owners.some(o => o.ownerId === meId)) owners.unshift({ ownerId: meId, ownerName: 'My library', seed: null, stats: {} });
+  // self first, then schoolmates alphabetically
+  owners.sort((a, b) => (a.ownerId === meId ? -1 : b.ownerId === meId ? 1 : String(a.ownerName || '').localeCompare(String(b.ownerName || ''))));
+  _pgState.owners = owners;
+  const sel = document.getElementById('pgOwner');
+  sel.innerHTML = owners.map(o => `<option value="${escapeHtml(o.ownerId)}">${escapeHtml(o.ownerId === meId ? 'My library' : ((o.ownerName || 'Instructor') + "'s library"))}</option>`).join('');
+  if (status) status.textContent = '';
+  planGenOwnerChanged();
+}
+function _pgOwner() {
+  const sel = document.getElementById('pgOwner');
+  return (_pgState && _pgState.owners.find(o => o.ownerId === (sel && sel.value))) || null;
+}
+function planGenOwnerChanged() {
+  const o = _pgOwner(); if (!o) return;
+  const meId = state.user && state.user.id;
+  // Seed-attach affordance: superadmin, own library, seed not yet attached.
+  const seedRow = document.getElementById('pgSeedRow');
+  if (seedRow) seedRow.style.display = (o.ownerId === meId && can.switchAnySchool() && o.seed !== 'krmas-bundle') ? '' : 'none';
+  planGenRenderCoverage(o);
+}
+function planGenRenderCoverage(o) {
+  const el = document.getElementById('pgResult'); if (!el) return;
+  const stats = o.stats || {};
+  const types = Object.keys(stats).sort();
+  const isMine = o.ownerId === (state.user && state.user.id);
+  if (!types.length && o.seed !== 'krmas-bundle') {
+    el.innerHTML = `<div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:12px;font-size:13px;color:var(--grey-500);">
+      ${isMine ? `Your library is empty. Every lesson plan you <strong>complete</strong> in the app becomes part of it — after ${PlanGen.MIN_PLANS_FOR_GEN} completed plans of a class type, generation unlocks for that type. Your library, your style: plans are only ever assembled from lines you actually wrote.` : `This library is empty so far.`}
+    </div>`;
+    return;
+  }
+  let html = `<div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin:4px 0;">Library coverage</div>`;
+  if (o.seed === 'krmas-bundle') html += `<div style="font-size:12px;color:var(--grey-500);margin-bottom:4px;">Includes the founder archive (522 plans, 2020–2026)${types.length ? ' plus plans completed in the app' : ''}.</div>`;
+  for (const c of types) {
+    const s = stats[c];
+    html += `<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;border-top:1px solid var(--grey-100);">
+      <span>${escapeHtml(c)} ${s.unlocked ? '' : `<span style="color:var(--c-mt,#b8860b);">🔒 ${s.plans}/${PlanGen.MIN_PLANS_FOR_GEN} plans</span>`}</span>
+      <span style="color:var(--grey-500);">${s.plans} plan${s.plans === 1 ? '' : 's'}${s.topics && s.topics.length ? ' · topics ' + s.topics.join(', ') : ''}</span></div>`;
+  }
+  el.innerHTML = html;
+}
+async function attachSeedBundle() {
+  if (!can.switchAnySchool()) { uiToast('The founder archive can only be attached by a superadmin.'); return; }
+  const status = document.getElementById('pgStatus');
+  try {
+    if (status) status.textContent = 'Fetching the archive…';
+    await PlanGen.fetchSeedBundle();   // verifies the asset is deployed before flagging
+    const style = (await DB.corpus.loadStyle(state.user.id)) || {};
+    await DB.corpus.saveStyle({ ownerId: state.user.id, ownerName: (state.user.name || state.user.email || 'Instructor'), seed: 'krmas-bundle', stats: style.stats || {} });
+    _corpusCache.delete(state.user.id);
+    await planCorpusRefreshStats();
+    uiToast('Founder archive attached to your library.', 'success');
+    closeModal('modalPlanGen'); openPlanGen();   // reload picker state
+  } catch (e) {
+    if (status) status.textContent = '';
+    uiToast('Could not attach the archive: ' + (e.message || e) + ' — is krmas-bundle.json deployed?');
+  }
+}
+async function runPlanGen() {
+  const o = _pgOwner(); if (!o) return;
+  const status = document.getElementById('pgStatus');
+  const resEl = document.getElementById('pgResult');
+  const classType = document.getElementById('planType') ? document.getElementById('planType').value : '';
+  try {
+    if (status) status.textContent = 'Loading library…';
+    const corpus = await planCorpusLoad(o.ownerId, o.ownerId === (state.user && state.user.id) ? null : { seed: o.seed });
+    if (status) status.textContent = '';
+    // Unlock check (skipped for seeded libraries — the archive is deep enough everywhere it has plans)
+    const cov = PlanGen.coverage(corpus.plans);
+    const ct = PlanGen.resolveClass(corpus.plans, corpus.style, classType);
+    if (ct && cov[ct] && !cov[ct].unlocked) {
+      resEl.innerHTML = `<div style="border-left:3px solid var(--c-mt,#b8860b);border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:10px 12px;font-size:13px;">🔒 <strong>${escapeHtml(ct)}</strong> hasn't unlocked yet in this library — ${cov[ct].plans} of ${PlanGen.MIN_PLANS_FOR_GEN} completed plans. ${o.ownerId === (state.user && state.user.id) ? 'Keep completing plans; each one teaches your library.' : ''}</div>`;
+      return;
+    }
+    const req = {
+      classType,
+      topic: document.getElementById('pgTopic').value !== '' ? parseInt(document.getElementById('pgTopic').value, 10) : null,
+      theme: document.getElementById('pgTheme').value || null,
+      duration: parseInt(document.getElementById('pgDuration').value, 10) || 60,
+      term: parseInt(document.getElementById('planTerm') && document.getElementById('planTerm').value, 10) || null,
+      week: parseInt(document.getElementById('planWeek') && document.getElementById('planWeek').value, 10) || null,
+    };
+    const out = PlanGen.generate(corpus, req);
+    _pgState.result = out;
+    if (!out.ok) {
+      let html = `<div style="border-left:3px solid var(--red);border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:10px 12px;font-size:13px;">
+        <strong>This library doesn't cover that.</strong><ul style="margin:6px 0 0 16px;padding:0;">${out.gaps.map(g => `<li>${escapeHtml(g)}</li>`).join('')}</ul>`;
+      if (out.available) {
+        if (out.available.topics && out.available.topics.length) html += `<p style="margin:6px 0 0;color:var(--grey-500);">Topics it does cover: ${out.available.topics.join(', ')}</p>`;
+        if (out.available.themes && out.available.themes.length) html += `<p style="margin:4px 0 0;color:var(--grey-500);">Themes e.g.: ${out.available.themes.map(escapeHtml).join(' · ')}</p>`;
+        if (out.available.classTypes) html += `<p style="margin:4px 0 0;color:var(--grey-500);">Class types in this library: ${out.available.classTypes.map(escapeHtml).join(', ')}</p>`;
+      }
+      html += `</div>`;
+      resEl.innerHTML = html;
+      document.getElementById('pgUseBtn').style.display = 'none';
+      return;
+    }
+    const p = out.plan;
+    const headerSet = new Set(p.headerSet);
+    const line = (l) => `<div style="font-size:12px;padding:1px 0;${headerSet.has(PlanGen.normkey(l.t)) ? 'font-weight:700;' : ''}">${escapeHtml(l.t)}</div>`;
+    resEl.innerHTML = `
+      <div style="border:1px solid var(--grey-200);border-radius:var(--r-sm);padding:10px 12px;">
+        <div style="font-size:13px;"><strong>${escapeHtml(p.theme || '(no theme)')}</strong>${p.termWeek ? ` · ${escapeHtml(p.termWeek)}` : ''}</div>
+        ${p.objective ? `<div style="font-size:12px;color:var(--grey-500);">${escapeHtml(p.objective)}</div>` : ''}
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin:8px 0 2px;">Warm up</div>${p.warmup.map(line).join('') || '<div style="font-size:12px;color:var(--grey-400);">—</div>'}
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin:8px 0 2px;">Techniques & drills</div>${p.tech.map(line).join('')}
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin:8px 0 2px;">Cool down</div>${p.cool.map(line).join('') || '<div style="font-size:12px;color:var(--grey-400);">—</div>'}
+        <div style="font-size:11px;color:var(--grey-400);margin-top:8px;">Sources: ${p.sources.map(escapeHtml).join('; ')}</div>
+      </div>`;
+    document.getElementById('pgUseBtn').style.display = '';
+  } catch (e) {
+    if (status) status.textContent = '';
+    resEl.innerHTML = `<div class="empty"><h2>Couldn't generate</h2><p>${escapeHtml(e.message || String(e))}</p></div>`;
+  }
+}
+function usePlanGenResult() {
+  const out = _pgState && _pgState.result;
+  if (!out || !out.ok) return;
+  const p = out.plan;
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  // Fill only what generation produced; leave the person's other fields alone.
+  if (p.theme) set('planTheme', p.theme);
+  if (p.objective) set('planObjective', p.objective);
+  set('planWarmup', p.warmup.map(l => l.t).join('\n'));
+  set('planTechniques', p.tech.map(l => l.t).join('\n'));
+  set('planCooldown', p.cool.map(l => l.t).join('\n'));
+  closeModal('modalPlanGen');
+  uiToast(`Plan filled from library (${p.sources.length} source plan${p.sources.length === 1 ? '' : 's'}) — edit freely before saving.`, 'success');
 }
 
 function emailPlan() {

@@ -2186,6 +2186,41 @@ const DB = (() => {
     saveBrand: (d) => set('brand:global', d),
     loadDocCategories: () => get('doc-categories:global'),
     saveDocCategories: (d) => set('doc-categories:global', d),
+    // ── lesson-plan corpus (migration 33) ──
+    corpus: {
+      // All corpus rows for one owner (RLS enforces who may read whom).
+      loadPlans: async (ownerId) => {
+        const sb = sbClient(); if (!sb) return [];
+        const { data, error } = await sb.from('corpus_plans').select('*').eq('owner_id', ownerId).order('created_at');
+        if (error) { console.warn('[DB] corpus.loadPlans:', error.message); return []; }
+        return (data || []).map(r => ({ id: r.id, ownerId: r.owner_id, sourceKey: r.source_key, classType: r.class_type, topic: r.topic, theme: r.theme, objective: r.objective, termWeek: r.term_week, year: r.year, warmup: r.warmup || [], drills: r.drills || [], cooldown: r.cooldown || [] }));
+      },
+      // Upsert by (owner, sourceKey) — re-completing a plan updates its corpus row.
+      upsertPlan: async (row) => {
+        const sb = sbClient(); if (!sb) throw new Error('Supabase unavailable');
+        const r = { owner_id: row.ownerId, source_key: row.sourceKey, class_type: row.classType, topic: (row.topic === '' || row.topic == null) ? null : (row.topic | 0), theme: row.theme || null, objective: row.objective || null, term_week: row.termWeek || null, year: row.year || null, warmup: row.warmup || [], drills: row.drills || [], cooldown: row.cooldown || [], updated_at: new Date().toISOString() };
+        const { error } = await sb.from('corpus_plans').upsert(r, { onConflict: 'owner_id,source_key' });
+        if (error) throw new Error(error.message);
+      },
+      loadStyle: async (ownerId) => {
+        const sb = sbClient(); if (!sb) return null;
+        const { data, error } = await sb.from('corpus_style').select('*').eq('owner_id', ownerId).maybeSingle();
+        if (error) { console.warn('[DB] corpus.loadStyle:', error.message); return null; }
+        return data ? { ownerId: data.owner_id, ownerName: data.owner_name, seed: data.seed, stats: data.stats || {} } : null;
+      },
+      saveStyle: async (row) => {
+        const sb = sbClient(); if (!sb) throw new Error('Supabase unavailable');
+        const { error } = await sb.from('corpus_style').upsert({ owner_id: row.ownerId, owner_name: row.ownerName || null, seed: row.seed || null, stats: row.stats || {}, updated_at: new Date().toISOString() }, { onConflict: 'owner_id' });
+        if (error) throw new Error(error.message);
+      },
+      // Every corpus this user may read (their own + schoolmates' + superadmins') for the picker.
+      listReadable: async () => {
+        const sb = sbClient(); if (!sb) return [];
+        const { data, error } = await sb.from('corpus_style').select('owner_id, owner_name, seed, stats');
+        if (error) { console.warn('[DB] corpus.listReadable:', error.message); return []; }
+        return (data || []).map(r => ({ ownerId: r.owner_id, ownerName: r.owner_name, seed: r.seed, stats: r.stats || {} }));
+      },
+    },
     loadIncidents:    (schoolId) => sbLoadTableMap('incidents', schoolId),
     saveIncidents:    (schoolId, d) => sbSaveTableMap('incidents', schoolId, d),
     deleteIncident:   (schoolId, id) => sbDeleteRow('incidents', id),

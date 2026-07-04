@@ -1,11 +1,12 @@
 /* KRMAS Instructor App — service worker (offline support) */
-const VERSION = '125';
+const VERSION = '126';
 const CACHE = 'krmas-roster-v' + VERSION;
 const ASSETS = [
   './',
   './index.html',
   './app.js?v=' + VERSION,
   './db.js?v=' + VERSION,
+  './plangen.js?v=' + VERSION,
   './data.js?v=' + VERSION,
   './styles.css?v=' + VERSION,
   './manifest.json',
@@ -13,6 +14,9 @@ const ASSETS = [
   './icon-512.png',
   './krmas-logo.svg'
 ];
+// NOTE: krmas-bundle.json (the ~700 KB founder seed) is deliberately NOT
+// precached — it's fetched on demand the first time a seeded library is used
+// and then held by the normal HTTP cache, so app updates stay small.
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
