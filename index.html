@@ -15,7 +15,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Open+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=126">
+<link rel="stylesheet" href="styles.css?v=127">
 <script>
 /* No-flash brand boot: apply the cached published brand to :root BEFORE first paint,
    so a custom-branded portal never flashes the default palette on load. Self-contained
@@ -1558,6 +1558,21 @@
   </div>
 </div>
 
+<!-- ===== Modal: Library sharing (v127) ===== -->
+<div class="modal-bg" id="modalLibShare">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2>📚 Library sharing</h2>
+    <p style="font-size:12px;color:var(--grey-500);margin:0 0 8px;">Choose which schools can generate lesson plans from your library. They can never edit it — plans built from it stay in your style, credited to your source plans. Untick everything to keep it private.</p>
+    <div id="libShareState" style="font-size:12px;color:var(--c-mt,#b8860b);min-height:14px;"></div>
+    <div id="libShareList" style="max-height:260px;overflow-y:auto;"></div>
+    <div class="detail-actions" style="margin-top:10px;">
+      <button class="btn btn-primary" onclick="saveLibrarySharing()" style="flex:1;">Save</button>
+      <button class="btn" onclick="closeModal('modalLibShare')">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- ===== Modal: Generate plan from library (plangen, v126) ===== -->
 <div class="modal-bg" id="modalPlanGen">
   <div class="modal">
@@ -2247,15 +2262,15 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '126';
+  window.KRMAS_APP_VERSION = '127';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
 </script>
-<script src="data.js?v=126"></script>
-<script src="db.js?v=126"></script>
-<script src="plangen.js?v=126"></script>
-<script src="app.js?v=126"></script>
+<script src="data.js?v=127"></script>
+<script src="db.js?v=127"></script>
+<script src="plangen.js?v=127"></script>
+<script src="app.js?v=127"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

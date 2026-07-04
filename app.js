@@ -2364,6 +2364,7 @@ async function renderMe() {
   html += `<div style="margin-top:12px;display:grid;gap:8px;">
     ${can.changePin() ? `<button class="btn" onclick="openChangePin()" style="width:100%;">Device PIN</button>` : ''}
     ${DB.isSupabase ? `<button class="btn" onclick="openSetPassword('change')" style="width:100%;">🔑 Change password</button>` : ''}
+    ${DB.isSupabase ? `<button class="btn" onclick="openLibrarySharing()" style="width:100%;">📚 Library sharing</button>` : ''}
     <button class="btn" onclick="toggleDarkMode()" style="width:100%;">${themeLabel()}</button>
     ${'PushManager' in window ? `<button class="btn" onclick="${_pushEnabled ? 'disablePush' : 'requestPushPermission'}()" style="width:100%;">🔔 ${_pushEnabled ? 'Disable notifications' : 'Enable notifications'}</button>` : ''}
     ${('PushManager' in window && _pushEnabled) ? `<button class="btn" onclick="sendTestNotification()" style="width:100%;">📨 Send test notification</button>` : ''}
@@ -4213,7 +4214,9 @@ async function planCorpusRefreshStats() {
   const corpus = await planCorpusLoad(state.user.id, style);
   const cov = PlanGen.coverage(corpus.plans);
   const stats = {}; for (const c in cov) stats[c] = { plans: cov[c].plans, topics: cov[c].topics, unlocked: cov[c].unlocked };
-  await DB.corpus.saveStyle({ ownerId: state.user.id, ownerName: (state.user.name || state.user.email || 'Instructor'), seed: style.seed || null, stats });
+  // shareSchools MUST be carried through — this row rewrite happens on every
+  // completed plan and must never silently reset the owner's sharing choice.
+  await DB.corpus.saveStyle({ ownerId: state.user.id, ownerName: (state.user.name || state.user.email || 'Instructor'), seed: style.seed || null, stats, shareSchools: style.shareSchools || [] });
 }
 
 // ── corpus loading with a per-session cache ──
@@ -4292,7 +4295,7 @@ async function attachSeedBundle() {
     if (status) status.textContent = 'Fetching the archive…';
     await PlanGen.fetchSeedBundle();   // verifies the asset is deployed before flagging
     const style = (await DB.corpus.loadStyle(state.user.id)) || {};
-    await DB.corpus.saveStyle({ ownerId: state.user.id, ownerName: (state.user.name || state.user.email || 'Instructor'), seed: 'krmas-bundle', stats: style.stats || {} });
+    await DB.corpus.saveStyle({ ownerId: state.user.id, ownerName: (state.user.name || state.user.email || 'Instructor'), seed: 'krmas-bundle', stats: style.stats || {}, shareSchools: style.shareSchools || [] });
     _corpusCache.delete(state.user.id);
     await planCorpusRefreshStats();
     uiToast('Founder archive attached to your library.', 'success');
@@ -4372,6 +4375,41 @@ function usePlanGenResult() {
   set('planCooldown', p.cool.map(l => l.t).join('\n'));
   closeModal('modalPlanGen');
   uiToast(`Plan filled from library (${p.sources.length} source plan${p.sources.length === 1 ? '' : 's'}) — edit freely before saving.`, 'success');
+}
+
+// ── Library sharing setting (v127, My profile → Library sharing) ──
+// Sharing is OPT-IN per owner: they tick the schools that may generate from
+// their corpus (empty = private, the default). Applies to everyone including
+// superadmins — e.g. the founder shares his archive-seeded library with his
+// own school only. Enforced by RLS (can_read_corpus), this UI just edits the
+// owner's share_schools list.
+async function openLibrarySharing() {
+  if (!state.user || !state.user.id) return;
+  openModal('modalLibShare');
+  const listEl = document.getElementById('libShareList');
+  if (listEl) listEl.innerHTML = '<p style="font-size:12px;color:var(--grey-500);">Loading…</p>';
+  let style = null;
+  try { style = await DB.corpus.loadStyle(state.user.id); } catch (e) {}
+  const current = new Set((style && style.shareSchools) || []);
+  // Superadmins may share with any school; everyone else with their own school(s).
+  const schools = (typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS : [])
+    .filter(s => can.switchAnySchool() || (state.userSchools || []).includes(s.id));
+  if (listEl) listEl.innerHTML = schools.map(s => `
+    <label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;border-top:1px solid var(--grey-100);cursor:pointer;">
+      <input type="checkbox" class="libShareCb" value="${escapeHtml(s.id)}"${current.has(s.id) ? ' checked' : ''}> ${escapeHtml(s.name)}
+    </label>`).join('') || '<p style="font-size:12px;color:var(--grey-500);">No schools available.</p>';
+  const note = document.getElementById('libShareState');
+  if (note) note.textContent = current.size ? '' : 'Currently private — nobody else can generate from your library.';
+}
+async function saveLibrarySharing() {
+  if (!state.user || !state.user.id) return;
+  const picked = [...document.querySelectorAll('.libShareCb:checked')].map(cb => cb.value);
+  try {
+    const style = (await DB.corpus.loadStyle(state.user.id)) || {};
+    await DB.corpus.saveStyle({ ownerId: state.user.id, ownerName: (state.user.name || state.user.email || 'Instructor'), seed: style.seed || null, stats: style.stats || {}, shareSchools: picked });
+    closeModal('modalLibShare');
+    uiToast(picked.length ? `Library shared with ${picked.length} school${picked.length === 1 ? '' : 's'}.` : 'Library set to private.', 'success');
+  } catch (e) { uiToast('Could not save sharing: ' + (e.message || e)); }
 }
 
 function emailPlan() {

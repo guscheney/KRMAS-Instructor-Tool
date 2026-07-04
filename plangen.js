@@ -246,7 +246,8 @@
     let plans = (ownerRows || []).map(rowToPlan);
     let seedStyle = null;
     if (styleRow && styleRow.seed === 'krmas-bundle') {
-      const bundle = await fetchSeedBundle(opts && opts.seedUrl);
+      // via the exported object so tests (or callers) can substitute the fetcher
+      const bundle = await PlanGen.fetchSeedBundle(opts && opts.seedUrl);
       plans = bundle.plans.concat(plans);
       seedStyle = bundle.style_dna || null;
     }

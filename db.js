@@ -2206,19 +2206,19 @@ const DB = (() => {
         const sb = sbClient(); if (!sb) return null;
         const { data, error } = await sb.from('corpus_style').select('*').eq('owner_id', ownerId).maybeSingle();
         if (error) { console.warn('[DB] corpus.loadStyle:', error.message); return null; }
-        return data ? { ownerId: data.owner_id, ownerName: data.owner_name, seed: data.seed, stats: data.stats || {} } : null;
+        return data ? { ownerId: data.owner_id, ownerName: data.owner_name, seed: data.seed, stats: data.stats || {}, shareSchools: data.share_schools || [] } : null;
       },
       saveStyle: async (row) => {
         const sb = sbClient(); if (!sb) throw new Error('Supabase unavailable');
-        const { error } = await sb.from('corpus_style').upsert({ owner_id: row.ownerId, owner_name: row.ownerName || null, seed: row.seed || null, stats: row.stats || {}, updated_at: new Date().toISOString() }, { onConflict: 'owner_id' });
+        const { error } = await sb.from('corpus_style').upsert({ owner_id: row.ownerId, owner_name: row.ownerName || null, seed: row.seed || null, stats: row.stats || {}, share_schools: row.shareSchools || [], updated_at: new Date().toISOString() }, { onConflict: 'owner_id' });
         if (error) throw new Error(error.message);
       },
       // Every corpus this user may read (their own + schoolmates' + superadmins') for the picker.
       listReadable: async () => {
         const sb = sbClient(); if (!sb) return [];
-        const { data, error } = await sb.from('corpus_style').select('owner_id, owner_name, seed, stats');
+        const { data, error } = await sb.from('corpus_style').select('owner_id, owner_name, seed, stats, share_schools');
         if (error) { console.warn('[DB] corpus.listReadable:', error.message); return []; }
-        return (data || []).map(r => ({ ownerId: r.owner_id, ownerName: r.owner_name, seed: r.seed, stats: r.stats || {} }));
+        return (data || []).map(r => ({ ownerId: r.owner_id, ownerName: r.owner_name, seed: r.seed, stats: r.stats || {}, shareSchools: r.share_schools || [] }));
       },
     },
     loadIncidents:    (schoolId) => sbLoadTableMap('incidents', schoolId),
