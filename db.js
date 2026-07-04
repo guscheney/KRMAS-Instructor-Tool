@@ -1618,6 +1618,22 @@ const DB = (() => {
     if(error){ console.warn('[DB] loadMovements:', error.message); return []; }
     return (data||[]).map(r=>({ id:r.id, schoolId:r.school_id, itemId:r.item_id, size:r.size||'', delta:r.delta, kind:r.kind, note:r.note, refType:r.ref_type, refId:r.ref_id, createdBy:r.created_by, createdAt:r.created_at }));
   }
+  // Cross-school 'received' movements for the supplier-spend reports. RLS on
+  // inventory_movements already grants shop admins / superadmins every school's
+  // rows, so no server change is needed — a regular member calling this simply
+  // gets their own school back (RLS-filtered), which degrades gracefully.
+  // Returns { rows, truncated } — truncated=true means the window has more
+  // rows than the cap and totals would be incomplete.
+  async function loadReceivedMovements(sinceIso){
+    const sb=sbClient(); if(!sb) return { rows:[], truncated:false };
+    const CAP = 5000;
+    let q=sb.from('inventory_movements').select('*').eq('kind','received').order('created_at',{ ascending:false }).limit(CAP);
+    if(sinceIso) q=q.gte('created_at', sinceIso);
+    const { data,error } = await q;
+    if(error){ console.warn('[DB] loadReceivedMovements:', error.message); return { rows:[], truncated:false }; }
+    const rows=(data||[]).map(r=>({ id:r.id, schoolId:r.school_id, itemId:r.item_id, size:r.size||'', delta:r.delta, kind:r.kind, note:r.note, refType:r.ref_type, refId:r.ref_id, createdAt:r.created_at }));
+    return { rows, truncated: rows.length >= CAP };
+  }
   // Move stock between two schools atomically (paired transfer_out/transfer_in).
   async function transferStock(fromId,toId,itemId,size,qty,note){
     const sb=sbClient(); if(!sb) throw new Error('Supabase unavailable');
@@ -2205,6 +2221,7 @@ const DB = (() => {
     saveStockThreshold:(sid,itemId,sz,rl,tl)=> saveStockThreshold(sid,itemId,sz,rl,tl),
     applyMovement:    (sid,itemId,sz,d,k,n,rt,ri) => applyMovement(sid,itemId,sz,d,k,n,rt,ri),
     loadMovements:    (sid,itemId,lim)     => loadMovements(sid,itemId,lim),
+    loadReceivedMovements: (sinceIso)      => loadReceivedMovements(sinceIso),
     transferStock:    (f,t,itemId,sz,q,n)  => transferStock(f,t,itemId,sz,q,n),
     loadTransfers:    (lim)                => loadTransfers(lim),
 

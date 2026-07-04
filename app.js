@@ -14495,8 +14495,11 @@ function setShopView(v) {
   // Mark the tab as loading so its renderer shows a spinner instead of a
   // stale/incorrect "No … yet" while the fetch is in flight (v110).
   const done = (tab) => { if (state.shopTabLoading === tab) state.shopTabLoading = null; };
-  if (v === 'special' || v === 'transfers' || v === 'stocktake' || v === 'value' || v === 'orders' || v === 'supply') state.shopTabLoading = v;
+  if (v === 'special' || v === 'transfers' || v === 'stocktake' || v === 'value' || v === 'orders' || v === 'supply' || v === 'reports') state.shopTabLoading = v;
   renderShop();
+  if (v === 'reports' && can.manageShop()) {
+    shopLoadReports().finally(() => { done('reports'); if (state.shopView === 'reports') renderShop(); });
+  }
   if (v === 'special') {
     DB.specialOrders.list(state.shopStockSchool).then(o => { state.specialOrders = o || []; }).catch(() => {}).finally(() => { done('special'); if (state.shopView === 'special') renderShop(); });
   }
@@ -14586,7 +14589,7 @@ function renderShop() {
   const hasInternalSupplier = (state.shop.suppliers || []).some(s => s.isInternal);
   if (hasInternalSupplier && orderableSchools().length) tabs.push({ id: 'orders', label: 'Orders' });
   tabs.push({ id: 'special', label: 'Special orders' }, { id: 'stocktake', label: 'Stocktake' }, { id: 'value', label: 'Value' });
-  if (can.manageShop()) { tabs.push({ id: 'transfers', label: 'Transfers' }); tabs.push({ id: 'catalogue', label: 'Catalogue' }); tabs.push({ id: 'suppliers', label: 'Suppliers' }); }
+  if (can.manageShop()) { tabs.push({ id: 'transfers', label: 'Transfers' }); tabs.push({ id: 'catalogue', label: 'Catalogue' }); tabs.push({ id: 'suppliers', label: 'Suppliers' }); tabs.push({ id: 'reports', label: '📊 Reports' }); }
   if (can.supplyAdmin()) tabs.push({ id: 'supply', label: '🏭 Supply' });
   if (!tabs.find(t => t.id === state.shopView)) state.shopView = 'stock';
 
@@ -14602,6 +14605,7 @@ function renderShop() {
   else if (state.shopView === 'special')   html += renderShopSpecial();
   else if (state.shopView === 'stocktake') html += renderShopStocktake();
   else if (state.shopView === 'value')     html += renderShopValue();
+  else if (state.shopView === 'reports')   html += renderShopReports();
   else if (state.shopView === 'transfers') html += renderShopTransfers();
   else if (state.shopView === 'catalogue') html += renderShopCatalogue();
   else if (state.shopView === 'suppliers') html += renderShopSuppliers();
@@ -15894,6 +15898,174 @@ function shopPrint(kind) {
 }
 
 // ── tab: TRANSFERS (move stock between schools; shop admin / superadmin) ──
+/* ================================================================
+   SUPPLIER SPEND REPORTS (cross-school)
+   ================================================================
+   Built on the received-movements ledger joined client-side to the
+   catalogue for supplier + cost. "Spend" is ESTIMATED: units received ×
+   the item's CURRENT buy price (falling back to unit cost) — the ledger
+   doesn't capture the invoiced amount at receive time, so historical
+   price changes aren't reflected. Uncosted units are counted separately
+   and surfaced rather than silently valued at $0. */
+const SHOP_REPORT_PERIODS = [
+  { id: '90', label: 'Last 90 days', days: 90 },
+  { id: '365', label: 'Last 12 months', days: 365 },
+  { id: 'all', label: 'All time', days: null },
+];
+function shopReportPeriod() { return state.shopReportPeriod || '365'; }
+function setShopReportPeriod(p) {
+  state.shopReportPeriod = p;
+  state.shopReportData = null;
+  state.shopTabLoading = 'reports';
+  renderShop();
+  shopLoadReports().finally(() => { if (state.shopTabLoading === 'reports') state.shopTabLoading = null; if (state.shopView === 'reports') renderShop(); });
+}
+async function shopLoadReports() {
+  const period = SHOP_REPORT_PERIODS.find(p => p.id === shopReportPeriod()) || SHOP_REPORT_PERIODS[1];
+  const sinceIso = period.days ? new Date(Date.now() - period.days * 86400000).toISOString() : null;
+  try {
+    const res = await DB.loadReceivedMovements(sinceIso);
+    state.shopReportData = { rows: res.rows || [], truncated: !!res.truncated, error: null };
+  } catch (e) {
+    state.shopReportData = { rows: [], truncated: false, error: e.message || String(e) };
+  }
+}
+// The cost basis for one unit of an item: buy price if known, else unit cost, else null (uncosted).
+function shopItemCostBasis(it) {
+  if (!it) return null;
+  if (it.buyPrice != null) return Number(it.buyPrice);
+  if (it.unitCost != null) return Number(it.unitCost);
+  return null;
+}
+// Aggregates received movements into per-supplier / per-school spend.
+// Pure — takes movements + items + suppliers, returns a plain structure.
+// Supply-location rows (school_id '__supply__:…') are the internal
+// sub-business's own stock and are excluded from school comparisons.
+function computeSupplierSpend(movements, items, suppliers) {
+  const itemById = {}; (items || []).forEach(i => { itemById[i.id] = i; });
+  const supById = {}; (suppliers || []).forEach(s => { supById[s.id] = s; });
+  const bySupplier = {};   // supKey -> { name, isInternal, spend, units, uncostedUnits, schools: { sid: { spend, units, uncostedUnits } } }
+  for (const m of (movements || [])) {
+    if (!m || m.kind !== 'received' || !(m.delta > 0)) continue;
+    if (String(m.schoolId || '').indexOf('__supply__:') === 0) continue;
+    const it = itemById[m.itemId];
+    const supKey = (it && it.supplierId) || '_none';
+    const sup = supById[supKey];
+    if (!bySupplier[supKey]) bySupplier[supKey] = { key: supKey, name: sup ? sup.name : (supKey === '_none' ? 'No supplier set' : '(deleted supplier)'), isInternal: !!(sup && sup.isInternal), spend: 0, units: 0, uncostedUnits: 0, schools: {} };
+    const agg = bySupplier[supKey];
+    const cost = shopItemCostBasis(it);
+    const line = agg.schools[m.schoolId] || (agg.schools[m.schoolId] = { spend: 0, units: 0, uncostedUnits: 0 });
+    agg.units += m.delta; line.units += m.delta;
+    if (cost != null) { agg.spend += m.delta * cost; line.spend += m.delta * cost; }
+    else { agg.uncostedUnits += m.delta; line.uncostedUnits += m.delta; }
+  }
+  return Object.values(bySupplier).sort((a, b) => b.spend - a.spend || b.units - a.units);
+}
+// Flags schools whose spend at a supplier sits well off the mean of the
+// schools that bought there — the "inconsistent buying" signal. Only fires
+// when 2+ schools have spend (one school buying somewhere isn't an outlier,
+// it's just the only buyer — that gets its own separate 'single-buyer' flag).
+function computeSpendOutliers(supplierAgg) {
+  const out = [];
+  for (const sup of supplierAgg || []) {
+    const entries = Object.entries(sup.schools).filter(([, v]) => v.spend > 0);
+    if (entries.length === 1 && sup.spend > 0) {
+      out.push({ supplier: sup.name, kind: 'single_buyer', schoolId: entries[0][0], spend: entries[0][1].spend });
+      continue;
+    }
+    if (entries.length < 2) continue;
+    const mean = entries.reduce((a, [, v]) => a + v.spend, 0) / entries.length;
+    if (!(mean > 0)) continue;
+    for (const [sid, v] of entries) {
+      const ratio = v.spend / mean;
+      if (ratio >= 1.75) out.push({ supplier: sup.name, kind: 'high', schoolId: sid, spend: v.spend, mean, ratio });
+      else if (ratio <= 0.35) out.push({ supplier: sup.name, kind: 'low', schoolId: sid, spend: v.spend, mean, ratio });
+    }
+  }
+  return out;
+}
+function shopReportSchoolName(sid) {
+  const schools = (typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS : []);
+  const s = schools.find(x => x.id === sid);
+  return s ? s.name : sid;
+}
+function _money(n) { return '$' + Number(n || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+function renderShopReports() {
+  if (!can.manageShop()) return `<div class="empty"><h2>No access</h2><p>Reports are for shop admins and superadmins.</p></div>`;
+  const period = shopReportPeriod();
+  let html = `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0;">
+    <select onchange="setShopReportPeriod(this.value)" aria-label="Report period" style="padding:6px 10px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;background:var(--white);">
+      ${SHOP_REPORT_PERIODS.map(p => `<option value="${p.id}"${period === p.id ? ' selected' : ''}>${escapeHtml(p.label)}</option>`).join('')}
+    </select>
+    <span style="font-size:11px;color:var(--grey-500);">Estimated at each item's current buy price (or unit cost) — the ledger doesn't record invoiced amounts.</span>
+  </div>`;
+  const rd = state.shopReportData;
+  if (!rd) return html + `<p style="font-size:13px;color:var(--grey-500);">Loading…</p>`;
+  if (rd.error) return html + `<div class="empty"><h2>Couldn't load</h2><p>${escapeHtml(rd.error)}</p></div>`;
+  if (rd.truncated) html += `<p style="font-size:12px;color:var(--c-mt,#b8860b);margin:0 0 8px;">⚠ This period has more receipts than can be loaded at once — totals below are incomplete. Narrow the period.</p>`;
+
+  const agg = computeSupplierSpend(rd.rows, state.shop.items, state.shop.suppliers);
+  if (!agg.length) return html + `<div class="empty"><h2>No receipts in this period</h2><p>Spend appears here once stock is received against catalogue items.</p></div>`;
+
+  const schoolIds = [...new Set(agg.flatMap(s => Object.keys(s.schools)))].sort((a, b) => shopReportSchoolName(a).localeCompare(shopReportSchoolName(b)));
+  const grand = agg.reduce((a, s) => a + s.spend, 0);
+  const totalUncosted = agg.reduce((a, s) => a + s.uncostedUnits, 0);
+
+  // ── club-wide spend by supplier ──
+  html += `<h3 style="font-family:'Oswald',sans-serif;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin:16px 0 8px;">Spend by supplier — whole club (${_money(grand)})</h3>`;
+  const maxSpend = Math.max(...agg.map(s => s.spend), 1);
+  for (const sup of agg) {
+    const pct = grand > 0 ? (sup.spend / grand * 100) : 0;
+    html += `<div style="margin-bottom:8px;">
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:2px;">
+        <span><strong>${escapeHtml(sup.name)}</strong>${sup.isInternal ? ' <span style="font-size:10px;color:#2563eb;font-weight:700;">INTERNAL</span>' : ''}
+          <span style="color:var(--grey-500);font-size:11px;">· ${sup.units} unit${sup.units === 1 ? '' : 's'}${sup.uncostedUnits ? ' · ' + sup.uncostedUnits + ' uncosted' : ''}</span></span>
+        <span style="font-family:'JetBrains Mono',monospace;">${_money(sup.spend)} <span style="color:var(--grey-500);font-size:11px;">(${pct.toFixed(0)}%)</span></span></div>
+      <div style="height:8px;background:var(--grey-100);border-radius:4px;overflow:hidden;"><div style="height:100%;width:${(sup.spend / maxSpend * 100).toFixed(1)}%;background:var(--red);border-radius:4px;"></div></div>
+    </div>`;
+  }
+  if (totalUncosted) html += `<p style="font-size:11px;color:var(--c-mt,#b8860b);">⚠ ${totalUncosted} received unit${totalUncosted === 1 ? '' : 's'} had no buy price or unit cost on the item and are excluded from $ totals — set prices on the Catalogue to include them.</p>`;
+
+  // ── supplier × school matrix ──
+  html += `<h3 style="font-family:'Oswald',sans-serif;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin:20px 0 8px;">By school</h3>
+    <div class="table-scroll"><table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <thead><tr style="color:var(--grey-500);font-size:10px;text-transform:uppercase;letter-spacing:.05em;">
+      <th style="text-align:left;padding:4px 8px;">Supplier</th>
+      ${schoolIds.map(sid => `<th style="text-align:right;padding:4px 8px;">${escapeHtml(shopReportSchoolName(sid))}</th>`).join('')}
+      <th style="text-align:right;padding:4px 8px;">Total</th>
+    </tr></thead><tbody>`;
+  for (const sup of agg) {
+    html += `<tr style="border-top:1px solid var(--grey-200);">
+      <td style="padding:5px 8px;font-weight:600;">${escapeHtml(sup.name)}</td>
+      ${schoolIds.map(sid => { const v = sup.schools[sid]; return `<td style="text-align:right;padding:5px 8px;font-family:'JetBrains Mono',monospace;">${v && (v.spend > 0 || v.units > 0) ? _money(v.spend) : '<span style="color:var(--grey-300);">—</span>'}</td>`; }).join('')}
+      <td style="text-align:right;padding:5px 8px;font-family:'JetBrains Mono',monospace;font-weight:700;">${_money(sup.spend)}</td></tr>`;
+  }
+  // per-school column totals
+  html += `<tr style="border-top:2px solid var(--grey-300);">
+    <td style="padding:5px 8px;font-weight:700;">Total</td>
+    ${schoolIds.map(sid => { const t = agg.reduce((a, s) => a + ((s.schools[sid] || {}).spend || 0), 0); return `<td style="text-align:right;padding:5px 8px;font-family:'JetBrains Mono',monospace;font-weight:700;">${_money(t)}</td>`; }).join('')}
+    <td style="text-align:right;padding:5px 8px;font-family:'JetBrains Mono',monospace;font-weight:700;">${_money(grand)}</td></tr>`;
+  html += `</tbody></table></div>`;
+
+  // ── inconsistent buying patterns ──
+  const outliers = computeSpendOutliers(agg);
+  html += `<h3 style="font-family:'Oswald',sans-serif;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin:20px 0 8px;">Buying-pattern flags</h3>`;
+  if (!outliers.length) {
+    html += `<p style="font-size:13px;color:var(--grey-500);">No stand-out differences between schools in this period.</p>`;
+  } else {
+    for (const o of outliers) {
+      const school = escapeHtml(shopReportSchoolName(o.schoolId));
+      let line;
+      if (o.kind === 'single_buyer') line = `<strong>${school}</strong> is the only school buying from <strong>${escapeHtml(o.supplier)}</strong> (${_money(o.spend)}).`;
+      else if (o.kind === 'high') line = `<strong>${school}</strong> spends ${o.ratio.toFixed(1)}× the school average at <strong>${escapeHtml(o.supplier)}</strong> (${_money(o.spend)} vs ~${_money(o.mean)} avg).`;
+      else line = `<strong>${school}</strong> spends well under the school average at <strong>${escapeHtml(o.supplier)}</strong> (${_money(o.spend)} vs ~${_money(o.mean)} avg).`;
+      html += `<div style="border:1px solid var(--grey-200);border-left:3px solid ${o.kind === 'high' ? 'var(--c-mt,#b8860b)' : o.kind === 'low' ? 'var(--grey-300)' : '#2563eb'};border-radius:var(--r-sm);padding:8px 12px;margin-bottom:6px;font-size:13px;">${line}</div>`;
+    }
+    html += `<p style="font-size:11px;color:var(--grey-500);">Flags are relative to the average of schools that bought from that supplier in this period — they're prompts to look, not verdicts. A school with more students will naturally buy more.</p>`;
+  }
+  return html;
+}
+
 function renderShopTransfers() {
   if (!can.manageShop()) return `<div class="empty"><h2>No access</h2><p>Transfers are for shop admins and superadmins.</p></div>`;
   const schools = (typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS : []);
