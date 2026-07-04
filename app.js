@@ -2722,6 +2722,10 @@ async function signOut() {
   await DB.auth.signOut();
   state.user = null;
   state.myDocuments = [];
+  // Generation caches are per-person — never let them survive a user switch
+  // on a shared device.
+  if (typeof _corpusCache !== 'undefined') _corpusCache.clear();
+  _pgState = null;
   showLoginGate();
 }
 
@@ -4853,6 +4857,15 @@ async function deletePlan() {
   if (!await uiConfirm('Delete this lesson plan? Cannot be undone.')) return;
   delete state.plans[dateKey];
   await savePlans();
+  // Remove the plan from ITS AUTHOR'S generation library too. The delete is
+  // scoped to the current user's own corpus (RLS enforces owner-only writes),
+  // so when an admin deletes someone else's plan this is a harmless no-op and
+  // the author's library keeps what they taught — deliberate.
+  if (state.user && state.user.id) {
+    DB.corpus.deletePlan(state.user.id, dateKey)
+      .then(() => { _corpusCache.delete(state.user.id); return planCorpusRefreshStats(); })
+      .catch(e => console.warn('[corpus] delete failed:', e.message || e));
+  }
   closeModal('modalPlan');
   if (isGrading) { if (state.view === 'grading') renderGrading(); }
   else if (state.view === 'plans') renderPlans();

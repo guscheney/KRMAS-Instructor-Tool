@@ -2202,6 +2202,12 @@ const DB = (() => {
         const { error } = await sb.from('corpus_plans').upsert(r, { onConflict: 'owner_id,source_key' });
         if (error) throw new Error(error.message);
       },
+      // Owner-scoped removal of one plan from the corpus (RLS: owner-only).
+      deletePlan: async (ownerId, sourceKey) => {
+        const sb = sbClient(); if (!sb) return;
+        const { error } = await sb.from('corpus_plans').delete().eq('owner_id', ownerId).eq('source_key', sourceKey);
+        if (error) throw new Error(error.message);
+      },
       loadStyle: async (ownerId) => {
         const sb = sbClient(); if (!sb) return null;
         const { data, error } = await sb.from('corpus_style').select('*').eq('owner_id', ownerId).maybeSingle();
