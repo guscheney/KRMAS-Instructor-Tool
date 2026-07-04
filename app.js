@@ -16613,9 +16613,13 @@ function smaiSearchInput(q) {
 }
 function _smaiErrText(code) {
   return ({
-    smai_unavailable: "Couldn't reach SMAI right now — try again shortly.",
+    smai_timeout: "SMAI took too long to respond — try again.",
+    smai_network_error: "Couldn't reach SMAI — check your connection and try again.",
+    smai_blocked: "SMAI is temporarily blocking automated lookups from here — try again in a minute, or use the SMAI catalogue import instead if this keeps happening.",
+    smai_bad_response: "SMAI sent back something unexpected — try again shortly.",
+    not_found: "Couldn't find that on SMAI.",
     query_too_short: 'Keep typing…',
-  })[code] || "Couldn't reach SMAI right now.";
+  })[code] || (code && code.startsWith('smai_http_') ? `SMAI returned an error (${code.replace('smai_http_', '')}) — try again shortly.` : "Couldn't reach SMAI right now.");
 }
 function smaiRenderResults() {
   const el = document.getElementById('smaiResults'); if (!el) return;
