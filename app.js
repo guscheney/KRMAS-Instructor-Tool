@@ -9922,6 +9922,21 @@ async function submitPost() {
 function startRealtimeFeed() {
   if (!DB.isSupabase) return;
   if (state.realtimeChannel) DB.unsubscribe(state.realtimeChannel);
+  // v115: roster edits arrive live too — when anyone assigns/unassigns on this
+  // school, every open device re-renders the day immediately (no reload).
+  if (state.realtimeKvChannel) DB.unsubscribe(state.realtimeKvChannel);
+  state.realtimeKvChannel = DB.subscribeKv(state.schoolId, (payload) => {
+    try {
+      const row = payload && payload.new;
+      if (!row || row.key !== 'roster-edits') return;
+      const incoming = row.value || {};
+      // Echo-dedupe: our own save comes straight back; skip identical state so
+      // the assigning device isn't re-rendered (and can't be clobbered) by it.
+      if (JSON.stringify(incoming) === JSON.stringify(state.edits || {})) return;
+      state.edits = incoming;
+      renderDay();
+    } catch (e) { /* realtime handler must never throw */ }
+  });
   state.realtimeChannel = DB.subscribeFeed(state.schoolId, (type, payload) => {
     if (type === 'post' && payload.eventType === 'INSERT') {
       const norm = {

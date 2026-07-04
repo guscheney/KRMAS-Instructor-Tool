@@ -1441,6 +1441,22 @@ const DB = (() => {
       .subscribe();
   }
 
+  // v115: changes to a school's kv_store rows (roster edits live at key
+  // 'roster-edits'). Lets other open devices re-render the roster the moment an
+  // assignment lands, instead of on next reload. Requires migration 28.
+  function subscribeKv(schoolId, onEvent) {
+    const sb = sbClient();
+    if (!sb || typeof sb.channel !== 'function') return null;
+    try {
+      return sb.channel('kv:' + schoolId)
+        .on('postgres_changes', {
+          event: '*', schema: 'public', table: 'kv_store',
+          filter: `school_id=eq.${schoolId}`
+        }, payload => onEvent(payload))
+        .subscribe();
+    } catch (e) { return null; }
+  }
+
   function unsubscribe(channel) {
     const sb = sbClient();
     if (sb && channel) sb.removeChannel(channel);
@@ -2213,7 +2229,7 @@ const DB = (() => {
     notifInsert, notifList, notifUnreadCount, notifMarkAllRead, notifClearAll,
 
     // Realtime
-    subscribeFeed, subscribeNotices, unsubscribe,
+    subscribeFeed, subscribeNotices, subscribeKv, unsubscribe,
 
     // Migration
     migrateLocalToSupabase,
