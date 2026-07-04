@@ -386,7 +386,7 @@ const DB = (() => {
           id, school_id, author_id, author_name, author_role,
           body, media_urls, target_scope, target_ids,
           like_count, comment_count, pinned, edited,
-          notice_type, required_reading, expires_at, archived,
+          notice_type, required_reading, expires_at, archived, publish_at,
           created_at, updated_at
         `)
         .or(`school_id.eq.${schoolId},target_scope.eq.network`)
@@ -420,6 +420,7 @@ const DB = (() => {
       requiredReading: row.required_reading || false,
       expiresAt:       row.expires_at || null,
       archived:        row.archived || false,
+      publishAt:       row.publish_at || null,
       pinned:       row.pinned || false,
       edited:       row.edited || false,
       createdAt:    row.created_at,
@@ -442,6 +443,7 @@ const DB = (() => {
       required_reading: post.requiredReading || false,
       expires_at:       post.expiresAt || null,
       archived:         post.archived || false,
+      publish_at:       post.publishAt || null,
       pinned:       post.pinned || false,
       edited:       post.edited || false,
       created_at:   post.createdAt || new Date().toISOString(),
@@ -1266,9 +1268,118 @@ const DB = (() => {
     try {
       const { data, error } = await sbClient().functions.invoke('send-push-notification', { body: payload });
       if (error) { console.warn('[DB] push invoke failed:', error.message); return false; }
+      // v113: mirror explicit-target pushes into the notification inbox so they
+      // survive the banner. (School-wide sends are mirrored by the edge fn,
+      // which is the only place that audience is resolved.)
+      if (Array.isArray(payload && payload.targetUserIds) && payload.targetUserIds.length) {
+        notifInsert(payload.targetUserIds, payload).catch(() => {});
+      }
       return data || true;
     } catch (e) { console.warn('[DB] push invoke error:', e.message); return false; }
   }
+
+  // ── v113 ops: error telemetry, notification inbox, diagnostics ─────
+  async function logClientError(rec) {
+    // Best-effort, never throws — this runs inside error handlers.
+    if (!isSB()) return false;
+    try {
+      const { error } = await sbClient().from('client_errors').insert({
+        version: rec.version || null, view: rec.view || null,
+        message: String(rec.message || '').slice(0, 500),
+        stack: String(rec.stack || '').slice(0, 4000),
+        user_id: rec.userId || null, role: rec.role || null,
+        school_id: rec.schoolId || null, user_agent: rec.userAgent || null,
+      });
+      return !error;
+    } catch (e) { return false; }
+  }
+  async function loadClientErrors(limit) {
+    if (!isSB()) return [];
+    const { data, error } = await sbClient().from('client_errors')
+      .select('*').order('created_at', { ascending: false }).limit(limit || 100);
+    if (error) throw error;
+    return data || [];
+  }
+  async function clearClientErrors() {
+    if (!isSB()) return true;
+    const { error } = await sbClient().from('client_errors').delete().gte('created_at', '1970-01-01');
+    if (error) throw error;
+    return true;
+  }
+
+  async function notifInsert(userIds, payload) {
+    if (!isSB() || !userIds || !userIds.length) return false;
+    const rows = [...new Set(userIds)].map(uid => ({
+      user_id: uid, title: String((payload && payload.title) || 'KRMAS').slice(0, 120),
+      body: String((payload && payload.body) || '').slice(0, 300),
+      kind: (payload && payload.tag) || null, url: (payload && payload.url) || null,
+    }));
+    try { const { error } = await sbClient().from('notifications').insert(rows); return !error; }
+    catch (e) { return false; }
+  }
+  async function notifList(limit) {
+    if (!isSB()) return [];
+    const { data, error } = await sbClient().from('notifications')
+      .select('*').order('created_at', { ascending: false }).limit(limit || 50);
+    if (error) throw error;
+    return data || [];
+  }
+  async function notifUnreadCount() {
+    if (!isSB()) return 0;
+    try {
+      const { count, error } = await sbClient().from('notifications')
+        .select('id', { count: 'exact', head: true }).is('read_at', null);
+      return error ? 0 : (count || 0);
+    } catch (e) { return 0; }
+  }
+  async function notifMarkAllRead() {
+    if (!isSB()) return true;
+    const { error } = await sbClient().from('notifications')
+      .update({ read_at: new Date().toISOString() }).is('read_at', null);
+    return !error;
+  }
+  async function notifClearAll() {
+    if (!isSB()) return true;
+    const { error } = await sbClient().from('notifications').delete().gte('created_at', '1970-01-01');
+    return !error;
+  }
+
+  // Read-only health probes for the diagnostics view. Each probe is harmless
+  // (limit-1 selects, one read-only RPC, edge-fn reachability without action).
+  async function diagnostics() {
+    const out = [];
+    const probe = async (name, fn) => {
+      try { const detail = await fn(); out.push({ name, ok: true, detail: detail || 'ok' }); }
+      catch (e) { out.push({ name, ok: false, detail: (e && e.message) || String(e) }); }
+    };
+    if (!isSB()) { out.push({ name: 'mode', ok: true, detail: 'local mode — no Supabase probes' }); return out; }
+    const sb = sbClient();
+    const tables = ['profiles', 'feed_posts', 'inventory_items', 'inventory_stock', 'inventory_movements',
+      'special_orders', 'supply_orders', 'supply_order_lines', 'school_integrations',
+      'client_errors', 'notifications', 'push_subscriptions'];
+    for (const t of tables) {
+      await probe('table: ' + t, async () => {
+        const { error } = await sb.from(t).select('*', { head: true, count: 'exact' }).limit(1);
+        if (error) throw new Error(error.message);
+        return 'reachable';
+      });
+    }
+    await probe('rpc: supply_admin_ids (schema cache)', async () => {
+      const { error } = await sb.rpc('supply_admin_ids');
+      if (error && /404|not exist|schema cache/i.test(error.message)) throw new Error(error.message + ' — reload the API schema cache (Dashboard → Settings → API)');
+      if (error) throw new Error(error.message);
+      return 'resolves';
+    });
+    await probe('edge fn: aquila (reachability)', async () => {
+      const { error } = await sb.functions.invoke('aquila', { body: { action: '__ping' } });
+      // Any structured error means the function EXISTS and answered; only a
+      // fetch-level failure means it's missing/unreachable.
+      if (error && /Failed to send|FunctionsFetchError|fetch/i.test(error.message || '')) throw new Error('unreachable: ' + error.message);
+      return 'deployed';
+    });
+    return out;
+  }
+
 
   // ── Onboarding ───────────────────────────────────────────────────
   async function loadOnboardingChecklists(schoolId) {
@@ -2098,6 +2209,8 @@ const DB = (() => {
 
     // Push
     savePushSubscription, removePushSubscription, sendPushNotification,
+    logClientError, loadClientErrors, clearClientErrors, diagnostics,
+    notifInsert, notifList, notifUnreadCount, notifMarkAllRead, notifClearAll,
 
     // Realtime
     subscribeFeed, subscribeNotices, unsubscribe,

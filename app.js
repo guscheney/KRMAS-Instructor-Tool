@@ -1530,6 +1530,8 @@ function adminMenuSections(isSuperAdmin) {
       ...(DB.isSupabase ? [{ icon: '🔗', label: 'Aquila CRM', fn: 'openAquilaSettings()' }] : []),
     ] },
     { title: 'System', items: [
+      { icon: '🐞', label: 'Client errors',        fn: 'openClientErrors()', sup: true },
+      { icon: '🩺', label: 'Diagnostics',          fn: 'openDiagnostics()', sup: true },
       { icon: '🔑', label: 'Roles & permissions',  fn: 'openRolesMatrix()', sup: true },
       { icon: '🎨', label: 'Branding',             fn: 'openBrandingPanel()', sup: true },
       { icon: '📄', label: 'Upload docs',          fn: 'openDocUpload()', sup: true },
@@ -1550,6 +1552,74 @@ function adminMenuFilter(q) {
     });
     sec.style.display = any ? '' : 'none';
   });
+}
+
+// ── v113: client error log (superadmin) ──
+async function openClientErrors() {
+  const main = document.getElementById('mainContent');
+  const back = `<button class="btn btn-ghost btn-sm" onclick="renderAdmin()" style="margin-bottom:8px;">‹ Back to Admin</button>`;
+  main.innerHTML = back + `<h2 class="section-head">🐞 Client errors</h2>` + uiLoading('Loading error log…');
+  let rows = [];
+  try { rows = await DB.loadClientErrors(100); }
+  catch (e) { main.innerHTML = back + `<h2 class="section-head">🐞 Client errors</h2>` + uiEmpty('⚠', 'Could not load', e.message || String(e)); return; }
+  let html = back + `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+    <h2 class="section-head" style="margin:0;flex:1;">🐞 Client errors</h2>
+    ${rows.length ? `<button class="btn btn-danger btn-sm" onclick="clearClientErrorsUi()">Clear log</button>` : ''}
+  </div>
+  <div class="hint" style="margin-bottom:10px;">Uncaught errors reported by live devices (deduped, max 10/session/device). If this list is empty, nothing has broken.</div>`;
+  if (!rows.length) html += uiEmpty('✅', 'No errors reported', 'Production has been quiet.');
+  for (const r of rows) {
+    html += `<div style="border:1px solid var(--grey-100);border-radius:var(--r-md);padding:9px 11px;margin-bottom:7px;font-size:12px;" onclick="const s=this.querySelector('.err-stack'); if(s) s.style.display = s.style.display==='none'?'':'none';">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;color:var(--grey-500);font-size:11px;">
+        <span>${escapeHtml((r.created_at || '').replace('T', ' ').slice(0, 16))}</span>
+        <span>v${escapeHtml(r.version || '?')}</span>
+        <span>view: ${escapeHtml(r.view || '—')}</span>
+        <span>${escapeHtml(r.role || '')}</span>
+      </div>
+      <div style="font-weight:700;margin-top:3px;">${escapeHtml(r.message || '')}</div>
+      ${r.stack ? `<pre class="err-stack" style="display:none;white-space:pre-wrap;font-size:10px;color:var(--grey-500);margin:6px 0 0;">${escapeHtml(r.stack)}</pre>` : ''}
+    </div>`;
+  }
+  main.innerHTML = html;
+}
+async function clearClientErrorsUi() {
+  if (!await uiConfirm('Clear the whole error log?')) return;
+  try { await DB.clearClientErrors(); uiToast('Error log cleared', 'success'); } catch (e) { uiToast('Could not clear: ' + (e.message || e), 'error'); }
+  openClientErrors();
+}
+
+// ── v113: diagnostics / self-test (superadmin) ──
+async function openDiagnostics() {
+  const main = document.getElementById('mainContent');
+  const back = `<button class="btn btn-ghost btn-sm" onclick="renderAdmin()" style="margin-bottom:8px;">‹ Back to Admin</button>`;
+  main.innerHTML = back + `<h2 class="section-head">🩺 Diagnostics</h2>
+    <div class="hint" style="margin-bottom:10px;">Fires a harmless read at every table, RPC and edge function the app depends on — your post-deploy smoke test, automated.</div>
+    <button class="btn btn-primary" onclick="runDiagnostics()" style="width:100%;">Run self-test</button>
+    <div id="diagResults" style="margin-top:12px;"></div>`;
+}
+async function runDiagnostics() {
+  const box = document.getElementById('diagResults'); if (!box) return;
+  box.innerHTML = uiLoading('Probing…');
+  const checks = [];
+  // client-side checks first
+  try { localStorage.setItem('__diag', '1'); localStorage.removeItem('__diag'); checks.push({ name: 'localStorage', ok: true, detail: 'writable' }); }
+  catch (e) { checks.push({ name: 'localStorage', ok: false, detail: e.message }); }
+  checks.push({ name: 'online', ok: !!navigator.onLine, detail: navigator.onLine ? 'connected' : 'offline' });
+  try {
+    const reg = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration() : null;
+    checks.push({ name: 'service worker', ok: !!(reg && reg.active), detail: reg && reg.active ? 'active (app v' + (window.KRMAS_APP_VERSION || '?') + ')' : 'not registered' });
+  } catch (e) { checks.push({ name: 'service worker', ok: false, detail: e.message }); }
+  // server probes
+  let server = [];
+  try { server = await DB.diagnostics(); } catch (e) { server = [{ name: 'diagnostics', ok: false, detail: e.message || String(e) }]; }
+  const all = checks.concat(server);
+  const bad = all.filter(c => !c.ok).length;
+  box.innerHTML = `<div style="font-size:13px;font-weight:700;margin-bottom:8px;color:${bad ? 'var(--red)' : 'var(--ok)'};">${bad ? bad + ' problem' + (bad === 1 ? '' : 's') + ' found' : 'All ' + all.length + ' checks passed ✓'}</div>` +
+    all.map(c => `<div style="display:flex;gap:8px;align-items:baseline;padding:5px 2px;border-bottom:1px solid var(--grey-100);font-size:12px;">
+      <span style="flex:none;">${c.ok ? '✅' : '❌'}</span>
+      <span style="flex:none;font-weight:600;min-width:150px;">${escapeHtml(c.name)}</span>
+      <span style="color:var(--grey-500);word-break:break-word;">${escapeHtml(String(c.detail || ''))}</span>
+    </div>`).join('');
 }
 
 // ---------- modal a11y: focus in on open, restore on close, Escape closes ----------
@@ -2875,6 +2945,112 @@ function _uiConfirmDone(v) {
   closeModal('modalConfirm');
   if (r) r(!!v);
 }
+
+// ── v113: persistent toast with an action button (used by the update prompt) ──
+function uiToastAction(msg, actionLabel, onAction, kind) {
+  let t = document.getElementById('krmasToast');
+  if (!t) { t = document.createElement('div'); t.id = 'krmasToast'; document.body.appendChild(t); }
+  if (_uiToastTimer) clearTimeout(_uiToastTimer);
+  window._uiToastActionFn = onAction;
+  t.className = 'ui-toast ui-toast-' + (kind || 'info');
+  t.innerHTML = escapeHtml(String(msg)) +
+    ` <button class="btn btn-sm" style="margin-left:10px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.45);color:#fff;" onclick="_uiToastActionRun()">${escapeHtml(actionLabel)}</button>`;
+  void t.offsetWidth;
+  t.classList.add('show'); // persistent: no auto-hide while an action is pending
+}
+function _uiToastActionRun() {
+  const f = window._uiToastActionFn; window._uiToastActionFn = null;
+  const t = document.getElementById('krmasToast'); if (t) t.classList.remove('show');
+  if (f) { try { f(); } catch (e) {} }
+}
+
+// ── v113: client error telemetry ──
+// Uncaught errors / unhandled rejections are reported to the client_errors
+// table (superadmin-readable), best-effort, deduped, max 10 per session.
+// Motivating incident: the v111 "toast is not defined" order-save failure.
+let _errReported = 0;
+const _errSeen = {};
+function reportClientError(message, stack) {
+  try {
+    if (!message || _errReported >= 10) return;
+    const key = String(message).slice(0, 120);
+    if (_errSeen[key]) return;
+    _errSeen[key] = 1; _errReported++;
+    const p = DB.logClientError({
+      version: (typeof window !== 'undefined' && window.KRMAS_APP_VERSION) || '',
+      view: (state && state.view) || '',
+      message: String(message), stack: String(stack || ''),
+      userId: (state && state.user && state.user.id) || null,
+      role: (state && state.user && state.user.role) || null,
+      schoolId: (state && state.schoolId) || null,
+      userAgent: (typeof navigator !== 'undefined' && navigator.userAgent) || '',
+    });
+    if (p && p.catch) p.catch(() => {});
+  } catch (e) { /* the error reporter must never throw */ }
+}
+window.addEventListener('error', (e) => reportClientError(e.message || 'script error', e.error && e.error.stack));
+window.addEventListener('unhandledrejection', (e) => {
+  const r = e && e.reason;
+  reportClientError((r && r.message) || String(r || 'unhandled rejection'), r && r.stack);
+});
+
+// ── v113: update-available prompt ──
+// sw.js already skipWaiting()s, so a freshly-installed worker takes control while
+// the old page keeps running stale code. controllerchange is the moment to offer
+// a reload. Guard: on the very first install there was no controller — no prompt.
+function initUpdatePrompt() {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+  const hadController = !!navigator.serviceWorker.controller;
+  let prompted = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || prompted) return;
+    prompted = true;
+    uiToastAction('A new version of KRMAS is ready', 'Reload', () => location.reload());
+  });
+  const check = () => { try { navigator.serviceWorker.getRegistration().then(r => { if (r) r.update(); }).catch(() => {}); } catch (e) {} };
+  setInterval(check, 30 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+}
+initUpdatePrompt();
+
+// ── v113: notification inbox (header bell) ──
+async function refreshNotifBadge() {
+  if (!state.user || !DB.isSupabase) return;
+  try {
+    const n = await DB.notifUnreadCount();
+    state._notifUnread = n;
+    const b = document.getElementById('notifBadge');
+    if (b) { b.style.display = n > 0 ? '' : 'none'; b.textContent = n > 99 ? '99+' : String(n); }
+  } catch (e) {}
+}
+async function openNotifications() {
+  openModal('modalNotifications');
+  const box = document.getElementById('notifList'); if (!box) return;
+  box.innerHTML = uiLoading('Loading notifications…');
+  let rows = [];
+  try { rows = await DB.notifList(50); } catch (e) { box.innerHTML = uiEmpty('⚠', 'Could not load', e.message || 'try again'); return; }
+  if (!rows.length) { box.innerHTML = uiEmpty('🔔', 'Nothing yet', 'Order updates and notices will appear here.'); }
+  else {
+    box.innerHTML = rows.map(r => `
+      <div style="display:flex;gap:9px;padding:9px 6px;border-bottom:1px solid var(--grey-100);${r.read_at ? 'opacity:.68;' : ''}">
+        <span style="flex:none;width:8px;padding-top:6px;">${r.read_at ? '' : '<span style="display:block;width:8px;height:8px;border-radius:50%;background:var(--red);"></span>'}</span>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:13px;font-weight:${r.read_at ? '400' : '700'};">${escapeHtml(r.title || '')}</div>
+          ${r.body ? `<div style="font-size:12px;color:var(--grey-500);">${escapeHtml(r.body)}</div>` : ''}
+          <div class="hint">${timeAgo(r.created_at)}</div>
+        </div>
+      </div>`).join('');
+  }
+  // opening the inbox marks everything read
+  DB.notifMarkAllRead().then(() => refreshNotifBadge()).catch(() => {});
+}
+async function notifClearAllUi() {
+  if (!await uiConfirm('Clear all notifications?')) return;
+  try { await DB.notifClearAll(); } catch (e) {}
+  openNotifications();
+  refreshNotifBadge();
+}
+setInterval(() => refreshNotifBadge(), 5 * 60 * 1000);
 
 // Friendly guard for the common write entry points (the DB read-only proxy is the
 // hard backstop; this just gives clear feedback instead of a silent no-op).
@@ -8765,7 +8941,8 @@ async function enterAppWithSession(session) {
   try { state.roleConfig = await DB.roles.loadConfig(); } catch (e) { console.warn('loadRoleConfig:', e && e.message); }
   try { state.classTypes = (await DB.classTypes.load()) || []; applyClassTypeOverrides(state.classTypes); } catch (e) { console.warn('loadClassTypes:', e && e.message); }
   try { await loadCustomSchools(); } catch (e) { console.warn('loadCustomSchools:', e && e.message); }
-  try { if (can.seeShop()) await loadShopData(); } catch (e) { console.warn('loadShopData:', e && e.message); }
+  try { if (can.seeShop()) await loadShopData(); } catch (e) { console.warn("loadShopData:", e && e.message); }
+  refreshNotifBadge();
   try { await loadCurrentSchoolData(); } catch (e) { console.warn('loadCurrentSchoolData:', e && e.message); }
   state.user.instructorId = resolveMyInstructorId(); // bridge auth uid -> roster instructor id
   finishBootRender();
@@ -9061,7 +9238,20 @@ function renderFeed() {
   const nb = document.getElementById('noticeBanners');
   if (nb) nb.innerHTML = ''; // feed embeds its own notices — avoid duplicate banners
   const main = document.getElementById('mainContent');
-  const visiblePosts = (state.feed || []).filter(canSeePost).filter(p => !p.archived);
+  const _today = isoDate(new Date());
+  // v113 auto-archive sweep: posts expired >14 days that I'm allowed to manage
+  // quietly move to the Archived section (once per session, best-effort).
+  if (!state._archSweepDone && state.user) {
+    state._archSweepDone = true;
+    const cutoff = isoDate(new Date(Date.now() - 14 * 86400000));
+    (state.feed || [])
+      .filter(p => !p.archived && p.expiresAt && p.expiresAt < cutoff && (p.authorId === state.user.id || can.editRoster()))
+      .slice(0, 20)
+      .forEach(p => { p.archived = true; const pr = DB.saveFeedPost(p); if (pr && pr.catch) pr.catch(() => { p.archived = false; }); });
+  }
+  // v113 scheduling: future-published posts are visible only to their author.
+  const scheduledHidden = p => p.publishAt && p.publishAt > _today && !(state.user && p.authorId === state.user.id);
+  const visiblePosts = (state.feed || []).filter(canSeePost).filter(p => !p.archived && !scheduledHidden(p));
   const archivedPosts = (state.feed || []).filter(canSeePost).filter(p => p.archived);
 
   let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
@@ -9151,6 +9341,9 @@ function renderFeedPost(post) {
   const canEdit = isMe;
   const isRequired = !!post.requiredReading;
   const ackedByMe = state.myAcks.has(post.id);
+  const isScheduled = post.publishAt && post.publishAt > isoDate(new Date());
+  const scheduledBand = isScheduled ? `<div style="display:flex;align-items:center;gap:6px;background:var(--grey-50);border:1px dashed var(--grey-300);border-radius:var(--r-sm);padding:5px 10px;margin-bottom:8px;">
+    <span>⏳</span><span style="font-size:11px;font-weight:700;color:var(--grey-500);">Scheduled — publishes ${post.publishAt} (only you can see this)</span></div>` : '';
   const acks = post._acks || [];
 
   // Scope tag
@@ -9206,7 +9399,7 @@ function renderFeedPost(post) {
   const bodyHtml = renderMentions(escapeHtml(post.body || ''));
 
   return `<div class="feed-post${isRequired && state.user && !ackedByMe ? ' required-unread' : ''}" id="fp-${post.id}">
-    ${noticeBand}
+    ${scheduledBand}${noticeBand}
     <div class="feed-post-header">
       ${feedAvatarHtml(post.authorId, post.authorName, 'feed-avatar')}
       <div style="flex:1;min-width:0;">
@@ -9552,6 +9745,7 @@ function openPostComposer(editPostId, opts) {
     document.getElementById('composerNoticeType').value = existing?.noticeType || (opts.notice ? 'info' : '');
     document.getElementById('composerRequired').checked = existing?.requiredReading || false;
     document.getElementById('composerExpires').value = existing?.expiresAt || '';
+    document.getElementById('composerPublish').value = existing?.publishAt || '';
     document.getElementById('composerPinned').checked = existing?.pinned || false;
   }
 
@@ -9620,6 +9814,7 @@ async function submitPost() {
   const noticeType = canNotice ? (document.getElementById('composerNoticeType').value || null) : null;
   const requiredReading = canNotice ? document.getElementById('composerRequired').checked : false;
   const expiresAt = canNotice ? (document.getElementById('composerExpires').value || null) : null;
+  const publishAt = document.getElementById('composerPublish').value || null;
   const pinned = canNotice ? document.getElementById('composerPinned').checked : false;
 
   const existing = state.editingPostId ? state.feed.find(p => p.id === state.editingPostId) : null;
@@ -9636,6 +9831,8 @@ async function submitPost() {
     noticeType,
     requiredReading,
     expiresAt,
+    publishAt,
+    archived:     existing?.archived || false,
     pinned,
     likeCount:    existing?.likeCount || 0,
     commentCount: existing?.commentCount || 0,
@@ -14855,6 +15052,25 @@ async function shopOrderReceive(id) {
     state.supplyOrders = await DB.loadSupplyOrders();
     if (o && state.shopStockSchool === o.schoolId) await loadShopStock(o.schoolId);
     renderShop();
+    // v113 backorders: if less arrived than was confirmed/ordered, offer to carry
+    // the unfilled remainder into a fresh draft so it can't be forgotten.
+    const done = (state.supplyOrders || []).find(x => x.id === id);
+    if (done) {
+      const rem = (done.lines || []).map(l => ({
+        itemId: l.itemId, itemName: l.itemName, size: l.size || '',
+        qty: Math.max(0, (l.qtyConfirmed > 0 ? l.qtyConfirmed : l.qtyOrdered) - (l.qtyReceived || 0)),
+        forWhom: l.forWhom || '',
+      })).filter(l => l.qty > 0);
+      const total = rem.reduce((s, l) => s + l.qty, 0);
+      if (total > 0 && await uiConfirm(total + ' item' + (total === 1 ? '' : 's') + ' from this order went unfilled. Create a backorder draft for the remainder?', { okLabel: 'Create backorder' })) {
+        try {
+          await DB.supplyOrderSave(null, done.schoolId, done.supplierId, 'Backorder from order ' + String(id).slice(0, 8), rem);
+          uiToast('Backorder draft created — review it on the Orders tab', 'success');
+          state.supplyOrders = await DB.loadSupplyOrders();
+          renderShop();
+        } catch (e2) { uiToast('Could not create the backorder: ' + (e2.message || e2), 'error'); }
+      }
+    }
   } catch (err) { uiToast('Could not confirm receipt: ' + (err.message || err)); }
 }
 function notifySupplyAdmins(schoolId, n) {
