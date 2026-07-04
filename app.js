@@ -15398,11 +15398,13 @@ function shopStockItemDetail(it, editable) {
         <th style="text-align:left;padding:3px 6px;">In stock</th>
         <th style="text-align:left;padding:3px 6px;">Reorder at</th>
         <th style="text-align:left;padding:3px 6px;">Target</th>
+        <th style="text-align:left;padding:3px 6px;">Receive stock</th>
       </tr></thead><tbody>`;
     for (const sz of sizes) {
       const r = shopStockRow(it.id, sz) || { qty: 0, reorderLevel: 0, targetLevel: 0 };
       const cellLow = r.reorderLevel > 0 && r.qty <= r.reorderLevel;
       const lbl = it.sized ? ('size ' + sz) : it.name;
+      const recvId = _shopRecvInputId(it.id, sz);
       body += `<tr>
         ${it.sized ? `<td style="padding:3px 6px;font-weight:600;">${escapeHtml(String(sz))}</td>` : ''}
         <td style="padding:3px 6px;"><input type="number" min="0" value="${r.qty || 0}"${dis} aria-label="In stock, ${escapeHtml(lbl)}"
@@ -15414,6 +15416,11 @@ function shopStockItemDetail(it, editable) {
         <td style="padding:3px 6px;"><input type="number" min="0" value="${r.targetLevel || 0}"${dis} aria-label="Target, ${escapeHtml(lbl)}"
           onchange="shopSetStock('${it.id}','${escapeHtml(String(sz))}','target',this.value)"
           style="width:64px;padding:5px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-family:'JetBrains Mono',monospace;text-align:center;"></td>
+        <td style="padding:3px 6px;white-space:nowrap;">
+          <input type="number" min="0" id="${recvId}" placeholder="+qty"${dis} aria-label="Quantity received, ${escapeHtml(lbl)}"
+            style="width:56px;padding:5px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-family:'JetBrains Mono',monospace;text-align:center;">
+          <button class="btn btn-sm" onclick="shopReceiveStock('${it.id}','${escapeHtml(String(sz))}')"${dis} style="margin-left:4px;">Receive</button>
+        </td>
       </tr>`;
     }
     body += `</tbody></table></div>`;
@@ -15481,6 +15488,38 @@ async function shopSetStock(itemId, size, field, value) {
   // threshold path keeps focus — live-refresh this card's status + the nav low badge in place
   shopUpdateItemStatus(itemId);
   if (typeof updateShopNavBadge === 'function') updateShopNavBadge();
+}
+
+// DOM ids can't safely contain arbitrary size text (slashes, spaces) — collapse to a safe token.
+function _shopRecvInputId(itemId, size) {
+  return 'recv-' + itemId + '-' + String(size || '').replace(/[^a-zA-Z0-9_]/g, '_');
+}
+// "Receive stock" — a supplier delivery landing in a school's stock, recorded distinctly
+// (kind='received') from a manual recount (kind='adjusted'), so the ledger stays honest
+// about what actually happened. Adds the entered quantity; never overwrites the count.
+async function shopReceiveStock(itemId, size) {
+  const sid = state.shopStockSchool;
+  if (!can.editStock(sid)) return;
+  size = size || '';
+  const input = document.getElementById(_shopRecvInputId(itemId, size));
+  const qty = Math.max(0, parseInt(input && input.value, 10) || 0);
+  if (!qty) { uiToast('Enter a quantity to receive.'); return; }
+  const it = state.shop.items.find(i => i.id === itemId);
+  const sup = it ? shopSupplier(it.supplierId) : null;
+  const note = sup ? ('Received from ' + sup.name) : 'Received';
+  try {
+    const newQty = await DB.applyMovement(sid, itemId, size, qty, 'received', note, 'catalogue', null);
+    let r = shopStockRow(itemId, size);
+    if (!r) { r = { schoolId: sid, itemId, size, qty: 0, reorderLevel: 0, targetLevel: 0 }; state.shopStock.push(r); }
+    r.qty = (typeof newQty === 'number') ? newQty : (r.qty || 0) + qty;
+    (state.shopMovements = state.shopMovements || []).unshift({ id: 'tmp' + Date.now(), schoolId: sid, itemId, size, delta: qty, kind: 'received', note, createdAt: new Date().toISOString() });
+    uiToast(`Received ${qty} — stock updated.`, 'success');
+    const main = document.getElementById('mainContent'); const top = main ? main.scrollTop : 0;
+    renderShop(); if (main) main.scrollTop = top;   // refresh activity + badges, keep place (matches shopSetStock's pattern)
+  } catch (e) {
+    if (typeof navigator !== 'undefined' && navigator && navigator.onLine === false) uiToast("You're offline — receiving stock isn't saved while offline. Reconnect and try again.");
+    else uiToast('Could not receive stock: ' + (e.message || e));
+  }
 }
 
 // ── tab: REORDER LIST (low items grouped by supplier) ──
@@ -16127,6 +16166,22 @@ function shopCatalogueActions() {
   openModal('modalActions');
 }
 
+// Gross margin on a catalogue item: null unless BOTH retail and buy price are set
+// (a partial price pair isn't a margin — it's just a price with nothing to compare it to).
+// Convention: margin % is against retail (standard gross-margin definition), not markup-on-cost.
+function shopItemMargin(it) {
+  if (it.retailPrice == null || it.buyPrice == null) return null;
+  const retail = Number(it.retailPrice), buy = Number(it.buyPrice);
+  if (!(retail > 0)) return null;
+  const dollar = retail - buy;
+  return { dollar, pct: (dollar / retail) * 100 };
+}
+function shopMarginBadgeHtml(it) {
+  const m = shopItemMargin(it);
+  if (!m) return '';
+  const color = m.dollar < 0 ? 'var(--red)' : 'var(--ok,var(--ok))';
+  return `<span style="font-size:11px;font-weight:700;color:${color};">· margin $${m.dollar.toFixed(2)} (${m.pct.toFixed(0)}%)</span>`;
+}
 function renderShopCatalogue() {
   if (!can.manageShop()) return `<div class="empty"><h2>No access</h2></div>`;
   if (state.shopEdit && state.shopEdit.kind === 'item') return renderShopItemEditor();
@@ -16148,7 +16203,10 @@ function renderShopCatalogue() {
         ${it.sized ? `<span style="font-size:11px;color:var(--grey-500);">sized${shopSizeSet(it.sizeSetId) ? ' · ' + escapeHtml(shopSizeSet(it.sizeSetId).name) : ''}</span>` : `<span style="font-size:11px;color:var(--grey-500);">single qty</span>`}
         ${cat ? `<span style="font-size:11px;color:var(--grey-500);">· ${escapeHtml(cat.name)}</span>` : ''}
         ${sup ? `<span style="font-size:11px;color:var(--grey-500);">· ${escapeHtml(sup.name)}</span>` : ''}
-        ${it.unitCost != null ? `<span style="font-size:11px;color:var(--grey-500);">· $${Number(it.unitCost).toFixed(2)}</span>` : ''}
+        ${it.unitCost != null ? `<span style="font-size:11px;color:var(--grey-500);">· cost $${Number(it.unitCost).toFixed(2)}</span>` : ''}
+        ${it.retailPrice != null ? `<span style="font-size:11px;color:var(--grey-500);">· RRP $${Number(it.retailPrice).toFixed(2)}</span>` : ''}
+        ${it.buyPrice != null ? `<span style="font-size:11px;color:var(--grey-500);">· buy $${Number(it.buyPrice).toFixed(2)}</span>` : ''}
+        ${shopMarginBadgeHtml(it)}
         ${it.archived ? `<span style="font-size:10px;color:var(--red);font-weight:700;text-transform:uppercase;">archived</span>` : ''}
       </div>
       <span style="display:flex;gap:6px;flex-shrink:0;">
@@ -16180,6 +16238,11 @@ function renderShopItemEditor() {
     </div>
     <label style="${lbl}">SKU (optional)</label>
     <input id="shopItemSku" value="${escapeHtml(d.sku || '')}" style="${inp}">
+    <div style="display:flex;gap:10px;">
+      <div style="flex:1;"><label style="${lbl}">Retail price / RRP ($)</label><input id="shopItemRetail" type="number" step="0.01" min="0" value="${d.retailPrice != null ? d.retailPrice : ''}" oninput="shopRefreshMarginPreview()" style="${inp}"></div>
+      <div style="flex:1;"><label style="${lbl}">Buy price ($, from supplier)</label><input id="shopItemBuy" type="number" step="0.01" min="0" value="${d.buyPrice != null ? d.buyPrice : ''}" oninput="shopRefreshMarginPreview()" style="${inp}"></div>
+    </div>
+    <p id="shopItemMarginPreview" style="font-size:12px;color:var(--grey-500);margin:6px 0 0;">${shopMarginPreviewText(d.retailPrice, d.buyPrice)}</p>
     <label style="${lbl}">Photo (optional)</label>
     <div style="display:flex;align-items:center;gap:10px;margin-top:4px;">
       ${d.imageUrl
@@ -16207,6 +16270,19 @@ function renderShopItemEditor() {
   </div>`;
   return html;
 }
+function shopMarginPreviewText(retailPrice, buyPrice) {
+  const m = shopItemMargin({ retailPrice: retailPrice === '' ? null : retailPrice, buyPrice: buyPrice === '' ? null : buyPrice });
+  if (!m) return 'Margin shows once both retail and buy price are set.';
+  const sign = m.dollar < 0 ? ' (buy price is higher than retail — check these)' : '';
+  return `Margin: $${m.dollar.toFixed(2)} (${m.pct.toFixed(0)}%)${sign}`;
+}
+function shopRefreshMarginPreview() {
+  const g = id => document.getElementById(id);
+  const el = g('shopItemMarginPreview'); if (!el || !g('shopItemRetail') || !g('shopItemBuy')) return;
+  const retail = g('shopItemRetail').value === '' ? null : Number(g('shopItemRetail').value);
+  const buy = g('shopItemBuy').value === '' ? null : Number(g('shopItemBuy').value);
+  el.textContent = shopMarginPreviewText(retail, buy);
+}
 function shopItemToggleSized(on) {
   const row = document.getElementById('shopItemSizedRow');
   if (row) row.style.display = on ? 'block' : 'none';
@@ -16227,6 +16303,8 @@ function shopCaptureItemForm() {
     sized: sized,
     sizeSetId: sized ? (g('shopItemSizeSet') ? g('shopItemSizeSet').value || null : null) : null,
     gradeRef: sized ? (g('shopItemGrade') ? g('shopItemGrade').value || null : null) : null,
+    retailPrice: g('shopItemRetail') && g('shopItemRetail').value !== '' ? Number(g('shopItemRetail').value) : null,
+    buyPrice: g('shopItemBuy') && g('shopItemBuy').value !== '' ? Number(g('shopItemBuy').value) : null,
   });
 }
 async function shopItemPickPhoto(input) {
@@ -16262,6 +16340,8 @@ async function shopSaveItem() {
     sized: sized,
     sizeSetId: sized ? (g('shopItemSizeSet').value || null) : null,
     gradeRef: sized ? (g('shopItemGrade').value || null) : null,
+    retailPrice: g('shopItemRetail') && g('shopItemRetail').value !== '' ? Number(g('shopItemRetail').value) : null,
+    buyPrice: g('shopItemBuy') && g('shopItemBuy').value !== '' ? Number(g('shopItemBuy').value) : null,
   });
   if (!draft.name) { uiToast('Give the item a name.'); return; }
   if (sized && !draft.sizeSetId) { uiToast('Choose a size set for a sized item.'); return; }
@@ -16297,8 +16377,8 @@ function _csvHeaderIndex(headerCells, synonyms) {
   return idx;
 }
 const _SHOP_IMPORT_COLS = {
-  catalogue: { syn: { name:['name','item','item name','product'], category:['category','cat'], supplier:['supplier','vendor'], unitCost:['unit cost','cost','price','unit cost ($)'], unit:['unit','uom'], sku:['sku','code'], sized:['sized','has sizes'], sizeSet:['size set','sizeset','sizes'], gradeRef:['belt grade','grade','belt'] }, req:['name'],
-    header:'name, category, supplier, unit cost, unit, sku, sized, size set, belt grade', note:'Category, supplier and size set are matched by name to ones you\'ve already created (blank if not found). Items whose name already exists are skipped.' },
+  catalogue: { syn: { name:['name','item','item name','product'], category:['category','cat'], supplier:['supplier','vendor'], unitCost:['unit cost','cost','price','unit cost ($)'], unit:['unit','uom'], sku:['sku','code'], sized:['sized','has sizes'], sizeSet:['size set','sizeset','sizes'], gradeRef:['belt grade','grade','belt'], retailPrice:['retail price','rrp','retail'], buyPrice:['buy price','wholesale price','wholesale','buy'] }, req:['name'],
+    header:'name, category, supplier, unit cost, unit, sku, sized, size set, belt grade, retail price, buy price', note:'A row matched by SKU (or by name if no SKU) UPDATES that item\'s price fields instead of skipping it — safe to re-run for a supplier price refresh. New categories/suppliers named in the CSV are created automatically; size sets must already exist and are matched by name.' },
   stock: { syn: { item:['item','name','item name','product','sku'], size:['size','sz'], qty:['quantity','qty','count','on hand','on-hand'] }, req:['item','qty'],
     header:'item (name or SKU), size, quantity', note:'Each row sets the on-hand count for that item + size at the selected school (the difference is recorded as an adjustment). Items are matched by name or SKU.' },
 }
@@ -16355,33 +16435,81 @@ async function shopRunCatalogueImport() {
   const get = (row, f) => (idx[f] != null ? (row[idx[f]] || '') : '');
   const truthy = v => /^(y|yes|true|1|sized)$/i.test(String(v).trim());
   const byName = (arr, name) => arr.find(x => x.name && x.name.toLowerCase() === String(name).toLowerCase());
-  let created = 0, skipped = 0; const errors = [];
+  const bySku = (arr, sku) => sku ? arr.find(x => x.sku && x.sku.toLowerCase() === String(sku).toLowerCase()) : null;
+  const priceOrNull = raw => { const clean = String(raw).replace(/[^0-9.\-]/g, ''); return clean === '' ? null : Number(clean); };
+
+  // Auto-create categories/suppliers named in the CSV but not yet in the catalogue —
+  // tracked locally so 500 rows for the same new category only create it once.
+  async function ensureCategory(name) {
+    if (!name) return null;
+    let c = byName(state.shop.categories, name);
+    if (c) return c;
+    c = await DB.saveCategory({ name });
+    state.shop.categories.push(c);
+    return c;
+  }
+  async function ensureSupplier(name) {
+    if (!name) return null;
+    let s = byName(state.shop.suppliers, name);
+    if (s) return s;
+    s = await DB.saveSupplier({ name, isInternal: false });
+    state.shop.suppliers.push(s);
+    return s;
+  }
+
+  let created = 0, updated = 0, skipped = 0; const errors = [];
   for (const row of imp.rows) {
     const name = get(row, 'name').trim();
     if (!name) { skipped++; continue; }
-    if (byName(state.shop.items, name)) { skipped++; continue; }   // already exists
+    const sku = get(row, 'sku').trim();
+    const retailPrice = idx.retailPrice != null ? priceOrNull(get(row, 'retailPrice')) : undefined;
+    const buyPrice = idx.buyPrice != null ? priceOrNull(get(row, 'buyPrice')) : undefined;
+    const unitCost = idx.unitCost != null ? priceOrNull(get(row, 'unitCost')) : undefined;
+
+    // Match by SKU first (stable across renames/re-imports), else fall back to name.
+    const existing = bySku(state.shop.items, sku) || byName(state.shop.items, name);
+    if (existing) {
+      // Update-in-place: only touch fields this row actually supplies, so a price-only
+      // refresh CSV never clobbers category/supplier/size data set up locally.
+      const patch = Object.assign({}, existing);
+      if (retailPrice !== undefined) patch.retailPrice = retailPrice;
+      if (buyPrice !== undefined) patch.buyPrice = buyPrice;
+      if (unitCost !== undefined) patch.unitCost = unitCost;
+      try {
+        const saved = await DB.saveItem(patch);
+        const i = state.shop.items.findIndex(x => x.id === saved.id);
+        if (i >= 0) state.shop.items[i] = saved;
+        updated++;
+      } catch (e) { errors.push(name + ': ' + (e.message || e)); }
+      continue;
+    }
+
     const sizeSetName = get(row, 'sizeSet').trim();
     const sizeSet = sizeSetName ? byName(state.shop.sizeSets, sizeSetName) : null;
     const sized = sizeSet ? true : truthy(get(row, 'sized'));
-    const cat = (get(row, 'category').trim() && byName(state.shop.categories, get(row, 'category').trim())) || null;
-    const sup = (get(row, 'supplier').trim() && byName(state.shop.suppliers, get(row, 'supplier').trim())) || null;
-    const costRaw = get(row, 'unitCost').replace(/[^0-9.\-]/g, '');
+    let cat = null, sup = null;
+    try {
+      cat = await ensureCategory(get(row, 'category').trim());
+      sup = await ensureSupplier(get(row, 'supplier').trim());
+    } catch (e) { errors.push(name + ': could not create category/supplier — ' + (e.message || e)); skipped++; continue; }
     const draft = {
       name,
       categoryId: cat ? cat.id : null,
       supplierId: sup ? sup.id : null,
-      unitCost: costRaw === '' ? null : Number(costRaw),
+      unitCost: unitCost === undefined ? null : unitCost,
       unit: get(row, 'unit').trim() || null,
-      sku: get(row, 'sku').trim() || null,
+      sku: sku || null,
       sized,
       sizeSetId: sized && sizeSet ? sizeSet.id : null,
       gradeRef: sized ? (get(row, 'gradeRef').trim() || null) : null,
+      retailPrice: retailPrice === undefined ? null : retailPrice,
+      buyPrice: buyPrice === undefined ? null : buyPrice,
     };
     if (draft.sized && !draft.sizeSetId) { errors.push(name + ': marked sized but no matching size set'); skipped++; continue; }
     try { const saved = await DB.saveItem(draft); state.shop.items.push(saved); created++; }
     catch (e) { errors.push(name + ': ' + (e.message || e)); }
   }
-  state.shopImport.done = { created, skipped, errors };
+  state.shopImport.done = { created, updated, skipped, errors };
   renderShop();
 }
 async function shopRunStockImport() {
