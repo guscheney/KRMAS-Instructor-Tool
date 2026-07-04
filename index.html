@@ -263,6 +263,7 @@
     <div class="form-row">
       <label>Item</label>
       <select id="soItem" onchange="soOnItemChange()"><option value="">— choose an item —</option></select>
+      <button type="button" class="btn btn-ghost" style="margin-top:6px;font-size:12px;padding:6px 12px;" onclick="openSmaiSearch('special')">🔎 Find on SMAI</button>
     </div>
     <div class="form-row">
       <label>For (student name)</label>
@@ -301,6 +302,20 @@
     <button class="btn btn-ghost" style="width:100%;margin-top:6px;" onclick="closeModal('modalSpecialOrder')">Cancel</button>
   </div>
 </div>
+
+<!-- ===== Modal: SMAI live search (no storage — every search hits SMAI's public feed live) ===== -->
+<div class="modal-bg" id="modalSmaiSearch">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2>Find on SMAI</h2>
+    <p style="font-size:12px;color:var(--grey-500,#71717a);margin:0 0 10px;">Live search of SMAI's public retail catalogue — nothing is stored until you add an item below. Prices shown are SMAI's public RRP; buy price isn't in this feed.</p>
+    <input id="smaiSearchBox" placeholder="Search SMAI (e.g. karate belt, focus mitts)…" oninput="smaiSearchInput(this.value)" style="width:100%;padding:10px;border:1px solid var(--grey-200,#e4e4e7);border-radius:8px;font-size:14px;box-sizing:border-box;">
+    <div id="smaiResults" style="max-height:260px;overflow-y:auto;margin-top:10px;"></div>
+    <div id="smaiVariantPicker" style="display:none;margin-top:10px;border-top:1px solid var(--grey-200,#e4e4e7);padding-top:10px;"></div>
+    <button class="btn btn-ghost" style="width:100%;margin-top:10px;" onclick="closeModal('modalSmaiSearch')">Close</button>
+  </div>
+</div>
+
 
 <!-- ===== Modal: School onboarding wizard ===== -->
 <div class="modal-bg" id="modalWizard">

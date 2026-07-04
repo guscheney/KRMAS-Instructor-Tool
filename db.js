@@ -131,6 +131,22 @@ const DB = (() => {
     return data;
   }
 
+  // Live SMAI lookup — soft-fails (returns {error} rather than throwing) so a
+  // network hiccup shows a friendly message instead of an uncaught rejection.
+  // Nothing here is ever persisted; every call is a live SMAI round-trip.
+  async function smaiInvoke(body) {
+    const sb = sbClient(); if (!sb) return { error: 'Supabase unavailable' };
+    const { data, error } = await sb.functions.invoke('smai-search', { body });
+    if (error) {
+      let msg = (error && error.message) || 'smai_unavailable';
+      try { if (error.context && error.context.json) { const j = await error.context.json(); if (j && j.error) msg = j.error; } } catch (e) {}
+      return { error: msg };
+    }
+    return data || { error: 'smai_unavailable' };
+  }
+  async function smaiSearchLive(q) { return smaiInvoke({ action: 'search', q }); }
+  async function smaiProductLive(handle) { return smaiInvoke({ action: 'product', handle }); }
+
   // ── localStorage helpers ─────────────────────────────────────────
   async function lGet(key) {
     try { const r = localStorage.getItem(key); return r ? JSON.parse(r) : null; }
@@ -2191,6 +2207,12 @@ const DB = (() => {
     loadMovements:    (sid,itemId,lim)     => loadMovements(sid,itemId,lim),
     transferStock:    (f,t,itemId,sz,q,n)  => transferStock(f,t,itemId,sz,q,n),
     loadTransfers:    (lim)                => loadTransfers(lim),
+
+    // ── SMAI live search (no storage — every call hits SMAI's public feed) ──
+    smai: {
+      search:  (q)      => smaiSearchLive(q),
+      product: (handle) => smaiProductLive(handle),
+    },
     supplyLoc:           (supplierId)       => supplyLoc(supplierId),
     loadSupplyOrders:    (opts)             => loadSupplyOrders(opts),
     supplyOrderSave:     (oid,sid,sup,n,ls) => supplyOrderSave(oid,sid,sup,n,ls),

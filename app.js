@@ -16187,8 +16187,9 @@ function renderShopCatalogue() {
   if (state.shopEdit && state.shopEdit.kind === 'item') return renderShopItemEditor();
   if (state.shopImport && state.shopImport.kind === 'catalogue') return renderShopImportPanel();
 
-  let html = `<div style="margin:12px 0;display:flex;gap:8px;align-items:center;">
+  let html = `<div style="margin:12px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
     <button class="btn btn-black" onclick="shopNewItem()" style="padding:8px 14px;">+ Add item</button>
+    <button class="btn" onclick="openSmaiSearch('catalogue')" style="padding:8px 14px;">🔎 Find on SMAI</button>
     <button class="btn" onclick="shopCatalogueActions()" aria-label="More actions" title="More actions" style="margin-left:auto;padding:6px 11px;font-size:15px;line-height:1;min-width:38px;">⋯</button></div>`;
   const items = state.shop.items.slice().sort((a, b) => a.name.localeCompare(b.name));
   if (!items.length) { html += `<div class="empty"><h2>No items</h2><p>Add your first catalogue item.</p></div>`; return html; }
@@ -16430,32 +16431,35 @@ async function shopImportRun() {
   if (imp.kind === 'catalogue') return shopRunCatalogueImport();
   return shopRunStockImport();
 }
+// Shared catalogue helpers — used by both the CSV importer and the SMAI live
+// search, so "create the category/supplier if it's new" behaves identically
+// everywhere an external source hands us a name rather than an id.
+function shopByName(arr, name) { return arr.find(x => x.name && x.name.toLowerCase() === String(name).toLowerCase()); }
+function shopBySku(arr, sku) { return sku ? arr.find(x => x.sku && x.sku.toLowerCase() === String(sku).toLowerCase()) : null; }
+async function shopEnsureCategory(name) {
+  if (!name) return null;
+  let c = shopByName(state.shop.categories, name);
+  if (c) return c;
+  c = await DB.saveCategory({ name });
+  state.shop.categories.push(c);
+  return c;
+}
+async function shopEnsureSupplier(name) {
+  if (!name) return null;
+  let s = shopByName(state.shop.suppliers, name);
+  if (s) return s;
+  s = await DB.saveSupplier({ name, isInternal: false });
+  state.shop.suppliers.push(s);
+  return s;
+}
+
 async function shopRunCatalogueImport() {
   const imp = state.shopImport; const idx = imp.idx;
   const get = (row, f) => (idx[f] != null ? (row[idx[f]] || '') : '');
   const truthy = v => /^(y|yes|true|1|sized)$/i.test(String(v).trim());
-  const byName = (arr, name) => arr.find(x => x.name && x.name.toLowerCase() === String(name).toLowerCase());
-  const bySku = (arr, sku) => sku ? arr.find(x => x.sku && x.sku.toLowerCase() === String(sku).toLowerCase()) : null;
+  const byName = shopByName, bySku = shopBySku;
   const priceOrNull = raw => { const clean = String(raw).replace(/[^0-9.\-]/g, ''); return clean === '' ? null : Number(clean); };
-
-  // Auto-create categories/suppliers named in the CSV but not yet in the catalogue —
-  // tracked locally so 500 rows for the same new category only create it once.
-  async function ensureCategory(name) {
-    if (!name) return null;
-    let c = byName(state.shop.categories, name);
-    if (c) return c;
-    c = await DB.saveCategory({ name });
-    state.shop.categories.push(c);
-    return c;
-  }
-  async function ensureSupplier(name) {
-    if (!name) return null;
-    let s = byName(state.shop.suppliers, name);
-    if (s) return s;
-    s = await DB.saveSupplier({ name, isInternal: false });
-    state.shop.suppliers.push(s);
-    return s;
-  }
+  const ensureCategory = shopEnsureCategory, ensureSupplier = shopEnsureSupplier;
 
   let created = 0, updated = 0, skipped = 0; const errors = [];
   for (const row of imp.rows) {
@@ -16547,7 +16551,172 @@ async function shopRunStockImport() {
   renderShop();
 }
 
-// ── tab: SUPPLIERS (+ categories + size sets) ──
+// ── SMAI live search (used from both Catalogue and Special Orders) ──
+// Nothing here is stored until the user explicitly adds a specific variant —
+// this is a live lookup against SMAI's public feed, not a catalogue sync.
+let _smaiSearchTimer = null;
+function openSmaiSearch(mode) {
+  state._smai = { mode, query: '', loading: false, results: [], error: null, product: null, productLoading: false, productError: null };
+  const box = document.getElementById('smaiSearchBox'); if (box) box.value = '';
+  const results = document.getElementById('smaiResults'); if (results) results.innerHTML = '';
+  const vp = document.getElementById('smaiVariantPicker'); if (vp) { vp.style.display = 'none'; vp.innerHTML = ''; }
+  openModal('modalSmaiSearch');
+  setTimeout(() => { try { document.getElementById('smaiSearchBox').focus(); } catch (e) {} }, 50);
+}
+function smaiSearchInput(q) {
+  if (!state._smai) return;
+  state._smai.query = q;
+  clearTimeout(_smaiSearchTimer);
+  const query = q.trim();
+  if (query.length < 2) { state._smai.results = []; state._smai.error = null; smaiRenderResults(); return; }
+  state._smai.loading = true; smaiRenderResults();
+  _smaiSearchTimer = setTimeout(async () => {
+    try {
+      const res = await DB.smai.search(query);
+      if (state._smai.query.trim() !== query) return; // a newer keystroke has already superseded this call
+      if (res && res.error) { state._smai.error = res.error; state._smai.results = []; }
+      else { state._smai.results = (res && res.results) || []; state._smai.error = null; }
+    } catch (e) { state._smai.error = 'smai_unavailable'; state._smai.results = []; }
+    state._smai.loading = false;
+    smaiRenderResults();
+  }, 400);
+}
+function _smaiErrText(code) {
+  return ({
+    smai_unavailable: "Couldn't reach SMAI right now — try again shortly.",
+    query_too_short: 'Keep typing…',
+  })[code] || "Couldn't reach SMAI right now.";
+}
+function smaiRenderResults() {
+  const el = document.getElementById('smaiResults'); if (!el) return;
+  const st = state._smai || {};
+  if (st.loading) { el.innerHTML = `<div style="font-size:12px;color:var(--grey-500);padding:8px;">Searching…</div>`; return; }
+  if (st.error) { el.innerHTML = `<div style="font-size:12px;color:var(--red,#D22C12);padding:8px;">${escapeHtml(_smaiErrText(st.error))}</div>`; return; }
+  if (!st.results || !st.results.length) {
+    el.innerHTML = st.query && st.query.trim().length >= 2 ? `<div style="font-size:12px;color:var(--grey-500);padding:8px;">No matches on SMAI.</div>` : '';
+    return;
+  }
+  el.innerHTML = st.results.map((r, i) => `
+    <button type="button" class="btn btn-ghost" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:7px 9px;margin-bottom:4px;" onclick="smaiPickProduct(${i})">
+      ${r.image ? `<img src="${escapeHtml(r.image)}" alt="" style="width:36px;height:36px;object-fit:cover;border-radius:6px;flex-shrink:0;">` : `<span style="width:36px;height:36px;flex-shrink:0;"></span>`}
+      <span style="min-width:0;flex:1;">
+        <span style="display:block;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(r.title)}</span>
+        <span style="display:block;font-size:12px;color:var(--grey-500);">${r.price != null ? escapeHtml(String(r.price)) : ''}${r.available === false ? ' · unavailable' : ''}</span>
+      </span>
+    </button>`).join('');
+}
+async function smaiPickProduct(i) {
+  const st = state._smai; if (!st || !st.results || !st.results[i]) return;
+  const hit = st.results[i];
+  st.productLoading = true; st.productError = null; st.product = null;
+  smaiRenderVariantPicker();
+  try {
+    const res = await DB.smai.product(hit.handle);
+    if (res && res.error) { st.productError = res.error; }
+    else { st.product = res && res.product; }
+  } catch (e) { st.productError = 'smai_unavailable'; }
+  st.productLoading = false;
+  smaiRenderVariantPicker();
+}
+function smaiRenderVariantPicker() {
+  const vp = document.getElementById('smaiVariantPicker'); if (!vp) return;
+  const st = state._smai || {};
+  if (!st.productLoading && !st.product && !st.productError) { vp.style.display = 'none'; vp.innerHTML = ''; return; }
+  vp.style.display = '';
+  if (st.productLoading) { vp.innerHTML = `<div style="font-size:12px;color:var(--grey-500);">Loading details…</div>`; return; }
+  if (st.productError) { vp.innerHTML = `<div style="font-size:12px;color:var(--red,#D22C12);">${escapeHtml(_smaiErrText(st.productError))}</div>`; return; }
+  const p = st.product;
+  const isSpecial = st.mode === 'special';
+  let html = `<div style="font-weight:700;font-size:14px;margin-bottom:6px;">${escapeHtml(p.title)}</div>`;
+  p.variants.forEach((v, i) => {
+    const label = v.title || 'Standard';
+    html += `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid var(--grey-100,#f4f4f5);">
+      <span style="font-size:13px;min-width:0;">${escapeHtml(label)}${v.sku ? ` <span style="color:var(--grey-500);font-size:11px;">· ${escapeHtml(v.sku)}</span>` : ''}${v.available === false ? ' <span style="color:var(--red);font-size:11px;">(unavailable)</span>' : ''}</span>
+      <span style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+        <span style="font-family:'JetBrains Mono',monospace;font-size:13px;">$${v.price != null ? Number(v.price).toFixed(2) : '—'}</span>
+        ${isSpecial
+          ? `<button class="btn btn-sm btn-primary" onclick="smaiConfirmAdd(${i})">Use this</button>`
+          : `<input type="number" min="1" value="1" id="smaiQty-${i}" style="width:48px;padding:4px;border:1px solid var(--grey-200);border-radius:6px;text-align:center;font-family:'JetBrains Mono',monospace;">
+             <button class="btn btn-sm btn-primary" onclick="smaiConfirmAdd(${i})">Add to stock</button>`}
+      </span></div>`;
+  });
+  vp.innerHTML = html;
+}
+// Match-or-create the catalogue item behind a picked SMAI variant. Matches by
+// SKU (stable across re-lookups) so searching the same product twice never
+// creates a duplicate catalogue item.
+async function shopEnsureSmaiItem(product, variant) {
+  const name = variant.title ? `${product.title} — ${variant.title}` : product.title;
+  const existing = shopBySku(state.shop.items, variant.sku) || shopByName(state.shop.items, name);
+  if (existing) {
+    // Refresh the retail price in case it's moved since it was last looked up.
+    if (variant.price != null && Number(existing.retailPrice) !== Number(variant.price)) {
+      const saved = await DB.saveItem(Object.assign({}, existing, { retailPrice: Number(variant.price) }));
+      const idx = state.shop.items.findIndex(x => x.id === saved.id);
+      if (idx >= 0) state.shop.items[idx] = saved;
+      return saved;
+    }
+    return existing;
+  }
+  const cat = await shopEnsureCategory(product.productType);
+  const sup = await shopEnsureSupplier('SMAI');
+  const draft = {
+    name, categoryId: cat ? cat.id : null, supplierId: sup ? sup.id : null,
+    unitCost: null, unit: null, sku: variant.sku || null, sized: false, sizeSetId: null, gradeRef: null,
+    retailPrice: variant.price != null ? Number(variant.price) : null, buyPrice: null, imageUrl: product.image || null,
+  };
+  const saved = await DB.saveItem(draft);
+  state.shop.items.push(saved);
+  return saved;
+}
+async function smaiConfirmAdd(variantIdx) {
+  const st = state._smai; if (!st || !st.product) return;
+  const variant = st.product.variants[variantIdx]; if (!variant) return;
+  const sid = state.shopStockSchool;
+  if (!can.editStock(sid)) { uiToast('You can only manage stock for your own school.'); return; }
+  let item;
+  try { item = await shopEnsureSmaiItem(st.product, variant); }
+  catch (e) { uiToast('Could not add this item: ' + (e.message || e)); return; }
+
+  if (st.mode === 'special') {
+    // Hand the ensured item back to the open special-order form and close the
+    // search — the person still fills in student name / status and saves normally.
+    const itemSel = document.getElementById('soItem');
+    if (itemSel && !Array.from(itemSel.options).some(o => o.value === item.id)) {
+      itemSel.insertAdjacentHTML('beforeend', `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`);
+    }
+    if (itemSel) itemSel.value = item.id;
+    soOnItemChange();
+    // Per Gus's call: an item sourced via SMAI for a special order also lands in
+    // stock immediately (it's a real unit that now exists at the school, just
+    // earmarked for a student) — one unit, distinct 'received' ledger entry.
+    try {
+      const newQty = await DB.applyMovement(sid, item.id, '', 1, 'received', 'Received from SMAI (special order)', 'special_order', null);
+      let r = shopStockRow(item.id, '');
+      if (!r) { r = { schoolId: sid, itemId: item.id, size: '', qty: 0, reorderLevel: 0, targetLevel: 0 }; state.shopStock.push(r); }
+      r.qty = (typeof newQty === 'number') ? newQty : (r.qty || 0) + 1;
+    } catch (e) { uiToast('Item added, but could not update stock: ' + (e.message || e)); }
+    closeModal('modalSmaiSearch');
+    uiToast(`${item.name} added — finish the order details and save.`, 'success');
+    return;
+  }
+
+  // Catalogue/Stock mode: entered quantity goes straight into this school's stock.
+  const qtyInput = document.getElementById(`smaiQty-${variantIdx}`);
+  const qty = Math.max(1, parseInt(qtyInput && qtyInput.value, 10) || 1);
+  try {
+    const newQty = await DB.applyMovement(sid, item.id, '', qty, 'received', 'Received from SMAI', 'catalogue', null);
+    let r = shopStockRow(item.id, '');
+    if (!r) { r = { schoolId: sid, itemId: item.id, size: '', qty: 0, reorderLevel: 0, targetLevel: 0 }; state.shopStock.push(r); }
+    r.qty = (typeof newQty === 'number') ? newQty : (r.qty || 0) + qty;
+    (state.shopMovements = state.shopMovements || []).unshift({ id: 'tmp' + Date.now(), schoolId: sid, itemId: item.id, size: '', delta: qty, kind: 'received', note: 'Received from SMAI', createdAt: new Date().toISOString() });
+  } catch (e) { uiToast('Item added to catalogue, but could not update stock: ' + (e.message || e)); closeModal('modalSmaiSearch'); renderShop(); return; }
+  closeModal('modalSmaiSearch');
+  updateShopNavBadge();
+  uiToast(`Added ${qty} × ${item.name} to stock.`, 'success');
+  renderShop();
+}
+
 function renderShopSuppliers() {
   if (!can.manageShop()) return `<div class="empty"><h2>No access</h2></div>`;
   if (state.shopEdit && state.shopEdit.kind === 'supplier') return renderShopSupplierEditor();

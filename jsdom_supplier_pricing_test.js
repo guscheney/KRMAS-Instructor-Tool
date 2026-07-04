@@ -152,6 +152,84 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     return ev('window.__lastMovement') === null;
   })());
 
+  // ── SMAI live search: item-ensure matching (create + re-use-by-SKU) ──
+  ev(`
+    state.shop = { categories: [], sizeSets: [], suppliers: [], items: [] };
+    state.shopStock = []; state.shopMovements = []; state.shopStockSchool = 'sch1';
+    can.editStock = () => true;
+    let _sc=0,_ss=0,_si=0;
+    DB.saveCategory = async (c) => { const saved = Object.assign({ id: c.id || ('CAT'+(++_sc)) }, c); return saved; };
+    DB.saveSupplier = async (s) => { const saved = Object.assign({ id: s.id || ('SUP'+(++_ss)) }, s); return saved; };
+    DB.saveItem = async (it) => Object.assign({ id: it.id || ('ITEM'+(++_si)) }, it);
+    DB.applyMovement = async (sid,itemId,size,delta,kind,note,refType,refId) => { window.__lastMovement = {sid,itemId,size,delta,kind,note,refType,refId}; return delta; };
+  `);
+  const product1 = ev(`({ title: 'Focus Mitts', productType: 'Boxing Protective Equipment', image: 'https://x/img.jpg', variants: [ { id:1, sku:'FM-001', title:'', price: '59.95', available: true } ] })`);
+  const ensured1 = await ev(`(async () => { const p = ${JSON.stringify(product1)}; return await shopEnsureSmaiItem(p, p.variants[0]); })()`);
+  ck('ensure: creates a new catalogue item from a SMAI product/variant', ensured1 && ensured1.name === 'Focus Mitts');
+  ck('ensure: retail price carried from the variant', ensured1 && ensured1.retailPrice === 59.95);
+  ck('ensure: category auto-created from product_type', ev('state.shop.categories.length') === 1 && ev('state.shop.categories[0].name') === 'Boxing Protective Equipment');
+  ck('ensure: SMAI supplier auto-created', ev('state.shop.suppliers.some(s=>s.name==="SMAI")') === true);
+
+  const ensured2 = await ev(`(async () => { const p = ${JSON.stringify(product1)}; return await shopEnsureSmaiItem(p, p.variants[0]); })()`);
+  ck('ensure: second lookup of the same SKU reuses the item (no duplicate)', ev('state.shop.items.length') === 1);
+  ck('ensure: reused item keeps the same id', ensured2.id === ensured1.id);
+
+  // price refresh on re-lookup
+  const product1Moved = ev(`({ title: 'Focus Mitts', productType: 'Boxing Protective Equipment', variants: [ { id:1, sku:'FM-001', title:'', price: '64.95', available: true } ] })`);
+  const ensured3 = await ev(`(async () => { const p = ${JSON.stringify(product1Moved)}; return await shopEnsureSmaiItem(p, p.variants[0]); })()`);
+  ck('ensure: retail price refreshed on a re-lookup with a new price', ensured3.retailPrice === 64.95);
+  ck('ensure: still no duplicate created for the price refresh', ev('state.shop.items.length') === 1);
+
+  // ── smaiConfirmAdd: catalogue mode posts a received movement with qty from the input ──
+  ev(`
+    state._smai = { mode: 'catalogue', product: ${JSON.stringify(product1)} };
+    const el = window.document.createElement('input'); el.id = 'smaiQty-0'; el.value = '4';
+    window.document.body.appendChild(el);
+    window.__lastMovement = null;
+  `);
+  await ev('smaiConfirmAdd(0)');
+  await sleep(20);
+  ck('smaiConfirmAdd (catalogue): posts kind=received', ev('window.__lastMovement.kind') === 'received');
+  ck('smaiConfirmAdd (catalogue): qty comes from the input', ev('window.__lastMovement.delta') === 4);
+  ck('smaiConfirmAdd (catalogue): refType is catalogue', ev('window.__lastMovement.refType') === 'catalogue');
+
+  // ── smaiConfirmAdd: special-order mode always adds exactly 1 and tags refType ──
+  ev(`
+    // fresh soItem select to check option-injection + value-setting
+    const sel = window.document.createElement('select'); sel.id = 'soItem';
+    sel.innerHTML = '<option value="">— choose an item —</option>';
+    window.document.body.appendChild(sel);
+    window.soOnItemChange = window.soOnItemChange || function(){};
+    state._smai = { mode: 'special', product: ${JSON.stringify(product1)} };
+    window.__lastMovement = null;
+  `);
+  await ev('smaiConfirmAdd(0)');
+  await sleep(20);
+  ck('smaiConfirmAdd (special): posts kind=received', ev('window.__lastMovement.kind') === 'received');
+  ck('smaiConfirmAdd (special): always exactly 1 unit', ev('window.__lastMovement.delta') === 1);
+  ck('smaiConfirmAdd (special): refType is special_order', ev('window.__lastMovement.refType') === 'special_order');
+  ck('smaiConfirmAdd (special): item option injected into #soItem', ev(`document.getElementById('soItem').value`) !== '');
+
+  // ── smaiConfirmAdd: blocked without edit-stock permission ──
+  ev(`can.editStock = () => false; window.__lastMovement = null; state._smai = { mode:'catalogue', product: ${JSON.stringify(product1)} };`);
+  await ev('smaiConfirmAdd(0)');
+  await sleep(20);
+  ck('smaiConfirmAdd: blocked when editStock() denies', ev('window.__lastMovement') === null);
+
+  // ── search results rendering (pure render, mocked DB.smai.search) ──
+  ev(`can.editStock = () => true;`);
+  ck('openSmaiSearch defined', typeof ev('openSmaiSearch') === 'function');
+  ck('smaiSearchInput defined', typeof ev('smaiSearchInput') === 'function');
+  ev(`
+    document.body.insertAdjacentHTML('beforeend', '<div id="smaiResults"></div>');
+    state._smai = { mode:'catalogue', results: [ { handle:'gi', title:'Karate Gi', price:'$49.95', image:null, available:true } ], loading:false, error:null };
+  `);
+  ev('smaiRenderResults()');
+  ck('search results render the product title', /Karate Gi/.test(ev(`document.getElementById('smaiResults').innerHTML`)));
+  ev(`state._smai.error = 'smai_unavailable'; `);
+  ev('smaiRenderResults()');
+  ck('search error renders a friendly message', /reach SMAI/.test(ev(`document.getElementById('smaiResults').innerHTML`)));
+
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail) { console.log('FAILED:', fails.join(', ')); process.exit(1); }
   process.exit(0);
