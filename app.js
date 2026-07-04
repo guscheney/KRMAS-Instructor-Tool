@@ -2994,18 +2994,20 @@ window.addEventListener('unhandledrejection', (e) => {
   reportClientError((r && r.message) || String(r || 'unhandled rejection'), r && r.stack);
 });
 
-// ── v113: update-available prompt ──
+// ── v113/v116: update-available prompt ──
 // sw.js already skipWaiting()s, so a freshly-installed worker takes control while
-// the old page keeps running stale code. controllerchange is the moment to offer
-// a reload. Guard: on the very first install there was no controller — no prompt.
+// the old page keeps running stale code. controllerchange is the fastest update
+// signal — but the app ALSO has a version poller (checkForAppUpdate) with its own
+// banner, and in v113 the two prompted independently, stacking on screen. Both
+// signals now feed ONE presenter (showUpdateBanner, whose Update-now clears all
+// caches before reloading), sharing the _updatePrompted guard.
 function initUpdatePrompt() {
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
   const hadController = !!navigator.serviceWorker.controller;
-  let prompted = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (!hadController || prompted) return;
-    prompted = true;
-    uiToastAction('A new version of KRMAS is ready', 'Reload', () => location.reload());
+    if (!hadController || _updatePrompted) return;
+    _updatePrompted = true;
+    showUpdateBanner('');
   });
   const check = () => { try { navigator.serviceWorker.getRegistration().then(r => { if (r) r.update(); }).catch(() => {}); } catch (e) {} };
   setInterval(check, 30 * 60 * 1000);
