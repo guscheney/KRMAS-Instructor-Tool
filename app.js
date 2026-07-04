@@ -1454,7 +1454,7 @@ function renderCardDetail(c) {
     const sup = supervisorNameForClass(c);
     if (sup) html += `<div style="background:var(--off-white);border-left:3px solid var(--ok);padding:6px 10px;margin-bottom:8px;border-radius:var(--r-sm);font-size:12px;color:var(--grey-500);">Accredited supervisor: ${escapeHtml(sup)}</div>`;
   }
-  const canSelfAssign = hasRole('instructor') && !isMyClass(c) && !!firstOpenRole(c) && !canVolunteer;
+  const canSelfAssign = hasRole('instructor') && !isMyClass(c) && !!firstOpenRoleFor(c, myRosterRole()) && !canVolunteer;
   html += `<div class="detail-actions">
     ${(() => {
       if (!c.plan) return canAddPlan(c.dateKey) ? `<button class="btn btn-black" onclick="event.stopPropagation(); openPlan('${c.dateKey}')">Create lesson plan</button>` : '';
@@ -3926,9 +3926,24 @@ function myBackupCoverAlerts() {
 async function volunteerToCover(dateKey) {
   if (!state.user) { openLogin(); return; }
   const existing = state.edits[dateKey] || {};
+  const myId = myInstructorId() || state.user.id;
+  const rr = myRosterRole();
+  if (rr === 'junior' || rr === 'other') {
+    // v114: a junior volunteering doesn't take over as lead — they join in their
+    // own slot, and the class stays needing cover until someone can actually lead.
+    const c = classForDateKey(dateKey);
+    const slot = firstOpenRoleFor(c, rr);
+    if (!slot) { uiToast('No open spot on this class suits your role.'); return; }
+    state.edits[dateKey] = { ...existing, [slot]: myId };
+    await saveEdits();
+    renderDay();
+    uiToast("You're in as " + (slot === 'junior' ? 'junior assistant' : slot) + " — the class still needs a lead to cover it.");
+    checkSupervisionAfterAssign(dateKey, { self: true });
+    return;
+  }
   state.edits[dateKey] = {
     ...existing,
-    lead: myInstructorId() || state.user.id,
+    lead: myId,
     status: 'confirmed'
   };
   await saveEdits();
@@ -18584,12 +18599,31 @@ function classIsUnsupervised(c) {
   return !classHasAccreditedPresence(c);
 }
 
-function firstOpenRole(c) {
+// Which class slots suit a person, in preference order, based on their
+// instructor-record role (v114 fix: assignment previously filled lead→assist→junior
+// purely by vacancy, so an instructor joining a part-staffed class landed in the
+// junior slot). Instructors never auto-slot as junior; juniors never auto-slot as
+// lead. Backup is the universal last resort so joining stays possible when the
+// primary slots are full.
+function roleAppropriateSlots(personRole) {
+  const r = personRole || 'instructor';
+  if (r === 'junior') return ['junior', 'backup'];
+  if (r === 'assistant') return ['assist', 'backup'];
+  if (r === 'other') return ['backup'];
+  return ['lead', 'assist', 'backup']; // instructor / admin / superadmin records
+}
+// The role the roster knows me as: my instructor record's role, falling back to
+// my account role (junior stays junior; instructor/admin/superadmin → instructor).
+function myRosterRole() {
+  const rec = getInstructor(myInstructorId());
+  if (rec && rec.role) return rec.role;
+  const acct = state.user && state.user.role;
+  return acct === 'junior' ? 'junior' : 'instructor';
+}
+function firstOpenRoleFor(c, personRole) {
   if (!c) return null;
-  if (!c.lead) return 'lead';
-  if (!c.assist) return 'assist';
-  if (!c.junior) return 'junior';
-  return null; // backup is optional; lead/assist/junior all filled = staffed
+  for (const s of roleAppropriateSlots(personRole)) { if (!c[s]) return s; }
+  return null;
 }
 
 function supervisorNameForClass(c) {
@@ -18614,8 +18648,8 @@ async function assignMeToClass(dateKey) {
   const c = classForDateKey(dateKey);
   if (!c) return;
   if (isMyClass(c)) { uiToast('You are already assigned to this class.'); return; }
-  const role = firstOpenRole(c);
-  if (!role) { uiToast('This class is already fully staffed.'); return; }
+  const role = firstOpenRoleFor(c, myRosterRole());
+  if (!role) { uiToast('No open spot on this class suits your role.'); return; }
   const myId = myInstructorId();
   if (!myId) { uiToast('Your account is not linked to an instructor profile, so you can\'t self-assign.'); return; }
   const existing = state.edits[dateKey] || {};
