@@ -331,6 +331,177 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   ev(`state.shopEdit = { kind:'item', data: { name:'Scoped Thing', schoolId: null } };`);
   ck('editor: scope selector present', /shopItemScope/.test(ev('renderShopItemEditor()')));
 
+  // ── supplier spend reports (pure computation) ──
+  ck('cost basis: buy price preferred', ev(`shopItemCostBasis({buyPrice: 10, unitCost: 20})`) === 10);
+  ck('cost basis: falls back to unit cost', ev(`shopItemCostBasis({buyPrice: null, unitCost: 20})`) === 20);
+  ck('cost basis: null when neither set', ev(`shopItemCostBasis({buyPrice: null, unitCost: null})`) === null);
+  ev(`
+    window.__repItems = [
+      { id:'iA', name:'Gi', supplierId:'smai', buyPrice: 30, unitCost: null },
+      { id:'iB', name:'Mitts', supplierId:'smai', buyPrice: null, unitCost: 20 },
+      { id:'iC', name:'Mystery', supplierId:'morgan', buyPrice: null, unitCost: null },
+      { id:'iD', name:'Orphan', supplierId: null, buyPrice: 5, unitCost: null },
+    ];
+    window.__repSups = [ { id:'smai', name:'SMAI', isInternal:false }, { id:'morgan', name:'Morgan', isInternal:false } ];
+    window.__repMoves = [
+      { kind:'received', delta: 2, itemId:'iA', schoolId:'sch1' },   // 2×30 = 60 @ sch1
+      { kind:'received', delta: 1, itemId:'iB', schoolId:'sch2' },   // 1×20 = 20 @ sch2
+      { kind:'received', delta: 3, itemId:'iC', schoolId:'sch1' },   // uncosted ×3
+      { kind:'received', delta: 4, itemId:'iD', schoolId:'sch1' },   // no supplier, 4×5 = 20
+      { kind:'received', delta: 5, itemId:'iA', schoolId:'__supply__:xyz' }, // supply location — excluded
+      { kind:'adjusted', delta: 9, itemId:'iA', schoolId:'sch1' },   // wrong kind — excluded
+      { kind:'received', delta: -2, itemId:'iA', schoolId:'sch1' },  // negative — excluded
+    ];
+  `);
+  const spendAgg = ev(`computeSupplierSpend(window.__repMoves, window.__repItems, window.__repSups)`);
+  ck('spend: SMAI totals across schools at correct cost basis', (() => { const s = spendAgg.find(x => x.name === 'SMAI'); return s && s.spend === 80 && s.units === 3; })());
+  ck('spend: per-school split correct', (() => { const s = spendAgg.find(x => x.name === 'SMAI'); return s && s.schools.sch1.spend === 60 && s.schools.sch2.spend === 20; })());
+  ck('spend: uncosted units tracked separately, not $0-valued', (() => { const m = spendAgg.find(x => x.name === 'Morgan'); return m && m.spend === 0 && m.uncostedUnits === 3; })());
+  ck('spend: no-supplier bucket present', (() => { const n = spendAgg.find(x => x.key === '_none'); return n && n.spend === 20; })());
+  ck('spend: supply-location rows excluded from school totals', (() => { const s = spendAgg.find(x => x.name === 'SMAI'); return !Object.keys(s.schools).some(k => k.indexOf('__supply__') === 0); })());
+  ck('spend: sorted by spend descending', spendAgg[0].name === 'SMAI');
+
+  // outlier detection
+  const outliers = ev(`computeSpendOutliers([
+    { name:'SMAI', spend: 400, schools: { sch1: { spend: 350 }, sch2: { spend: 40 }, sch3: { spend: 10 } } },
+    { name:'Morgan', spend: 100, schools: { sch1: { spend: 100 } } },
+    { name:'Even', spend: 200, schools: { sch1: { spend: 100 }, sch2: { spend: 100 } } },
+  ])`);
+  ck('outliers: high spender flagged', outliers.some(o => o.kind === 'high' && o.schoolId === 'sch1' && o.supplier === 'SMAI'));
+  ck('outliers: low spender flagged', outliers.some(o => o.kind === 'low' && o.supplier === 'SMAI'));
+  ck('outliers: single-buyer supplier flagged separately', outliers.some(o => o.kind === 'single_buyer' && o.supplier === 'Morgan' && o.schoolId === 'sch1'));
+  ck('outliers: evenly-split supplier produces no flags', !outliers.some(o => o.supplier === 'Even'));
+
+  // render smoke
+  ev(`
+    can.manageShop = () => true;
+    state.shop.items = window.__repItems; state.shop.suppliers = window.__repSups;
+    state.shopReportData = { rows: window.__repMoves, truncated: false, error: null };
+    state.shopReportPeriod = '365';
+  `);
+  const repHtml = ev('renderShopReports()');
+  ck('report renders supplier spend section with club total', /Spend by supplier/.test(repHtml) && /\$100\.00/.test(repHtml));
+  ck('report renders the by-school matrix', /By school/.test(repHtml));
+  ck('report renders buying-pattern flags section', /Buying-pattern flags/.test(repHtml));
+  ck('report surfaces uncosted units warning', /uncosted/.test(repHtml));
+  ck('report shows the estimate caveat', /current buy price/.test(repHtml));
+  ev(`state.shopReportData = { rows: [], truncated: false, error: null };`);
+  ck('report empty state renders', /No receipts in this period/.test(ev('renderShopReports()')));
+  ev(`can.manageShop = () => false;`);
+  ck('report gated to shop admins', /No access/.test(ev('renderShopReports()')));
+  ev(`can.manageShop = () => true;`);
+  ck('DB.loadReceivedMovements exported', typeof ev('DB.loadReceivedMovements') === 'function');
+
+  // ── shop tab rail grouping: management views folded under ⚙ Manage ──
+  ev(`
+    can.seeShop = () => true; can.manageShop = () => true; can.supplyAdmin = () => false;
+    state.shop.suppliers = []; state.shopView = 'stock'; state.shopTabLoading = null;
+    document.body.insertAdjacentHTML('beforeend', '<div id="mainContent"></div>');
+  `);
+  ev('renderShop()');
+  const rail = ev(`document.getElementById('mainContent').innerHTML`);
+  ck('rail: Manage tab present for shop admins', /setShopView\('manage'\)/.test(rail));
+  ck('rail: catalogue/suppliers/reports NOT top-level any more', !/setShopView\('catalogue'\)/.test(rail) && !/setShopView\('suppliers'\)/.test(rail) && !/setShopView\('reports'\)/.test(rail));
+  ck('rail: day-to-day ops still top-level', /setShopView\('stock'\)/.test(rail) && /setShopView\('reorder'\)/.test(rail) && /setShopView\('special'\)/.test(rail));
+  ck('rail: Value folded under Manage for shop admins', !/setShopView\('value'\)/.test(rail));
+
+  // clicking Manage routes to the default sub-view and shows the sub-rail
+  ev(`setShopView('manage')`);
+  ck('Manage routes to catalogue by default', ev('state.shopView') === 'catalogue');
+  const subRail = ev(`document.getElementById('mainContent').innerHTML`);
+  ck('sub-rail renders the management views', /setShopView\('suppliers'\)/.test(subRail) && /setShopView\('reports'\)/.test(subRail) && /setShopView\('transfers'\)/.test(subRail) && /setShopView\('value'\)/.test(subRail));
+
+  // deep-link straight into a manage view still works, and Manage remembers position
+  ev(`setShopView('suppliers')`);
+  ck('deep-link to a manage view still works', ev('state.shopView') === 'suppliers');
+  ev(`setShopView('stock'); setShopView('manage')`);
+  ck('Manage remembers the last sub-view used', ev('state.shopView') === 'suppliers');
+
+  // school admins (no manageShop) keep Value top-level and see no Manage tab
+  ev(`can.manageShop = () => false; state.shopView = 'stock';`);
+  ev('renderShop()');
+  const railSchool = ev(`document.getElementById('mainContent').innerHTML`);
+  ck('rail (school admin): Value stays top-level', /setShopView\('value'\)/.test(railSchool));
+  ck('rail (school admin): no Manage tab', !/setShopView\('manage'\)/.test(railSchool));
+  ev(`can.manageShop = () => true;`);
+
+  // ── local catalogue ownership (v125 / migration 32) ──
+  ev(`
+    state.userSchools = ['sch1']; state.user = state.user || {}; state.user.isShopAdmin = false;
+    can.manageShop = () => false;
+    hasRole = (r) => r === 'admin';   // plain school admin
+  `);
+  ck('editCatalogueItem: admin can edit own-school item', ev(`can.editCatalogueItem({ schoolId:'sch1' })`) === true);
+  ck('editCatalogueItem: admin cannot edit another school item', ev(`can.editCatalogueItem({ schoolId:'sch2' })`) === false);
+  ck('editCatalogueItem: admin cannot edit network item', ev(`can.editCatalogueItem({ schoolId:null })`) === false);
+  ck('addLocalCatalogue: school admin allowed', ev(`can.addLocalCatalogue()`) === true);
+  ev(`can.manageShop = () => true;`);
+  ck('editCatalogueItem: shop admin edits anything', ev(`can.editCatalogueItem({ schoolId:null })`) === true && ev(`can.editCatalogueItem({ schoolId:'sch2' })`) === true);
+
+  // rail: school admin gets a top-level Catalogue tab
+  ev(`can.manageShop = () => false; can.seeShop = () => true; can.supplyAdmin = () => false; state.shopView = 'stock';`);
+  ev('renderShop()');
+  ck('rail (school admin): Catalogue tab present', /setShopView\('catalogue'\)/.test(ev(`document.getElementById('mainContent').innerHTML`)));
+
+  // catalogue list: read-only rows for items the admin doesn't own
+  ev(`
+    state.shop.items = [
+      { id:'net1', name:'Network Gi', archived:false, schoolId:null },
+      { id:'own1', name:'Local Pads', archived:false, schoolId:'sch1' },
+    ];
+    state.shopCatFilter = null; state.shopStockSchool = 'sch1'; state.shopEdit = null; state.shopImport = null;
+  `);
+  const localCatHtml = ev('renderShopCatalogue()');
+  ck('catalogue (school admin): own item gets Edit/Delete', /shopEditItem\('own1'\)/.test(localCatHtml) && /shopDeleteItem\('own1'\)/.test(localCatHtml));
+  ck('catalogue (school admin): network item is read-only', !/shopEditItem\('net1'\)/.test(localCatHtml) && /read-only/.test(localCatHtml));
+  ck('catalogue (school admin): no ⋯ actions (import stays shop-admin)', !/shopCatalogueActions/.test(localCatHtml));
+  ck('catalogue (school admin): local-ownership note shown', /Network items are read-only here/.test(localCatHtml));
+
+  // entry-point guards
+  ev(`window.__lastAlert = null; shopEditItem('net1');`);
+  ck('shopEditItem refuses network item for school admin', ev('state.shopEdit') === null && /shop admins/.test(ev('window.__lastAlert') || ''));
+  ev(`shopNewItem();`);
+  ck('shopNewItem pre-scopes new item to the admin school', ev('state.shopEdit.data.schoolId') === 'sch1');
+  // the editor's scope options come from KRMAS_SCHOOLS (real ids) ∩ userSchools —
+  // use a real school id for this render assertion
+  ev(`state.userSchools = ['edgeworth']; state.shopStockSchool = 'edgeworth'; state.shopEdit = { kind:'item', data: { name:'X', sized:false, schoolId:'edgeworth' } };`);
+  const editorHtmlLocal = ev('renderShopItemEditor()');
+  ck('editor (school admin): no All-schools option', !/All schools/.test(editorHtmlLocal));
+  ck('editor (school admin): own school selectable, others absent', /edgeworth/.test(editorHtmlLocal) && !/"beecroft"/.test(editorHtmlLocal));
+  ev(`state.shopEdit = null; state.userSchools = ['sch1']; state.shopStockSchool = 'sch1';`);
+
+  // archive/delete guards on foreign items
+  ev(`window.__lastAlert = null;`);
+  await ev(`shopToggleArchive('net1')`);
+  ck('archive refused on network item for school admin', /your own school/.test(ev('window.__lastAlert') || ''));
+  ev(`window.__lastAlert = null;`);
+  await ev(`shopDeleteItem('net1')`);
+  ck('delete refused on network item for school admin', /your own school/.test(ev('window.__lastAlert') || ''));
+
+  // SMAI basket: school admin allowed, scope forced to own school
+  ev(`
+    state._smai = { mode:'catalogue', basket: [ { product: { title:'Shin Guards', productType:'Protective', image:null }, variant: { id:11, sku:'SG-011', title:'', price:'25.00', available:true } } ], scope: null };
+    document.querySelectorAll('#smaiScopeSel').forEach(el => el.remove());
+    document.body.insertAdjacentHTML('beforeend', '<select id="smaiScopeSel"><option value="" selected>All</option></select>');
+    let _si9 = 0;
+    DB.saveItem = async (it) => Object.assign({ id: it.id || ('LX'+(++_si9)) }, it);
+    DB.saveCategory = async (c) => Object.assign({ id: c.id || 'LC1' }, c);
+    DB.saveSupplier = async (s) => Object.assign({ id: s.id || 'LS1' }, s);
+  `);
+  await ev('smaiConfirmBasket()');
+  await sleep(20);
+  ck('SMAI basket (school admin): commit allowed, item forced to own school', ev(`(state.shop.items.find(i=>i.sku==='SG-011')||{}).schoolId`) === 'sch1');
+
+  // ensure: price refresh SKIPPED on items the admin cannot write (no RLS error)
+  ev(`
+    state.shop.items.push({ id:'netP', name:'Kick Pad', sku:'KP-1', schoolId:null, retailPrice: 10 });
+    window.__savedIds = []; DB.saveItem = async (it) => { window.__savedIds.push(it.id||'new'); return it; };
+  `);
+  await ev(`shopEnsureSmaiItem({ title:'Kick Pad', productType:'X', image:null }, { id:1, sku:'KP-1', title:'', price:'12.00', available:true }, 'sch1')`);
+  await sleep(10);
+  ck('ensure (school admin): reuses network item WITHOUT attempting price write', ev('window.__savedIds.length') === 0);
+  ev(`can.manageShop = () => true;`);
+
   // ── search results rendering (pure render, mocked DB.smai.search) ──
   ev(`can.editStock = () => true;`);
   ck('openSmaiSearch defined', typeof ev('openSmaiSearch') === 'function');
@@ -380,6 +551,22 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   ev(`can.manageShop = () => true; state.shopEdit = null; state.shopImport = null;`);
   const catHtmlWithDelete = ev('renderShopCatalogue()');
   ck('catalogue row includes a Delete button', /shopDeleteItem\('del2'\)/.test(catHtmlWithDelete));
+
+  // ── stock filter bar cleanup (v128): category pills -> compact select ──
+  ev(`
+    can.manageShop = () => true;
+    state.shop.categories = [ { id:'c1', name:'Belts', sort: 1 }, { id:'c2', name:'Gis', sort: 2 } ];
+    state.shop.suppliers = [ { id:'s1', name:'SMAI' } ];
+    state.shopFilter = Object.assign({}, SHOP_FILTER_DEFAULTS, { cats: [] });
+  `);
+  const fbar = ev('shopFilterBarHtml()');
+  ck('filter bar: category rendered as a select, not pills', /shopFilterCat\(/.test(fbar) && !/shopFilterToggleCat/.test(fbar));
+  ck('filter bar: category options present with All', /<option value="">All<\/option>/.test(fbar) && /Belts/.test(fbar));
+  ck('filter bar: status pills retained', /shopFilterStatus\('low'\)/.test(fbar));
+  ev(`shopFilterCat('c1')`);
+  ck('category select sets the cats array', ev('state.shopFilter.cats.join(",")') === 'c1');
+  ev(`shopFilterCat('')`);
+  ck('choosing All clears the category filter', ev('state.shopFilter.cats.length') === 0);
 
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail) { console.log('FAILED:', fails.join(', ')); process.exit(1); }

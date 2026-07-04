@@ -204,6 +204,40 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   ck('stats refresh preserves shareSchools', ev('window.__styleSaved.shareSchools.join(",")') === 'edgeworth');
   ck('stats refresh preserves seed flag', ev('window.__styleSaved.seed') === 'krmas-bundle');
 
+  // ── audit fixes (v128) ──
+  // deleting a plan removes its corpus row (author-scoped) and refreshes stats
+  ev(`
+    state.user = { id: 'uid-1', name: 'Test Instructor' };
+    state.planningKey = '2026-07-02|0600';
+    state.plans = { '2026-07-02|0600': { key: '2026-07-02|0600' } };
+    can.deletePlans = () => true; can.manageGrading = () => true;
+    savePlans = async () => {};
+    window.__corpusDeleted = null;
+    DB.corpus.deletePlan = async (oid, key) => { window.__corpusDeleted = { oid, key }; };
+    DB.corpus.loadStyle = async () => ({ ownerId: 'uid-1', seed: null, stats: {}, shareSchools: ['edgeworth'] });
+    DB.corpus.loadPlans = async () => [];
+    window.__styleSaved = null;
+    DB.corpus.saveStyle = async (row) => { window.__styleSaved = row; };
+  `);
+  await ev('deletePlan()');
+  await sleep(40);
+  ck('deletePlan: corpus row removed for the author', ev('window.__corpusDeleted') !== null && ev('window.__corpusDeleted.key') === '2026-07-02|0600');
+  ck('deletePlan: stats refreshed after removal', ev('window.__styleSaved') !== null);
+  ck('deletePlan: sharing preserved through the refresh', ev('window.__styleSaved.shareSchools.join(",")') === 'edgeworth');
+
+  // sign-out clears the generation caches
+  ev(`
+    _corpusCache.set('uid-1', { plans: [], style: {} });
+    _pgState = { owners: [], result: null };
+    DB.auth = DB.auth || {}; DB.auth.signOut = async () => {};
+    uiConfirm = async () => true;
+    showLoginGate = () => {};
+  `);
+  await ev('signOut()');
+  await sleep(20);
+  ck('signOut: corpus cache cleared', ev('_corpusCache.size') === 0);
+  ck('signOut: generation modal state cleared', ev('_pgState') === null);
+
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail) { console.log('FAILED:', fails.join(', ')); process.exit(1); }
   process.exit(0);

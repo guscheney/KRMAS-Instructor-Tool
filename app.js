@@ -15572,7 +15572,7 @@ function shopActiveFilterChips() {
 }
 function shopFilterSearch(v) { clearTimeout(_shopSearchTimer); _shopSearchTimer = setTimeout(() => { state.shopFilter.q = v; shopFilterSave(); shopRefreshStockList(); }, 300); }
 function shopFilterStatus(s) { state.shopFilter.status = s; shopFilterSave(); renderShop(); }
-function shopFilterToggleCat(id) { const c = state.shopFilter.cats || (state.shopFilter.cats = []); const i = c.indexOf(id); if (i >= 0) c.splice(i, 1); else c.push(id); shopFilterSave(); renderShop(); }
+function shopFilterCat(id) { state.shopFilter.cats = id ? [id] : []; shopFilterSave(); renderShop(); }
 function shopFilterSupplier(v) { state.shopFilter.supplier = v || ''; shopFilterSave(); renderShop(); }
 function shopFilterSort(field) { state.shopFilter.sortBy = field; shopFilterSave(); renderShop(); }
 function shopFilterToggleDir() { state.shopFilter.sortDir = state.shopFilter.sortDir === 'desc' ? 'asc' : 'desc'; shopFilterSave(); renderShop(); }
@@ -15593,10 +15593,10 @@ function shopFilterBarHtml() {
       ${pill(f.status === 'low', 'Low', "shopFilterStatus('low')")}
       ${pill(f.status === 'out', 'Out', "shopFilterStatus('out')")}
     </div>`;
-  if (cats.length) h += `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
-      <span style="font-size:11px;color:var(--grey-500);">Category:</span>
-      ${cats.map(c => pill((f.cats || []).includes(c.id), c.name, `shopFilterToggleCat('${c.id}')`)).join('')}</div>`;
   h += `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">`;
+  if (cats.length) h += `<label style="font-size:11px;color:var(--grey-500);">Category
+      <select onchange="shopFilterCat(this.value)" style="${sel}margin-left:4px;max-width:150px;"><option value="">All</option>
+        ${cats.map(c => `<option value="${c.id}"${(f.cats || [])[0] === c.id ? ' selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}</select></label>`;
   if (sups.length) h += `<label style="font-size:11px;color:var(--grey-500);">Supplier
       <select onchange="shopFilterSupplier(this.value)" style="${sel}margin-left:4px;"><option value="">All</option>
         ${sups.map(s => `<option value="${s.id}"${f.supplier === s.id ? ' selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}</select></label>`;
