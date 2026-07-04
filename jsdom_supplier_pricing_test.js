@@ -230,6 +230,42 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   ev('smaiRenderResults()');
   ck('search error renders a friendly message', /reach SMAI/.test(ev(`document.getElementById('smaiResults').innerHTML`)));
 
+  // ── Delete item: confirm warning, cascade cleanup of local state, DB.deleteItem called ──
+  ev(`
+    state.shop.items = [{ id:'del1', name:'Old Item', archived:false }];
+    state.shopStock = [{ schoolId:'sch1', itemId:'del1', size:'', qty: 7, reorderLevel:0, targetLevel:0 }];
+    state.shopMovements = [{ id:'m1', itemId:'del1', kind:'received', delta:7 }];
+    state.shopStockSchool = 'sch1';
+    window.__deletedId = null;
+    DB.deleteItem = async (id) => { window.__deletedId = id; };
+    uiConfirm = async (msg) => { window.__lastConfirmMsg = msg; return true; };
+  `);
+  await ev('shopDeleteItem("del1")');
+  await sleep(20);
+  ck('delete: confirm warning mentions permanent + every school', /permanently/.test(ev('window.__lastConfirmMsg')) && /EVERY school/.test(ev('window.__lastConfirmMsg')));
+  ck('delete: confirm warning surfaces current local stock qty', /7 in stock/.test(ev('window.__lastConfirmMsg')));
+  ck('delete: confirm warning mentions Archive as the reversible alternative', /Archive is reversible/.test(ev('window.__lastConfirmMsg')));
+  ck('delete: calls DB.deleteItem with the right id', ev('window.__deletedId') === 'del1');
+  ck('delete: item removed from local state', ev('state.shop.items.length') === 0);
+  ck('delete: local stock rows for that item cleared', ev('state.shopStock.length') === 0);
+  ck('delete: local movement rows for that item cleared', ev('state.shopMovements.length') === 0);
+
+  // declining the confirm should do nothing
+  ev(`
+    state.shop.items = [{ id:'del2', name:'Keep Me', archived:false }];
+    window.__deletedId = null;
+    uiConfirm = async () => false;
+  `);
+  await ev('shopDeleteItem("del2")');
+  await sleep(20);
+  ck('delete: declining confirm calls DB.deleteItem never', ev('window.__deletedId') === null);
+  ck('delete: declining confirm keeps the item', ev('state.shop.items.length') === 1);
+
+  // catalogue list renders a Delete button per item
+  ev(`can.manageShop = () => true; state.shopEdit = null; state.shopImport = null;`);
+  const catHtmlWithDelete = ev('renderShopCatalogue()');
+  ck('catalogue row includes a Delete button', /shopDeleteItem\('del2'\)/.test(catHtmlWithDelete));
+
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail) { console.log('FAILED:', fails.join(', ')); process.exit(1); }
   process.exit(0);

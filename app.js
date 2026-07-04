@@ -16213,6 +16213,7 @@ function renderShopCatalogue() {
       <span style="display:flex;gap:6px;flex-shrink:0;">
         <button class="btn" onclick="shopEditItem('${it.id}')" style="padding:5px 10px;font-size:12px;">Edit</button>
         <button class="btn" onclick="shopToggleArchive('${it.id}')" style="padding:5px 10px;font-size:12px;">${it.archived ? 'Restore' : 'Archive'}</button>
+        <button class="btn" onclick="shopDeleteItem('${it.id}')" style="padding:5px 10px;font-size:12px;color:var(--red);">Delete</button>
       </span></div>`;
   }
   return html;
@@ -16362,6 +16363,34 @@ async function shopToggleArchive(id) {
     if (i >= 0) state.shop.items[i] = saved;
     renderShop();
   } catch (e) { uiToast('Could not update item: ' + (e.message || e)); }
+}
+// Deleting a catalogue item CASCADE-deletes its inventory_stock rows and its
+// entire inventory_movements ledger, at EVERY school, not just the one you're
+// currently viewing (that's how 08/09_inventory.sql define the foreign keys —
+// this isn't a soft delete). That's real, permanent history loss, so this
+// warns hard and points at Archive as the reversible alternative. Special
+// orders referencing this item are NOT deleted (their item_id just goes
+// null; they keep their item_name snapshot and stay readable).
+async function shopDeleteItem(id) {
+  const it = state.shop.items.find(i => i.id === id);
+  if (!it) return;
+  const sid = state.shopStockSchool;
+  const localQty = (state.shopStock || []).filter(r => r.itemId === id).reduce((s, r) => s + (r.qty || 0), 0);
+  const localMoves = (state.shopMovements || []).filter(m => m.itemId === id).length;
+  let warning = `Delete "${it.name}" permanently? This also permanently deletes its stock counts and movement history at EVERY school (not just ${shopSchoolName(sid)}) — this cannot be undone.`;
+  if (localQty > 0) warning += ` ${shopSchoolName(sid)} currently holds ${localQty} in stock of this item.`;
+  if (localMoves > 0) warning += ` At least ${localMoves} recorded movement${localMoves === 1 ? '' : 's'} for this item at ${shopSchoolName(sid)} will be lost.`;
+  warning += ' If you just want it out of the way, Archive is reversible and keeps all history — Delete is not.';
+  if (!await uiConfirm(warning)) return;
+  try {
+    await DB.deleteItem(id);
+    state.shop.items = state.shop.items.filter(i => i.id !== id);
+    state.shopStock = (state.shopStock || []).filter(r => r.itemId !== id);
+    state.shopMovements = (state.shopMovements || []).filter(m => m.itemId !== id);
+    if (state.shopExpanded) state.shopExpanded.delete(id);
+    renderShop();
+    uiToast('Item deleted.', 'success');
+  } catch (e) { uiToast('Could not delete item: ' + (e.message || e)); }
 }
 
 // ── CSV import (catalogue items + opening stock counts) ──

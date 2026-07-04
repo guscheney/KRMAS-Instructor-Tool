@@ -15,7 +15,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Open+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=118">
+<link rel="stylesheet" href="styles.css?v=119">
 <script>
 /* No-flash brand boot: apply the cached published brand to :root BEFORE first paint,
    so a custom-branded portal never flashes the default palette on load. Self-contained
@@ -2206,14 +2206,14 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '118';
+  window.KRMAS_APP_VERSION = '119';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
 </script>
-<script src="data.js?v=118"></script>
-<script src="db.js?v=118"></script>
-<script src="app.js?v=118"></script>
+<script src="data.js?v=119"></script>
+<script src="db.js?v=119"></script>
+<script src="app.js?v=119"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
