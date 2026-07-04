@@ -207,6 +207,12 @@ const can = {
   supplyAdmin:       () => hasRole('superadmin') || !!(state.user && state.user.isSupplyAdmin),
   seeShop:           () => hasRole('superadmin') || hasRole('admin') || !!(state.user && state.user.isShopAdmin) || !!(state.user && state.user.isSupplyAdmin),
   editStock:         (sid) => hasRole('superadmin') || !!(state.user && state.user.isShopAdmin) || (hasRole('admin') && (state.userSchools || []).includes(sid)) || (!!(state.user && state.user.isSupplyAdmin) && typeof sid === 'string' && sid.indexOf('__supply__:') === 0),
+  // Local catalogue ownership (migration 32): a school admin owns items scoped
+  // to their school; network items (schoolId null) are shop-admin territory.
+  // Mirrors the inventory_items RLS write policy — the server enforces it,
+  // these just keep the UI honest.
+  editCatalogueItem: (it) => { if (!it) return false; if (can.manageShop()) return true; return !!(it.schoolId && hasRole('admin') && (state.userSchools || []).includes(it.schoolId)); },
+  addLocalCatalogue: () => can.manageShop() || (hasRole('admin') && (state.userSchools || []).length > 0),
   // Audits: action-level gating via the matrix (admins are auto-true in hasPerm; a
   // superadmin can additionally grant instructors). Cross-school = superadmin; RLS enforces.
   viewAudits:        () => hasPerm('audits','view'),
@@ -14649,7 +14655,10 @@ function renderShop() {
   const hasInternalSupplier = (state.shop.suppliers || []).some(s => s.isInternal);
   if (hasInternalSupplier && orderableSchools().length) tabs.push({ id: 'orders', label: 'Orders' });
   tabs.push({ id: 'special', label: 'Special orders' }, { id: 'stocktake', label: 'Stocktake' });
-  if (!manage) tabs.push({ id: 'value', label: 'Value' });   // school admins keep Value top-level; for shop admins it lives under Manage
+  if (!manage) {
+    if (can.addLocalCatalogue()) tabs.push({ id: 'catalogue', label: 'Catalogue' });   // school admins: their local catalogue (v125)
+    tabs.push({ id: 'value', label: 'Value' });   // school admins keep Value top-level; for shop admins it lives under Manage
+  }
   if (manage) tabs.push({ id: 'manage', label: '⚙ Manage' });
   if (can.supplyAdmin()) tabs.push({ id: 'supply', label: '🏭 Supply' });
   if (!tabs.find(t => t.id === state.shopView) && !(manage && shopIsManageView(state.shopView))) state.shopView = 'stock';
@@ -16484,25 +16493,27 @@ function shopCatalogueListHtml() {
         ${it.archived ? `<span style="font-size:10px;color:var(--red);font-weight:700;text-transform:uppercase;">archived</span>` : ''}
       </div>
       <span style="display:flex;gap:6px;flex-shrink:0;">
-        <button class="btn" onclick="shopEditItem('${it.id}')" style="padding:5px 10px;font-size:12px;">Edit</button>
+        ${can.editCatalogueItem(it) ? `<button class="btn" onclick="shopEditItem('${it.id}')" style="padding:5px 10px;font-size:12px;">Edit</button>
         <button class="btn" onclick="shopToggleArchive('${it.id}')" style="padding:5px 10px;font-size:12px;">${it.archived ? 'Restore' : 'Archive'}</button>
-        <button class="btn" onclick="shopDeleteItem('${it.id}')" style="padding:5px 10px;font-size:12px;color:var(--red);">Delete</button>
+        <button class="btn" onclick="shopDeleteItem('${it.id}')" style="padding:5px 10px;font-size:12px;color:var(--red);">Delete</button>` : `<span style="font-size:10px;color:var(--grey-400);">read-only</span>`}
       </span></div>`;
   }
   return html;
 }
 function renderShopCatalogue() {
-  if (!can.manageShop()) return `<div class="empty"><h2>No access</h2></div>`;
+  if (!can.addLocalCatalogue()) return `<div class="empty"><h2>No access</h2></div>`;
   if (state.shopEdit && state.shopEdit.kind === 'item') return renderShopItemEditor();
   if (state.shopImport && state.shopImport.kind === 'catalogue') return renderShopImportPanel();
 
   const f = shopCatFilter();
   const schools = (typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS : []);
   const selStyle = 'padding:6px 10px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;background:var(--white);max-width:160px;';
-  let html = `<div style="margin:12px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+  let html = '';
+  if (!can.manageShop()) html += `<p style="font-size:12px;color:var(--grey-500);margin:12px 0 0;">Network items are read-only here — you can add and manage items for <strong>${escapeHtml(shopSchoolName(state.shopStockSchool))}</strong>.</p>`;
+  html += `<div style="margin:12px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
     <button class="btn btn-black" onclick="shopNewItem()" style="padding:8px 14px;">+ Add item</button>
     <button class="btn" onclick="openSmaiSearch('catalogue')" style="padding:8px 14px;">🔎 Find on SMAI</button>
-    <button class="btn" onclick="shopCatalogueActions()" aria-label="More actions" title="More actions" style="margin-left:auto;padding:6px 11px;font-size:15px;line-height:1;min-width:38px;">⋯</button></div>`;
+    ${can.manageShop() ? `<button class="btn" onclick="shopCatalogueActions()" aria-label="More actions" title="More actions" style="margin-left:auto;padding:6px 11px;font-size:15px;line-height:1;min-width:38px;">⋯</button>` : ''}</div>`;
 
   html += `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">
     <input id="shopCatSearch" value="${escapeHtml(f.q || '')}" placeholder="Search name or SKU…" oninput="shopCatSearchInput(this.value)" aria-label="Search catalogue"
@@ -16544,8 +16555,8 @@ function renderShopItemEditor() {
     <input id="shopItemName" value="${escapeHtml(d.name || '')}" style="${inp}">
     <label style="${lbl}">Available to</label>
     <select id="shopItemScope" style="${inp}">
-      <option value=""${!d.schoolId ? ' selected' : ''}>All schools</option>
-      ${(typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS : []).map(s => `<option value="${escapeHtml(s.id)}"${d.schoolId === s.id ? ' selected' : ''}>${escapeHtml(s.name)} only</option>`).join('')}
+      ${can.manageShop() ? `<option value=""${!d.schoolId ? ' selected' : ''}>All schools</option>` : ''}
+      ${(typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS : []).filter(s => can.manageShop() || (state.userSchools || []).includes(s.id)).map(s => `<option value="${escapeHtml(s.id)}"${(d.schoolId === s.id || (!can.manageShop() && !d.schoolId && s.id === state.shopStockSchool)) ? ' selected' : ''}>${escapeHtml(s.name)} only</option>`).join('')}
     </select>
     <label style="${lbl}">Category</label>
     <select id="shopItemCat" style="${inp}"><option value="">— none —</option>
@@ -16644,10 +16655,17 @@ function shopItemRemovePhoto() {
   state.shopEdit.data.imageUrl = null;
   renderShop();
 }
-function shopNewItem() { state.shopEdit = { kind: 'item', data: { sized: false } }; renderShop(); }
+function shopNewItem() {
+  if (!can.addLocalCatalogue()) { uiToast('You need admin access to add catalogue items.'); return; }
+  // School admins create LOCAL items — pre-scope to their current school.
+  const scope = can.manageShop() ? null : (state.shopStockSchool || (state.userSchools || [])[0] || null);
+  state.shopEdit = { kind: 'item', data: { sized: false, schoolId: scope } }; renderShop();
+}
 function shopEditItem(id) {
   const it = state.shop.items.find(i => i.id === id);
-  if (it) { state.shopEdit = { kind: 'item', data: Object.assign({}, it) }; renderShop(); }
+  if (!it) return;
+  if (!can.editCatalogueItem(it)) { uiToast(it.schoolId ? 'Only admins of that school (or shop admins) can edit this item.' : 'Network-wide items can only be edited by shop admins.'); return; }
+  state.shopEdit = { kind: 'item', data: Object.assign({}, it) }; renderShop();
 }
 async function shopSaveItem() {
   const g = id => document.getElementById(id);
@@ -16667,6 +16685,11 @@ async function shopSaveItem() {
     schoolId: g('shopItemScope') ? (g('shopItemScope').value || null) : null,
   });
   if (!draft.name) { uiToast('Give the item a name.'); return; }
+  // Mirror of the RLS write policy: non-shop-admins can only save items scoped
+  // to one of their own schools (never network-wide, never someone else's).
+  if (!can.manageShop() && (!draft.schoolId || !(state.userSchools || []).includes(draft.schoolId))) {
+    uiToast('You can only save items scoped to your own school.'); return;
+  }
   if (sized && !draft.sizeSetId) { uiToast('Choose a size set for a sized item.'); return; }
   try {
     const saved = await DB.saveItem(draft);
@@ -16678,6 +16701,7 @@ async function shopSaveItem() {
 async function shopToggleArchive(id) {
   const it = state.shop.items.find(i => i.id === id);
   if (!it) return;
+  if (!can.editCatalogueItem(it)) { uiToast('You can only archive items scoped to your own school.'); return; }
   try {
     const saved = await DB.saveItem(Object.assign({}, it, { archived: !it.archived }));
     const i = state.shop.items.findIndex(x => x.id === saved.id);
@@ -16695,6 +16719,7 @@ async function shopToggleArchive(id) {
 async function shopDeleteItem(id) {
   const it = state.shop.items.find(i => i.id === id);
   if (!it) return;
+  if (!can.editCatalogueItem(it)) { uiToast('You can only delete items scoped to your own school.'); return; }
   const sid = state.shopStockSchool;
   const localQty = (state.shopStock || []).filter(r => r.itemId === id).reduce((s, r) => s + (r.qty || 0), 0);
   const localMoves = (state.shopMovements || []).filter(m => m.itemId === id).length;
@@ -17009,8 +17034,10 @@ async function shopEnsureSmaiItem(product, variant, schoolId) {
   const name = variant.title ? `${product.title} — ${variant.title}` : product.title;
   const existing = shopBySku(state.shop.items, variant.sku) || shopByName(state.shop.items, name);
   if (existing) {
-    // Refresh the retail price in case it's moved since it was last looked up.
-    if (variant.price != null && Number(existing.retailPrice) !== Number(variant.price)) {
+    // Refresh the retail price in case it's moved since it was last looked up —
+    // but only when this user is allowed to WRITE that item (RLS would reject
+    // e.g. a school admin touching a network item; reusing it read-only is fine).
+    if (can.editCatalogueItem(existing) && variant.price != null && Number(existing.retailPrice) !== Number(variant.price)) {
       const saved = await DB.saveItem(Object.assign({}, existing, { retailPrice: Number(variant.price) }));
       const idx = state.shop.items.findIndex(x => x.id === saved.id);
       if (idx >= 0) state.shop.items[idx] = saved;
@@ -17067,8 +17094,8 @@ function smaiRenderBasket() {
   html += `<div style="display:flex;align-items:center;gap:8px;margin-top:8px;">
     <label style="font-size:12px;color:var(--grey-500);flex-shrink:0;">Available to</label>
     <select id="smaiScopeSel" style="flex:1;padding:6px 10px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:12px;background:var(--white);">
-      <option value=""${!st.scope ? ' selected' : ''}>All schools</option>
-      ${schools.map(s => `<option value="${escapeHtml(s.id)}"${st.scope === s.id ? ' selected' : ''}>${escapeHtml(s.name)} only</option>`).join('')}
+      ${can.manageShop() ? `<option value=""${!st.scope ? ' selected' : ''}>All schools</option>` : ''}
+      ${schools.filter(s => can.manageShop() || (state.userSchools || []).includes(s.id)).map(s => `<option value="${escapeHtml(s.id)}"${(st.scope === s.id || (!can.manageShop() && !st.scope && s.id === state.shopStockSchool)) ? ' selected' : ''}>${escapeHtml(s.name)} only</option>`).join('')}
     </select>
   </div>
   <button class="btn btn-primary" style="width:100%;margin-top:8px;" onclick="smaiConfirmBasket()">Add ${st.basket.length} item${st.basket.length === 1 ? '' : 's'} to catalogue</button>`;
@@ -17076,9 +17103,14 @@ function smaiRenderBasket() {
 }
 async function smaiConfirmBasket() {
   const st = state._smai; if (!st || !st.basket || !st.basket.length) return;
-  if (!can.manageShop()) { uiToast('Only shop admins can add catalogue items.'); return; }
+  if (!can.addLocalCatalogue()) { uiToast('You need admin access to add catalogue items.'); return; }
   const scopeSel = document.getElementById('smaiScopeSel');
-  const scope = (scopeSel && scopeSel.value) || null;   // null = all schools
+  let scope = (scopeSel && scopeSel.value) || null;   // null = all schools
+  // School admins can only create items scoped to one of their own schools.
+  if (!can.manageShop() && (!scope || !(state.userSchools || []).includes(scope))) {
+    scope = state.shopStockSchool || (state.userSchools || [])[0] || null;
+    if (!scope) { uiToast('You can only add items scoped to your own school.'); return; }
+  }
   st.scope = scope;
   let itemsDone = 0; const errors = [];
   for (const line of st.basket) {
@@ -17101,7 +17133,10 @@ async function smaiConfirmAdd(variantIdx) {
   const sid = state.shopStockSchool;
   if (!can.editStock(sid)) { uiToast('You can only manage orders for your own school.'); return; }
   let item;
-  try { item = await shopEnsureSmaiItem(st.product, variant, null); }   // special-order items go network-wide by default
+  // Shop admins create special-order picks network-wide; school admins can only
+  // create locally-scoped items (RLS), so theirs land scoped to their school.
+  const soScope = can.manageShop() ? null : sid;
+  try { item = await shopEnsureSmaiItem(st.product, variant, soScope); }
   catch (e) { uiToast('Could not add this item: ' + (e.message || e)); return; }
 
   // Hand the ensured item back to the open special-order form and close the
