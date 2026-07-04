@@ -3307,6 +3307,7 @@ async function loadCurrentSchoolData() {
   await reconcileStudents();
   state.lastLogins = (await DB.loadLastLogins(state.schoolId)) || {};
   state.documents = await DB.loadDocuments(state.schoolId);
+  try { const dc = await DB.loadDocCategories(); state.docCategories = (dc && Array.isArray(dc.list) && dc.list.length) ? dc.list : null; } catch (e) { state.docCategories = null; }
   state.quickLinks = await DB.loadQuickLinks(state.schoolId);
   state.onboardingChecklists = await DB.loadOnboardingChecklists(state.schoolId);
   state.onboardingTemplate = await DB.loadOnboardingTemplate(state.schoolId);
@@ -11920,7 +11921,7 @@ function openDocUpload() {
   document.getElementById('docUpScopeRow').style.display = '';
   document.getElementById('docUpTitle').value = '';
   document.getElementById('docUpDesc').value = '';
-  document.getElementById('docUpCategory').value = 'Syllabus';
+  populateDocCategoryOptions(docCategories()[0]);
   document.getElementById('docUpFile').value = '';
   document.getElementById('docUpStatus').textContent = '';
   populateDocScopeOptions();
@@ -11930,6 +11931,46 @@ function openDocUpload() {
 // Scope dropdown for the current role: superadmin → network + this school + any group;
 // admin → this school + their school's groups (no network). A group can be a few people
 // or a whole school (school-rule group), so it covers "any number of users or all of a school".
+// ── Document categories ──────────────────────────────────────────
+// The upload form's category list is customisable network-wide by
+// superadmins (kv 'doc-categories:global', migration 31). Existing
+// documents keep whatever category string they already have — the
+// library groups dynamically by stored value, so removing a category
+// from this list never breaks or re-files old documents; it only
+// changes what NEW uploads can pick.
+const DEFAULT_DOC_CATEGORIES = ['Syllabus', 'Policy', 'Procedure', 'Form', 'Compliance', 'Certificate', 'Reference', 'Other'];
+function docCategories() {
+  return (Array.isArray(state.docCategories) && state.docCategories.length) ? state.docCategories : DEFAULT_DOC_CATEGORIES;
+}
+function populateDocCategoryOptions(selected) {
+  const sel = document.getElementById('docUpCategory'); if (!sel) return;
+  const cats = docCategories();
+  const cur = selected || sel.value;
+  sel.innerHTML = cats.map(c => `<option value="${escapeHtml(c)}"${c === cur ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('');
+  if (!cats.includes(cur)) sel.value = cats[0] || '';
+  const editBtn = document.getElementById('docCatEditBtn');
+  if (editBtn) editBtn.style.display = can.switchAnySchool() ? '' : 'none';
+}
+function openDocCategoriesEditor() {
+  if (!can.switchAnySchool()) { uiToast('Only superadmins can edit document categories.'); return; }
+  const ta = document.getElementById('docCatList');
+  if (ta) ta.value = docCategories().join('\n');
+  openModal('modalDocCategories');
+}
+async function saveDocCategories() {
+  if (!can.switchAnySchool()) { uiToast('Only superadmins can edit document categories.'); return; }
+  const ta = document.getElementById('docCatList');
+  const list = [...new Set((ta && ta.value || '').split('\n').map(s => s.trim()).filter(Boolean))];
+  if (!list.length) { uiToast('Add at least one category (one per line).'); return; }
+  try {
+    await DB.saveDocCategories({ list });
+    state.docCategories = list;
+    populateDocCategoryOptions();
+    closeModal('modalDocCategories');
+    uiToast('Document categories saved.', 'success');
+  } catch (e) { uiToast('Could not save categories: ' + (e.message || e)); }
+}
+
 function populateDocScopeOptions() {
   const sel = document.getElementById('docUpScope');
   if (!sel) return;
@@ -11972,7 +12013,7 @@ function openDocUploadFor(instructorId) {
   document.getElementById('docUpScopeRow').style.display = 'none';
   document.getElementById('docUpTitle').value = '';
   document.getElementById('docUpDesc').value = '';
-  document.getElementById('docUpCategory').value = 'Compliance';
+  populateDocCategoryOptions(docCategories().includes('Compliance') ? 'Compliance' : docCategories()[0]);
   document.getElementById('docUpFile').value = '';
   document.getElementById('docUpStatus').textContent = '';
   openModal('modalDocUpload');

@@ -2184,6 +2184,8 @@ const DB = (() => {
     saveNetworkPlans: (d) => set('lesson-plans:network', d),
     loadBrand: () => get('brand:global'),
     saveBrand: (d) => set('brand:global', d),
+    loadDocCategories: () => get('doc-categories:global'),
+    saveDocCategories: (d) => set('doc-categories:global', d),
     loadIncidents:    (schoolId) => sbLoadTableMap('incidents', schoolId),
     saveIncidents:    (schoolId, d) => sbSaveTableMap('incidents', schoolId, d),
     deleteIncident:   (schoolId, id) => sbDeleteRow('incidents', id),

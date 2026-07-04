@@ -15,7 +15,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Open+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=123">
+<link rel="stylesheet" href="styles.css?v=124">
 <script>
 /* No-flash brand boot: apply the cached published brand to :root BEFORE first paint,
    so a custom-branded portal never flashes the default palette on load. Self-contained
@@ -1522,17 +1522,8 @@
     </div>
     <div class="form-grid-2">
       <div class="form-row compact">
-        <label>Category</label>
-        <select id="docUpCategory">
-          <option value="Syllabus">Syllabus</option>
-          <option value="Policy">Policy</option>
-          <option value="Procedure">Procedure</option>
-          <option value="Form">Form</option>
-          <option value="Compliance">Compliance</option>
-          <option value="Certificate">Certificate</option>
-          <option value="Reference">Reference</option>
-          <option value="Other">Other</option>
-        </select>
+        <label style="display:flex;align-items:center;justify-content:space-between;">Category <button type="button" id="docCatEditBtn" onclick="openDocCategoriesEditor()" title="Edit categories (superadmin)" aria-label="Edit document categories" style="display:none;background:none;border:none;cursor:pointer;font-size:12px;padding:0 2px;color:var(--grey-500);">✎</button></label>
+        <select id="docUpCategory"><!-- populated from the customisable list (doc-categories:global) at open time --></select>
       </div>
       <div class="form-row compact" id="docUpScopeRow">
         <label>Scope</label>
@@ -1556,6 +1547,20 @@
     <div class="detail-actions">
       <button class="btn btn-primary" onclick="submitDocUpload()" style="flex:1;">Upload</button>
       <button class="btn" onclick="closeModal('modalDocUpload')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Modal: Document categories editor (superadmin) ===== -->
+<div class="modal-bg" id="modalDocCategories">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2>🏷 Document categories</h2>
+    <p style="font-size:12px;color:var(--grey-500);margin:0 0 10px;">One per line, in the order they'll appear in the upload form. This list is network-wide. Existing documents keep the category they were uploaded with — removing one here never re-files old documents, it only changes what new uploads can pick.</p>
+    <textarea id="docCatList" rows="9" style="width:100%;padding:8px;border:1px solid var(--grey-200);border-radius:var(--r-sm);font-size:13px;font-family:inherit;resize:vertical;"></textarea>
+    <div class="detail-actions" style="margin-top:10px;">
+      <button class="btn btn-primary" onclick="saveDocCategories()" style="flex:1;">Save</button>
+      <button class="btn" onclick="closeModal('modalDocCategories')">Cancel</button>
     </div>
   </div>
 </div>
@@ -2207,14 +2212,14 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '123';
+  window.KRMAS_APP_VERSION = '124';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
 </script>
-<script src="data.js?v=123"></script>
-<script src="db.js?v=123"></script>
-<script src="app.js?v=123"></script>
+<script src="data.js?v=124"></script>
+<script src="db.js?v=124"></script>
+<script src="app.js?v=124"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
