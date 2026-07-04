@@ -14490,6 +14490,10 @@ function shopStockSkeletonHtml() {
   return h;
 }
 function setShopView(v) {
+  // The Manage tab is a group, not a view — route it to the last sub-view used
+  // (defaulting to Catalogue) and remember position for next time.
+  if (v === 'manage') v = state.shopManageLast || 'catalogue';
+  if (shopIsManageView(v)) state.shopManageLast = v;
   state.shopView = v; state.shopEdit = null;
   state.shopTabLoading = null;
   // Mark the tab as loading so its renderer shows a spinner instead of a
@@ -14577,6 +14581,20 @@ function shopActiveItems() { return state.shop.items.filter(i => !i.archived); }
 function shopItemAtSchool(it, sid) { return !it.schoolId || it.schoolId === sid; }
 function shopSchoolItems(sid) { return shopActiveItems().filter(it => shopItemAtSchool(it, sid || state.shopStockSchool)); }
 
+// Management views folded under the single ⚙ Manage tab (shop admins only) —
+// the rail was at 11 tabs and growing. School-facing day-to-day ops stay
+// top-level; network administration lives one tap deeper. View ids are
+// unchanged so every existing setShopView('catalogue') deep link still works —
+// the rail just highlights Manage when you're inside one of these.
+const SHOP_MANAGE_VIEWS = [
+  { id: 'catalogue', label: 'Catalogue' },
+  { id: 'suppliers', label: 'Suppliers' },
+  { id: 'value', label: 'Value' },
+  { id: 'reports', label: '📊 Reports' },
+  { id: 'transfers', label: 'Transfers' },
+];
+function shopIsManageView(v) { return SHOP_MANAGE_VIEWS.some(m => m.id === v); }
+
 // ── dispatch ──
 function renderShop() {
   hideDayHead();
@@ -14585,20 +14603,28 @@ function renderShop() {
   if (!can.seeShop()) { main.innerHTML = '<div class="empty"><h2>No access</h2><p>The shop is for shop admins and school admins.</p></div>'; return; }
   if (!state.shopStockSchool) state.shopStockSchool = state.schoolId || (state.userSchools || [])[0] || null;
 
+  const manage = can.manageShop();
   const tabs = [{ id: 'stock', label: 'Stock' }, { id: 'reorder', label: 'Reorder list' }];
   const hasInternalSupplier = (state.shop.suppliers || []).some(s => s.isInternal);
   if (hasInternalSupplier && orderableSchools().length) tabs.push({ id: 'orders', label: 'Orders' });
-  tabs.push({ id: 'special', label: 'Special orders' }, { id: 'stocktake', label: 'Stocktake' }, { id: 'value', label: 'Value' });
-  if (can.manageShop()) { tabs.push({ id: 'transfers', label: 'Transfers' }); tabs.push({ id: 'catalogue', label: 'Catalogue' }); tabs.push({ id: 'suppliers', label: 'Suppliers' }); tabs.push({ id: 'reports', label: '📊 Reports' }); }
+  tabs.push({ id: 'special', label: 'Special orders' }, { id: 'stocktake', label: 'Stocktake' });
+  if (!manage) tabs.push({ id: 'value', label: 'Value' });   // school admins keep Value top-level; for shop admins it lives under Manage
+  if (manage) tabs.push({ id: 'manage', label: '⚙ Manage' });
   if (can.supplyAdmin()) tabs.push({ id: 'supply', label: '🏭 Supply' });
-  if (!tabs.find(t => t.id === state.shopView)) state.shopView = 'stock';
+  if (!tabs.find(t => t.id === state.shopView) && !(manage && shopIsManageView(state.shopView))) state.shopView = 'stock';
 
+  const inManage = manage && shopIsManageView(state.shopView);
+  const activeTab = inManage ? 'manage' : state.shopView;
   let html = `<div style="padding:16px;max-width:920px;margin:0 auto;">
     <h1 style="font-family:'Oswald',sans-serif;font-size:20px;text-transform:uppercase;letter-spacing:.04em;margin:0 0 10px;display:flex;align-items:center;gap:7px;"><span style="font-size:17px;">📦</span> Inventory</h1>
-    <div class="grading-tabs shop-tabs">${tabs.map(t => `<button class="grading-tab ${state.shopView === t.id ? 'active' : ''}" onclick="setShopView('${t.id}')">${escapeHtml(t.label)}</button>`).join('')}</div>`;
+    <div class="grading-tabs shop-tabs">${tabs.map(t => `<button class="grading-tab ${activeTab === t.id ? 'active' : ''}" onclick="setShopView('${t.id}')">${escapeHtml(t.label)}</button>`).join('')}</div>`;
+  if (inManage) {
+    html += `<div class="grading-tabs shop-tabs" style="margin-bottom:6px;">${SHOP_MANAGE_VIEWS.map(m => `<button class="grading-tab ${state.shopView === m.id ? 'active' : ''}" onclick="setShopView('${m.id}')">${escapeHtml(m.label)}</button>`).join('')}</div>`;
+  }
 
   if (state.shopTabLoading && state.shopTabLoading === state.shopView) {
-    html += uiLoading('Loading ' + (tabs.find(t => t.id === state.shopView) || { label: '' }).label.toLowerCase().replace('🏭 ', '') + '…');
+    const loadTab = tabs.find(t => t.id === state.shopView) || SHOP_MANAGE_VIEWS.find(m => m.id === state.shopView) || { label: '' };
+    html += uiLoading('Loading ' + loadTab.label.toLowerCase().replace('🏭 ', '').replace('📊 ', '') + '…');
   }
   else if (state.shopView === 'stock')     html += renderShopStock();
   else if (state.shopView === 'reorder')   html += renderShopReorder();
