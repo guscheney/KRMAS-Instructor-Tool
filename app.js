@@ -2470,6 +2470,10 @@ function renderTeamHours(weekMonday) {
 
   if (rows.length === 0) return `<div style="font-size: 13px; color: var(--grey-500); padding: 8px 4px;">No hours found.</div>`;
 
+  // Hours only ever come from the three TEACHING slots (lead/assist/junior) —
+  // Backup is a flag, never hours. Rows tap open to the per-class breakdown so
+  // every total is explainable: which class, which day, which role.
+  const openId = state.teamHoursOpen || null;
   return `<div style="background: var(--white); border: 1px solid var(--grey-200); border-radius: var(--r-md); overflow: hidden; box-shadow: var(--shadow);">
     <div class="table-scroll"><table style="width: 100%; border-collapse: collapse; font-size: 13px;">
       <thead>
@@ -2481,15 +2485,20 @@ function renderTeamHours(weekMonday) {
         </tr>
       </thead>
       <tbody>
-        ${rows.map(r => `<tr style="border-bottom: 1px solid var(--grey-100);">
-          <td style="padding: 7px 10px; font-weight: 600;">${escapeHtml(r.instr.short || r.instr.name)}</td>
+        ${rows.map(r => `<tr style="border-bottom: 1px solid var(--grey-100);cursor:pointer;" onclick="teamHoursToggle('${r.instr.id}')" title="Tap for the class-by-class breakdown">
+          <td style="padding: 7px 10px; font-weight: 600;">${openId === r.instr.id ? '▾ ' : ''}${escapeHtml(r.instr.short || r.instr.name)}</td>
           <td style="padding: 7px 10px; text-align: right; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--grey-500);">${fmtHoursMins(r.regularMins)}</td>
           <td style="padding: 7px 10px; text-align: right; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--grey-500);">${fmtHoursMins(r.satMins)}</td>
           <td style="padding: 7px 10px; text-align: right; font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700;">${fmtHoursMins(r.totalMins)}</td>
-        </tr>`).join('')}
+        </tr>${openId === r.instr.id ? `<tr><td colspan="4" style="padding: 4px 10px 10px;">${renderInstructorHours(r.instr.id, weekMonday)}</td></tr>` : ''}`).join('')}
       </tbody>
     </table></div>
+    <div style="padding: 6px 10px; font-size: 11px; color: var(--grey-400); border-top: 1px solid var(--grey-100);">Counts teaching roles only (Lead / Assist / Junior) — Backup is a flag and never accrues hours. Tap a row to see which classes make up the total.</div>
   </div>`;
+}
+function teamHoursToggle(instrId) {
+  state.teamHoursOpen = state.teamHoursOpen === instrId ? null : instrId;
+  renderAdmin();   // the team-hours table only renders inside the Admin view
 }
 // ---------- Cover badge ----------
 function updateCoverBadge() {
