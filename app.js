@@ -15932,6 +15932,7 @@ function renderShopReorder() {
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;">
         <strong style="font-size:14px;">${escapeHtml(supName)}</strong>
         <span style="display:flex;gap:6px;">
+          ${sup && supWebUrl(sup) ? `<a class="btn" href="${escapeHtml(supWebUrl(sup))}" target="_blank" rel="noopener noreferrer" style="padding:5px 10px;font-size:12px;text-decoration:none;">🔗 Visit site</a>` : ''}
           <button class="btn" onclick="shopEmailReorder('${k}')" style="padding:5px 10px;font-size:12px;">\u2709 Email</button>
           <button class="btn" onclick="shopCopyReorder('${blockId}')" style="padding:5px 10px;font-size:12px;">Copy</button>
           <button class="btn" onclick="shopExportReorderCsv('${k}')" style="padding:5px 10px;font-size:12px;">CSV</button>
@@ -16793,7 +16794,7 @@ function renderShopCatalogue() {
   if (!can.manageShop()) html += `<p style="font-size:12px;color:var(--grey-500);margin:12px 0 0;">Network items are read-only here — you can add and manage items for <strong>${escapeHtml(shopSchoolName(state.shopStockSchool))}</strong>.</p>`;
   html += `<div style="margin:12px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
     <button class="btn btn-black" onclick="shopNewItem()" style="padding:8px 14px;">+ Add item</button>
-    <button class="btn" onclick="openSmaiSearch('catalogue')" style="padding:8px 14px;">🔎 Find on SMAI</button>
+    ${(() => { const live = shopLiveSuppliers(); if (!live.length) return ''; return `<button class="btn" onclick="openSupplierSearch('catalogue')" style="padding:8px 14px;">🔎 Find on ${escapeHtml(live.length === 1 ? live[0].name : 'supplier')}</button>`; })()}
     ${can.manageShop() ? `<button class="btn" onclick="shopCatalogueActions()" aria-label="More actions" title="More actions" style="margin-left:auto;padding:6px 11px;font-size:15px;line-height:1;min-width:38px;">⋯</button>` : ''}</div>`;
 
   html += `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">
@@ -17211,17 +17212,53 @@ async function shopRunStockImport() {
   renderShop();
 }
 
-// ── SMAI live search (used from both Catalogue and Special Orders) ──
-// Nothing here is stored until the user explicitly adds a specific variant —
-// this is a live lookup against SMAI's public feed, not a catalogue sync.
+// ── Supplier live search (used from both Catalogue and Special Orders) ──
+// v132: generalised from the original SMAI-only integration. ANY supplier
+// with a Storefront URL (Shopify) gets the exact same flow: live search,
+// variant picker, stage-then-commit basket. Nothing here is stored until
+// the user explicitly adds a specific variant — this is a live lookup
+// against the supplier's public feed, not a catalogue sync.
+function shopLiveSuppliers() { return (state.shop.suppliers || []).filter(s => s.storefrontUrl); }
 let _smaiSearchTimer = null;
-function openSmaiSearch(mode) {
-  state._smai = { mode, query: '', loading: false, results: [], error: null, product: null, productLoading: false, productError: null, basket: [], scope: null };
+function openSupplierSearch(mode, supplierId) {
+  const live = shopLiveSuppliers();
+  if (!live.length) { uiToast('No supplier has a Storefront URL yet — set one in ⚙ Manage → Suppliers.'); return; }
+  const sup = live.find(s => s.id === supplierId) || live[0];
+  state._smai = { mode, supplier: { id: sup.id, name: sup.name }, query: '', loading: false, results: [], error: null, product: null, productLoading: false, productError: null, basket: [], scope: null };
   const box = document.getElementById('smaiSearchBox'); if (box) box.value = '';
   const results = document.getElementById('smaiResults'); if (results) results.innerHTML = '';
   const vp = document.getElementById('smaiVariantPicker'); if (vp) { vp.style.display = 'none'; vp.innerHTML = ''; }
   const bk = document.getElementById('smaiBasket'); if (bk) { bk.style.display = 'none'; bk.innerHTML = ''; }
+  supplierSearchRenderHeader();
   openModal('modalSmaiSearch');
+  setTimeout(() => { try { document.getElementById('smaiSearchBox').focus(); } catch (e) {} }, 50);
+}
+// Modal header: title/blurb/placeholder follow the chosen supplier; a supplier
+// picker appears only when 2+ suppliers are live-searchable (UI stays clean
+// with one). Switching suppliers clears results but KEEPS the staged basket —
+// each staged line remembers its own supplier, so mixed baskets commit right.
+function supplierSearchRenderHeader() {
+  const st = state._smai; if (!st) return;
+  const live = shopLiveSuppliers();
+  const title = document.getElementById('smaiTitle'); if (title) title.textContent = 'Find on ' + st.supplier.name;
+  const desc = document.getElementById('smaiDesc'); if (desc) desc.textContent = `Live search of ${st.supplier.name}'s public retail catalogue. Stage as many items as you like, choose which schools they're for, then add them to the catalogue in one go — stock isn't touched here; use Receive on the Stock tab when goods arrive. Prices shown are the supplier's public RRP; buy price isn't in this feed.`;
+  const box = document.getElementById('smaiSearchBox'); if (box) box.placeholder = `Search ${st.supplier.name} (e.g. karate belt, focus mitts)…`;
+  const row = document.getElementById('smaiSupplierRow');
+  if (row) {
+    row.innerHTML = live.length < 2 ? '' : `<label style="font-size:12px;color:var(--grey-500,#71717a);display:block;margin:0 0 8px;">Supplier<br>
+      <select onchange="supplierSearchSetSupplier(this.value)" style="width:100%;padding:8px 10px;border:1px solid var(--grey-200,#e4e4e7);border-radius:8px;font-size:13px;margin-top:3px;background:var(--white,#fff);">
+        ${live.map(sp => `<option value="${escapeHtml(sp.id)}"${sp.id === st.supplier.id ? ' selected' : ''}>${escapeHtml(sp.name)}</option>`).join('')}
+      </select></label>`;
+  }
+}
+function supplierSearchSetSupplier(id) {
+  const st = state._smai; if (!st) return;
+  const sup = shopLiveSuppliers().find(s => s.id === id); if (!sup || sup.id === st.supplier.id) return;
+  st.supplier = { id: sup.id, name: sup.name };
+  st.query = ''; st.results = []; st.error = null; st.product = null; st.productError = null; st.productLoading = false;
+  const box = document.getElementById('smaiSearchBox'); if (box) box.value = '';
+  supplierSearchRenderHeader();
+  smaiRenderResults(); smaiRenderVariantPicker();
   setTimeout(() => { try { document.getElementById('smaiSearchBox').focus(); } catch (e) {} }, 50);
 }
 function smaiSearchInput(q) {
@@ -17233,24 +17270,28 @@ function smaiSearchInput(q) {
   state._smai.loading = true; smaiRenderResults();
   _smaiSearchTimer = setTimeout(async () => {
     try {
-      const res = await DB.smai.search(query);
+      const res = await DB.supplierCat.search(state._smai.supplier.id, query);
       if (state._smai.query.trim() !== query) return; // a newer keystroke has already superseded this call
       if (res && res.error) { state._smai.error = res.error; state._smai.results = []; }
       else { state._smai.results = (res && res.results) || []; state._smai.error = null; }
-    } catch (e) { state._smai.error = 'smai_unavailable'; state._smai.results = []; }
+    } catch (e) { state._smai.error = 'supplier_unavailable'; state._smai.results = []; }
     state._smai.loading = false;
     smaiRenderResults();
   }, 400);
 }
 function _smaiErrText(code) {
+  const who = (state._smai && state._smai.supplier && state._smai.supplier.name) || 'the supplier';
+  code = String(code || '').replace(/^smai_/, 'supplier_');   // legacy codes from the old smai-search function
   return ({
-    smai_timeout: "SMAI took too long to respond — try again.",
-    smai_network_error: "Couldn't reach SMAI — check your connection and try again.",
-    smai_blocked: "SMAI is temporarily blocking automated lookups from here — try again in a minute, or use the SMAI catalogue import instead if this keeps happening.",
-    smai_bad_response: "SMAI sent back something unexpected — try again shortly.",
-    not_found: "Couldn't find that on SMAI.",
+    supplier_timeout: `${who} took too long to respond — try again.`,
+    supplier_network_error: `Couldn't reach ${who} — check your connection and try again.`,
+    supplier_blocked: `${who} is temporarily blocking automated lookups from here — try again in a minute, or use the CSV catalogue import instead if this keeps happening.`,
+    supplier_bad_response: `${who} sent back something unexpected — try again shortly.`,
+    not_shopify: `${who}'s storefront doesn't answer like a Shopify store — check the Storefront URL on the supplier record (live search only works for Shopify storefronts).`,
+    no_storefront: `${who} has no Storefront URL set — add one in ⚙ Manage → Suppliers.`,
+    not_found: `Couldn't find that on ${who}.`,
     query_too_short: 'Keep typing…',
-  })[code] || (code && code.startsWith('smai_http_') ? `SMAI returned an error (${code.replace('smai_http_', '')}) — try again shortly.` : "Couldn't reach SMAI right now.");
+  })[code] || (code && code.startsWith('supplier_http_') ? `${who} returned an error (${code.replace('supplier_http_', '')}) — try again shortly.` : `Couldn't reach ${who} right now.`);
 }
 function smaiRenderResults() {
   const el = document.getElementById('smaiResults'); if (!el) return;
@@ -17258,7 +17299,7 @@ function smaiRenderResults() {
   if (st.loading) { el.innerHTML = `<div style="font-size:12px;color:var(--grey-500);padding:8px;">Searching…</div>`; return; }
   if (st.error) { el.innerHTML = `<div style="font-size:12px;color:var(--red,#D22C12);padding:8px;">${escapeHtml(_smaiErrText(st.error))}</div>`; return; }
   if (!st.results || !st.results.length) {
-    el.innerHTML = st.query && st.query.trim().length >= 2 ? `<div style="font-size:12px;color:var(--grey-500);padding:8px;">No matches on SMAI.</div>` : '';
+    el.innerHTML = st.query && st.query.trim().length >= 2 ? `<div style="font-size:12px;color:var(--grey-500);padding:8px;">No matches on ${escapeHtml((st.supplier && st.supplier.name) || 'the supplier')}.</div>` : '';
     return;
   }
   el.innerHTML = st.results.map((r, i) => `
@@ -17276,10 +17317,10 @@ async function smaiPickProduct(i) {
   st.productLoading = true; st.productError = null; st.product = null;
   smaiRenderVariantPicker();
   try {
-    const res = await DB.smai.product(hit.handle);
+    const res = await DB.supplierCat.product(st.supplier.id, hit.handle);
     if (res && res.error) { st.productError = res.error; }
     else { st.product = res && res.product; }
-  } catch (e) { st.productError = 'smai_unavailable'; }
+  } catch (e) { st.productError = 'supplier_unavailable'; }
   st.productLoading = false;
   smaiRenderVariantPicker();
 }
@@ -17311,7 +17352,7 @@ function smaiRenderVariantPicker() {
 // creates a duplicate catalogue item. schoolId scopes the item's availability
 // (null = all schools) — only applied on CREATE; an existing item keeps its
 // scope so a lookup from one school never silently re-scopes a shared item.
-async function shopEnsureSmaiItem(product, variant, schoolId) {
+async function shopEnsureSupplierItem(product, variant, schoolId, supplierId) {
   const name = variant.title ? `${product.title} — ${variant.title}` : product.title;
   const existing = shopBySku(state.shop.items, variant.sku) || shopByName(state.shop.items, name);
   if (existing) {
@@ -17327,7 +17368,7 @@ async function shopEnsureSmaiItem(product, variant, schoolId) {
     return existing;
   }
   const cat = await shopEnsureCategory(product.productType);
-  const sup = await shopEnsureSupplier('SMAI');
+  const sup = (supplierId && shopSupplier(supplierId)) || await shopEnsureSupplier('SMAI');
   const draft = {
     name, categoryId: cat ? cat.id : null, supplierId: sup ? sup.id : null,
     unitCost: null, unit: null, sku: variant.sku || null, sized: false, sizeSetId: null, gradeRef: null,
@@ -17349,7 +17390,9 @@ function smaiStageVariant(variantIdx) {
   const productSnap = { title: st.product.title, productType: st.product.productType, image: st.product.image };
   // Same SKU staged twice — it's already on the list, nothing to merge (no quantities).
   if (st.basket.some(l => l.variant.sku && l.variant.sku === variant.sku)) { uiToast('Already on the list.'); return; }
-  st.basket.push({ product: productSnap, variant });
+  // Each line snapshots ITS supplier — the picker can move between suppliers
+  // mid-session and a mixed basket must attribute every item correctly.
+  st.basket.push({ product: productSnap, variant, supplierId: st.supplier.id, supplierName: st.supplier.name });
   smaiRenderBasket();
   uiToast(`Added to list (${st.basket.length} item${st.basket.length === 1 ? '' : 's'} staged).`, 'success');
 }
@@ -17365,10 +17408,11 @@ function smaiRenderBasket() {
   bk.style.display = '';
   const schools = (typeof KRMAS_SCHOOLS !== 'undefined' ? KRMAS_SCHOOLS : []);
   let html = `<div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--grey-500);margin-bottom:4px;">To add to catalogue (${st.basket.length} item${st.basket.length === 1 ? '' : 's'})</div>`;
+  const mixed = new Set(st.basket.map(l => l.supplierId)).size > 1;
   st.basket.forEach((l, i) => {
     const name = l.variant.title ? `${l.product.title} — ${l.variant.title}` : l.product.title;
     html += `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 0;font-size:12px;">
-      <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(name)}</span>
+      <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(name)}${mixed && l.supplierName ? ` <span style="color:var(--grey-500);font-size:11px;">· ${escapeHtml(l.supplierName)}</span>` : ''}</span>
       <button type="button" class="btn btn-sm btn-ghost" style="color:var(--red);flex-shrink:0;" onclick="smaiRemoveBasketLine(${i})">Remove</button>
     </div>`;
   });
@@ -17395,7 +17439,7 @@ async function smaiConfirmBasket() {
   st.scope = scope;
   let itemsDone = 0; const errors = [];
   for (const line of st.basket) {
-    try { await shopEnsureSmaiItem(line.product, line.variant, scope); itemsDone++; }
+    try { await shopEnsureSupplierItem(line.product, line.variant, scope, line.supplierId); itemsDone++; }
     catch (e) { errors.push((line.variant.title ? line.product.title + ' — ' + line.variant.title : line.product.title) + ': ' + (e.message || e)); }
   }
   closeModal('modalSmaiSearch');
@@ -17417,7 +17461,7 @@ async function smaiConfirmAdd(variantIdx) {
   // Shop admins create special-order picks network-wide; school admins can only
   // create locally-scoped items (RLS), so theirs land scoped to their school.
   const soScope = can.manageShop() ? null : sid;
-  try { item = await shopEnsureSmaiItem(st.product, variant, soScope); }
+  try { item = await shopEnsureSupplierItem(st.product, variant, soScope, st.supplier.id); }
   catch (e) { uiToast('Could not add this item: ' + (e.message || e)); return; }
 
   // Hand the ensured item back to the open special-order form and close the
@@ -17430,6 +17474,15 @@ async function smaiConfirmAdd(variantIdx) {
   soOnItemChange();
   closeModal('modalSmaiSearch');
   uiToast(`${item.name} added — finish the order details and save.`, 'success');
+}
+
+// Normalise a stored supplier website into a safe, clickable href.
+// Anything without an http(s) scheme gets https:// prefixed — which also
+// neutralises javascript:/data: values into harmless broken hostnames.
+function supWebUrl(s) {
+  const w = (s && s.website || '').trim();
+  if (!w) return null;
+  return /^https?:\/\//i.test(w) ? w : 'https://' + w;
 }
 
 function renderShopSuppliers() {
@@ -17447,7 +17500,8 @@ function renderShopSuppliers() {
       <div><strong style="font-size:14px;">${escapeHtml(s.name)}</strong>
         ${s.isInternal ? `<span style="display:inline-block;margin-left:6px;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:700;background:#2563eb1a;color:#2563eb;vertical-align:middle;">🏭 INTERNAL</span>` : ''}
         ${s.contactEmail ? `<span style="font-size:11px;color:var(--grey-500);"> · ${escapeHtml(s.contactEmail)}</span>` : ''}
-        ${s.contactPhone ? `<span style="font-size:11px;color:var(--grey-500);"> · ${escapeHtml(s.contactPhone)}</span>` : ''}</div>
+        ${s.contactPhone ? `<span style="font-size:11px;color:var(--grey-500);"> · ${escapeHtml(s.contactPhone)}</span>` : ''}
+        ${supWebUrl(s) ? `<span style="font-size:11px;"> · <a href="${escapeHtml(supWebUrl(s))}" target="_blank" rel="noopener noreferrer" style="color:var(--grey-500);text-decoration:underline;">🔗 ${escapeHtml(supWebUrl(s).replace(/^https?:\/\/(www\.)?/i, '').replace(/\/.*$/, ''))}</a></span>` : ''}</div>
       <span style="display:flex;gap:6px;flex-shrink:0;">
         <button class="btn" onclick="shopEditSupplier('${s.id}')" style="padding:4px 10px;font-size:12px;">Edit</button>
         <button class="btn" onclick="shopDeleteSupplier('${s.id}')" style="padding:4px 10px;font-size:12px;">Delete</button></span></div>`;
@@ -17490,6 +17544,8 @@ function renderShopSupplierEditor() {
     <label style="${lbl}">Email</label><input id="shopSupEmail" value="${escapeHtml(d.contactEmail || '')}" style="${inp}">
     <label style="${lbl}">Phone</label><input id="shopSupPhone" value="${escapeHtml(d.contactPhone || '')}" style="${inp}">
     <label style="${lbl}">Website</label><input id="shopSupWeb" value="${escapeHtml(d.website || '')}" style="${inp}">
+    <label style="${lbl}">Storefront URL (Shopify)</label><input id="shopSupStore" value="${escapeHtml(d.storefrontUrl || '')}" placeholder="https://www.smai.com.au" style="${inp}">
+    <span style="font-size:11px;color:var(--grey-500);display:block;margin-top:3px;">Enables 🔎 live product search for this supplier — search their store and add items straight to the catalogue, exactly like SMAI. The store must run Shopify.</span>
     <label style="${lbl}">Notes</label><textarea id="shopSupNotes" style="${inp}min-height:60px;">${escapeHtml(d.notes || '')}</textarea>
     <label style="display:flex;align-items:flex-start;gap:9px;cursor:pointer;margin-top:14px;padding:11px;border:1px solid var(--grey-200);border-radius:var(--r-sm);background:var(--grey-50,#f8f8f8);">
       <input type="checkbox" id="shopSupInternal" ${d.isInternal ? 'checked' : ''} style="width:auto;margin:2px 0 0;flex-shrink:0;">
@@ -17508,6 +17564,7 @@ async function shopSaveSupplier() {
     contactEmail: g('shopSupEmail').value.trim() || null,
     contactPhone: g('shopSupPhone').value.trim() || null,
     website: g('shopSupWeb').value.trim() || null,
+    storefrontUrl: g('shopSupStore').value.trim() || null,
     notes: g('shopSupNotes').value.trim() || null,
     isInternal: !!(g('shopSupInternal') && g('shopSupInternal').checked),
   });

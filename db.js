@@ -131,21 +131,24 @@ const DB = (() => {
     return data;
   }
 
-  // Live SMAI lookup — soft-fails (returns {error} rather than throwing) so a
-  // network hiccup shows a friendly message instead of an uncaught rejection.
-  // Nothing here is ever persisted; every call is a live SMAI round-trip.
-  async function smaiInvoke(body) {
+  // Live supplier lookup (v132, generic: any supplier with a storefront_url) —
+  // soft-fails (returns {error} rather than throwing) so a network hiccup
+  // shows a friendly message instead of an uncaught rejection. Nothing here
+  // is ever persisted; every call is a live round-trip to the supplier's
+  // public feed via the supplier-search edge function, which resolves the
+  // storefront URL server-side from the supplier id.
+  async function supplierCatInvoke(body) {
     const sb = sbClient(); if (!sb) return { error: 'Supabase unavailable' };
-    const { data, error } = await sb.functions.invoke('smai-search', { body });
+    const { data, error } = await sb.functions.invoke('supplier-search', { body });
     if (error) {
-      let msg = (error && error.message) || 'smai_unavailable';
+      let msg = (error && error.message) || 'supplier_unavailable';
       try { if (error.context && error.context.json) { const j = await error.context.json(); if (j && j.error) msg = j.error; } } catch (e) {}
       return { error: msg };
     }
-    return data || { error: 'smai_unavailable' };
+    return data || { error: 'supplier_unavailable' };
   }
-  async function smaiSearchLive(q) { return smaiInvoke({ action: 'search', q }); }
-  async function smaiProductLive(handle) { return smaiInvoke({ action: 'product', handle }); }
+  async function supplierCatSearch(supplierId, q) { return supplierCatInvoke({ action: 'search', supplierId, q }); }
+  async function supplierCatProduct(supplierId, handle) { return supplierCatInvoke({ action: 'product', supplierId, handle }); }
 
   // ── localStorage helpers ─────────────────────────────────────────
   async function lGet(key) {
@@ -1551,8 +1554,8 @@ const DB = (() => {
   // DB columns <-> camelCase objects the same way students do.
   function _itemFromRow(r){ return { id:r.id, name:r.name, categoryId:r.category_id, supplierId:r.supplier_id, unitCost:r.unit_cost, unit:r.unit, sku:r.sku, sized:!!r.sized, sizeSetId:r.size_set_id, gradeRef:r.grade_ref, imageUrl:r.image_url||null, archived:!!r.archived, retailPrice:(r.retail_price==null?null:Number(r.retail_price)), buyPrice:(r.buy_price==null?null:Number(r.buy_price)), schoolId:r.school_id||null }; }
   function _itemToRow(it){ const r={ name:it.name||'', category_id:it.categoryId||null, supplier_id:it.supplierId||null, unit_cost:(it.unitCost===''||it.unitCost==null)?null:Number(it.unitCost), unit:it.unit||null, sku:it.sku||null, sized:!!it.sized, size_set_id:it.sized?(it.sizeSetId||null):null, grade_ref:it.gradeRef||null, image_url:it.imageUrl||null, archived:!!it.archived, retail_price:(it.retailPrice===''||it.retailPrice==null)?null:Number(it.retailPrice), buy_price:(it.buyPrice===''||it.buyPrice==null)?null:Number(it.buyPrice), school_id:it.schoolId||null, updated_at:new Date().toISOString() }; if(it.id) r.id=it.id; return r; }
-  function _supFromRow(r){ return { id:r.id, name:r.name, contactEmail:r.contact_email, contactPhone:r.contact_phone, website:r.website, notes:r.notes, isInternal:!!r.is_internal }; }
-  function _supToRow(s){ const r={ name:s.name||'', contact_email:s.contactEmail||null, contact_phone:s.contactPhone||null, website:s.website||null, notes:s.notes||null, is_internal:!!s.isInternal }; if(s.id) r.id=s.id; return r; }
+  function _supFromRow(r){ return { id:r.id, name:r.name, contactEmail:r.contact_email, contactPhone:r.contact_phone, website:r.website, storefrontUrl:r.storefront_url, notes:r.notes, isInternal:!!r.is_internal }; }
+  function _supToRow(s){ const r={ name:s.name||'', contact_email:s.contactEmail||null, contact_phone:s.contactPhone||null, website:s.website||null, storefront_url:s.storefrontUrl||null, notes:s.notes||null, is_internal:!!s.isInternal }; if(s.id) r.id=s.id; return r; }
   function _setFromRow(r){ return { id:r.id, name:r.name, sizes:Array.isArray(r.sizes)?r.sizes:(r.sizes||[]), sort:r.sort||0 }; }
   function _setToRow(s){ const r={ name:s.name||'', sizes:Array.isArray(s.sizes)?s.sizes:[], sort:s.sort||0 }; if(s.id) r.id=s.id; return r; }
   function _catFromRow(r){ return { id:r.id, name:r.name, sort:r.sort||0 }; }
@@ -2269,9 +2272,9 @@ const DB = (() => {
     loadTransfers:    (lim)                => loadTransfers(lim),
 
     // ── SMAI live search (no storage — every call hits SMAI's public feed) ──
-    smai: {
-      search:  (q)      => smaiSearchLive(q),
-      product: (handle) => smaiProductLive(handle),
+    supplierCat: {
+      search:  (supplierId, q)      => supplierCatSearch(supplierId, q),
+      product: (supplierId, handle) => supplierCatProduct(supplierId, handle),
     },
     supplyLoc:           (supplierId)       => supplyLoc(supplierId),
     loadSupplyOrders:    (opts)             => loadSupplyOrders(opts),
