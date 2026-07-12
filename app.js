@@ -4210,8 +4210,13 @@ async function planCorpusIngest(plan) {
   const warmup = _planLines(plan.warmup), drills = _planLines(plan.techniques), cooldown = _planLines(plan.cooldown);
   if (!warmup.length && !drills.length) return;   // nothing usable to learn from
   const term = parseInt(plan.term, 10), week = parseInt(plan.week, 10);
+  // Corpus rows carry the class TITLE (display name), not the app's
+  // internal key — 'Little Ninjas', never 'little-ninjas' — so they file
+  // alongside the founder archive's spellings. plangen's classkey() also
+  // matches key-spelled rows ingested before v130.
+  const ctName = (typeof CLASS_TYPES !== 'undefined' && CLASS_TYPES[plan.classType] && CLASS_TYPES[plan.classType].name) || plan.classType || 'unknown';
   await DB.corpus.upsertPlan({
-    ownerId: state.user.id, sourceKey: plan.key, classType: plan.classType || 'unknown',
+    ownerId: state.user.id, sourceKey: plan.key, classType: ctName,
     topic: _planTopicNumber(plan), theme: plan.theme || '', objective: plan.objective || '',
     termWeek: (term && week) ? `T${term}W${week}` : null,
     year: plan.date ? new Date(plan.date).getFullYear() : new Date().getFullYear(),

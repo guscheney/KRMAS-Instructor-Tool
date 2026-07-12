@@ -1,5 +1,5 @@
 /* KRMAS Instructor App — service worker (offline support) */
-const VERSION = '129';
+const VERSION = '130';
 const CACHE = 'krmas-roster-v' + VERSION;
 const ASSETS = [
   './',

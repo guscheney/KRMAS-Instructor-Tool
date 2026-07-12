@@ -1,5 +1,5 @@
 /* ====================================================================
-   KRMAS — plangen.js (v126)
+   KRMAS — plangen.js (v130)
    Archive-grounded lesson-plan generation. A faithful JS port of
    krmas_generate.py — a RECOMBINATION ENGINE, NOT A CREATIVE WRITER.
 
@@ -10,6 +10,9 @@
    3. Every line carries a source ref (catalogue id + source plan).
    4. No belt/rank targeting — class type + topic only.
    5. "Usual warmup" is emitted literally; intentionally undefined.
+   6. (v130) A requested TOPIC is a hard filter: source plans must carry
+      that topic. Class/topic for seed-archive plans are derived from the
+      plan TITLE (source filename) — the title is the authority.
 
    DIFFERENCES FROM THE PYTHON REFERENCE (deliberate):
    • The catalogue is DERIVED IN MEMORY from the owner's plans
@@ -45,6 +48,53 @@
   }
   function mergekey(s) { return normkey(s).replace(/[\s,\-–/]/g, ''); }
   function tokens(s) { return new Set((normkey(s || '').match(/[a-z]+/g) || [])); }
+  // Canonical key for CLASS-TYPE comparison: order-free token set, with
+  // separators (-, _, /) treated as spaces. Makes the app's stored keys
+  // ('little-ninjas'), display names ('Little Ninjas') and the archive's
+  // spellings ('Little Ninjas') all compare equal.
+  function classkey(s) { return [...tokens(String(s || '').replace(/[-_/]/g, ' '))].sort().join(' '); }
+
+  // ── title-derived attribution (v130) ──
+  // The founder archive was bulk-imported with class/topic inferred from
+  // document CONTENT, which misfiled plans (a 'kids variety' doc landed as
+  // Little Ninjas topic 8). The plan's TITLE (source filename) is the
+  // authority: topic and class are re-derived from it at load; the stored
+  // value survives only where the title says nothing. Applied to seed
+  // plans only — app-completed plans carry the instructor's explicit
+  // form values, which are authoritative.
+  const TITLE_CLASS_ALIASES = { lmt: 'ladies mt', ufc: 'Sanda/MMA', 'jiu jitsu': 'BJJ', njj: 'BJJ' };
+  function titleTopic(f) {
+    const m = /topic\s*[-_]?\s*(\d+)/i.exec(String(f || '').split('/').pop() || '');
+    return m ? parseInt(m[1], 10) : null;
+  }
+  function titleClass(f, plans, style) {
+    const base = normkey(String(f || '').split('/').pop().replace(/\.[a-z0-9]+$/i, ''));
+    if (!base) return null;
+    const cands = new Map();   // token -> canonical class
+    for (const p of plans) { const n = normkey(p.c); if (n && !cands.has(n)) cands.set(n, p.c); }
+    for (const k in (style && style.class_aliases) || {}) if (!cands.has(k)) cands.set(k, style.class_aliases[k]);
+    for (const k in TITLE_CLASS_ALIASES) if (!cands.has(k)) cands.set(k, TITLE_CLASS_ALIASES[k]);
+    let hit = null;
+    for (const [tok, canon] of cands) {
+      if (tok === 'unknown') continue;
+      const re = new RegExp('(^|[^a-z])(' + tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')($|[^a-z])', 'i');
+      const m = re.exec(base);
+      if (!m) continue;
+      const at = m.index + m[1].length;
+      // The class is named FIRST in a title; later tokens are theme
+      // ('karate topic 4 - sparring' is a Karate class). Leftmost wins,
+      // longest breaks ties ('mini little ninjas' over 'little ninjas').
+      if (!hit || at < hit.at || (at === hit.at && tok.length > hit.tok.length)) hit = { tok, canon, at };
+    }
+    return hit ? hit.canon : null;
+  }
+  function normalizeSeedPlans(plans, style) {
+    return plans.map(p => {
+      const t = titleTopic(p.f), c = titleClass(p.f, plans, style);
+      if (t == null && c == null) return p;
+      return Object.assign({}, p, { t: t != null ? t : p.t, c: c != null ? c : p.c });
+    });
+  }
 
   // ── catalogue derivation (replaces the bundle's precomputed catalogue) ──
   // Groups every line of every plan by (section, mergekey). Canonical text =
@@ -111,6 +161,16 @@
     if (style.class_aliases[n]) return style.class_aliases[n];
     const known = [...new Set(plans.map(p => p.c))];
     for (const k of known) if (normkey(k) === n) return k;
+    // classkey pass: order/separator-free ('little-ninjas' == 'Little Ninjas')
+    const ck = classkey(raw);
+    if (ck) for (const k of known) if (classkey(k) === ck) return k;
+    // last resort: a UNIQUE known class whose tokens contain the query's
+    // ('Mini Ninjas' -> 'Mini Little Ninjas'). Ambiguity stays unresolved.
+    const qt = tokens(String(raw || '').replace(/[-_/]/g, ' '));
+    if (qt.size) {
+      const supers = known.filter(k => { const kt = tokens(String(k).replace(/[-_/]/g, ' ')); return [...qt].every(t => kt.has(t)); });
+      if (supers.length === 1) return supers[0];
+    }
     return null;
   }
 
@@ -146,10 +206,12 @@
 
   // ── corpus coverage (cold-start UX + the sharing picker's stats) ──
   function coverage(plans) {
-    const byType = {};
+    const byType = {}; const canon = {};   // classkey -> first-seen spelling
     for (const p of plans) {
       if (!p.w.length && !p.d.length) continue;
-      const t = byType[p.c] || (byType[p.c] = { plans: 0, topics: new Set(), themes: [] });
+      const ck = classkey(p.c);
+      const label = canon[ck] || (canon[ck] = p.c);
+      const t = byType[label] || (byType[label] = { plans: 0, topics: new Set(), themes: [] });
       t.plans++;
       if (p.t != null) t.topics.add(p.t);
       if (p.th && t.themes.length < 8 && !t.themes.includes(p.th)) t.themes.push(p.th);
@@ -174,13 +236,22 @@
       return { ok: false, gaps: [`unknown class type '${req.classType}'`], available: { classTypes: [...new Set(plans.map(p => p.c))].sort() } };
     }
     const want = { topic: req.topic != null ? req.topic : null, ttok: tokens(req.theme), term: req.term != null ? req.term : null, week: req.week != null ? req.week : null };
-    const cand = plans.filter(p => p.c === ct && ((p.w && p.w.length) || (p.d && p.d.length)));
+    const ctKey = classkey(ct);
+    let cand = plans.filter(p => classkey(p.c) === ctKey && ((p.w && p.w.length) || (p.d && p.d.length)));
     if (!cand.length) return { ok: false, gaps: [`no usable plans of class type '${ct}' in this library`], available: { classTypes: [...new Set(plans.map(p => p.c))].sort() } };
-    cand.sort((a, b) => (score(b, want) - score(a, want)) || (a.f < b.f ? -1 : a.f > b.f ? 1 : 0));
 
     const gaps = [];
-    if (want.topic != null && cand.every(p => p.t !== want.topic)) gaps.push(`no '${ct}' plan for topic ${want.topic}`);
-    if (want.ttok.size && score(cand[0], { topic: null, ttok: want.ttok, term: null, week: null }) === 0) gaps.push(`no '${ct}' material matching theme '${req.theme}'`);
+    // A requested topic is a HARD FILTER, not a preference: a 'topic 8'
+    // plan must be assembled only from topic-8 source plans — never padded
+    // out with material from whatever other topics the class happens to
+    // have (rule 2: honest gaps, never filler).
+    if (want.topic != null) {
+      const byTopic = cand.filter(p => p.t === want.topic);
+      if (!byTopic.length) gaps.push(`no '${ct}' plan for topic ${want.topic}`);
+      else cand = byTopic;
+    }
+    cand.sort((a, b) => (score(b, want) - score(a, want)) || (a.f < b.f ? -1 : a.f > b.f ? 1 : 0));
+    if (!gaps.length && want.ttok.size && score(cand[0], { topic: null, ttok: want.ttok, term: null, week: null }) === 0) gaps.push(`no '${ct}' material matching theme '${req.theme}'`);
     if (gaps.length) {
       const ts = [...new Set(cand.filter(p => p.t != null).map(p => String(p.t)))].sort((a, b) => a - b);
       const themes = cand.filter(p => p.th).map(p => p.th).slice(0, 8);
@@ -248,13 +319,16 @@
     if (styleRow && styleRow.seed === 'krmas-bundle') {
       // via the exported object so tests (or callers) can substitute the fetcher
       const bundle = await PlanGen.fetchSeedBundle(opts && opts.seedUrl);
-      plans = bundle.plans.concat(plans);
+      // Title-wins attribution: the archive's stored class/topic were
+      // inferred from document content and misfiled ~10% of plans.
+      const seedPlans = normalizeSeedPlans(bundle.plans, { class_aliases: (bundle.style_dna && bundle.style_dna.class_aliases) || {} });
+      plans = seedPlans.concat(plans);
       seedStyle = bundle.style_dna || null;
     }
     return { plans, style: deriveStyle(plans, seedStyle) };
   }
 
-  const PlanGen = { normkey, mergekey, tokens, buildCatalogue, allowedIndex, deriveStyle, resolveClass, score, blocksOf, coverage, generate, rowToPlan, assembleCorpus, fetchSeedBundle, MIN_PLANS_FOR_GEN, BASE_FORMAT_HEADERS };
+  const PlanGen = { normkey, mergekey, tokens, classkey, titleTopic, titleClass, normalizeSeedPlans, buildCatalogue, allowedIndex, deriveStyle, resolveClass, score, blocksOf, coverage, generate, rowToPlan, assembleCorpus, fetchSeedBundle, MIN_PLANS_FOR_GEN, BASE_FORMAT_HEADERS };
   if (typeof module !== 'undefined' && module.exports) module.exports = PlanGen;
   root.PlanGen = PlanGen;
 })(typeof window !== 'undefined' ? window : globalThis);
