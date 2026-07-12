@@ -95,7 +95,10 @@ const appSrc = fs.readFileSync('app.js', 'utf8');
   window.eval("closeModal('modalActions');");
 
   // archive flow end-to-end (DB stubbed)
-  window.eval("window.__saved = null; DB.saveFeedPost = async (p) => { window.__saved = { id: p.id, archived: p.archived }; return true; };");
+  // v117: archiveFeedPost persists via DB.setPostArchived (targeted UPDATE, success === true),
+  // not via a full-row saveFeedPost upsert — stub that path, and capture uiToast for errors.
+  window.eval("window.uiToast = function (m) { window.__lastAlert = m; };");
+  window.eval("window.__saved = null; DB.setPostArchived = async (p, val) => { window.__saved = { id: p.id, archived: !!val }; return true; };");
   window.eval("archiveFeedPost('p2', true);");
   await sleep(15);
   ck('archive persists archived=true', ev("window.__saved && window.__saved.id === 'p2' && window.__saved.archived === true"));
@@ -105,8 +108,8 @@ const appSrc = fs.readFileSync('app.js', 'utf8');
   ck('unarchive persists archived=false', ev("window.__saved && window.__saved.archived === false"));
   ck('post returns to the feed', /expired post/.test(mc()));
 
-  // failure path rolls back optimistic flag
-  window.eval("DB.saveFeedPost = async () => false; archiveFeedPost('p2', true);");
+  // failure path rolls back optimistic flag — v117 failure shape is a truthy {error}, not false
+  window.eval("DB.setPostArchived = async () => ({ error: 'column missing' }); archiveFeedPost('p2', true);");
   await sleep(15);
   ck('failed save rolls back + error toast', ev("state.feed.find(p=>p.id==='p2').archived") === false && /Could not update/.test(ev('window.__lastAlert') || ''));
 

@@ -71,6 +71,8 @@ process.on('unhandledRejection', (e) => { console.log('UNHANDLED', (e && e.messa
   }
 
   // ---- 1. SUCCESS: post stays in the feed ----
+  // v111: user feedback goes through uiToast, not window.alert — capture the toast text.
+  window.eval("window.uiToast = function (m) { window.__lastAlert = m; };");
   window.eval("DB.saveFeedPost = async () => true;");
   setComposer('First post that saves fine');
   await window.eval('submitPost()');
@@ -85,8 +87,8 @@ process.on('unhandledRejection', (e) => { console.log('UNHANDLED', (e && e.messa
   await window.eval('submitPost()');
   await sleep(40);
   ck('failed save does NOT leave a phantom post', window.eval('state.feed.length') === beforeLen);
-  ck('failed save alerts the user', window.eval('typeof window.__lastAlert === "string" && window.__lastAlert.indexOf("could not be saved") !== -1'));
-  ck('failure alert surfaces the real reason', window.eval('window.__lastAlert.indexOf("notice_type") !== -1'));
+  ck('failed save toasts the user', window.eval('typeof window.__lastAlert === "string" && window.__lastAlert.indexOf("could not be saved") !== -1'));
+  ck('failure toast surfaces the real reason', window.eval('typeof window.__lastAlert === "string" && window.__lastAlert.indexOf("notice_type") !== -1'));
   ck('draft restored to composer (nothing lost)', window.eval('(document.getElementById("composerBody")||{}).value === "Second post that fails to save"'));
 
   console.log(`\nPASS=${pass} FAIL=${fail}`);

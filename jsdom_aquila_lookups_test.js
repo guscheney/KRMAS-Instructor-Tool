@@ -167,6 +167,8 @@ process.on('unhandledRejection', (e) => { console.log('UNHANDLED', (e && e.messa
   ck('graceful: date still carries', W("(_ppCardState['karate']||{}).startDate") === '2022-02-02');
 
   // ---------- gating ----------
+  // v111: gate messages surface via uiToast, not window.alert — capture the toast text.
+  W("window.uiToast = function (m) { window.__lastAlert = m; };");
   W("__lastAlert=''; state.aquilaIntegration={ locationId:'L1', roles:['Members_Read'] };"); // no Development_Read
   ck('prog gate blocked without Development_Read', W("aquilaCanProgression()") === false);
   W("openAquilaProgPicker();");
@@ -185,7 +187,10 @@ process.on('unhandledRejection', (e) => { console.log('UNHANDLED', (e && e.messa
   ck('menu offers instructor pathway', /Instructor pathway/.test(body('actionSheetBody')));
   ck('menu offers grading progression', /Grading progression/.test(body('actionSheetBody')));
   ck('menu offers look-up a member', /Look up a member/.test(body('actionSheetBody')));
-  ck('menu folds in manual add', /Add manually/.test(body('actionSheetBody')));
+  // Redesign: manual add is a standalone "+ Add Student" button on the main view
+  // (always available), not a folded action-sheet row.
+  ck('menu does NOT fold in manual add (moved to main view)', !/Add manually/.test(body('actionSheetBody')));
+  ck('main view keeps the standalone Add Student button', /Add Student/.test(body('mainContent')));
   W("closeModal('modalActions');");
   // pathway option hides without instructor access; lookup stays
   W("can.managePathway=function(){return false;}; openStudentAddMenu();");
@@ -195,9 +200,9 @@ process.on('unhandledRejection', (e) => { console.log('UNHANDLED', (e && e.messa
   // non-Aquila school: plain manual add button, no Search-in-Aquila
   W("state.aquilaIntegration={ locationId:'L1', roles:['Members_Read'] }; renderStudents();");
   ck('no Search-in-Aquila without Development_Read', !/Search in Aquila/.test(body('mainContent')));
-  ck('manual add button shown instead', /Add student/.test(body('mainContent')));
+  ck('manual add button shown instead', /Add Student/.test(body('mainContent')));
   W("state.aquilaIntegration=null; renderStudents();");
-  ck('non-Aquila school still shows manual add', /Add student/.test(body('mainContent')) && !/Search in Aquila/.test(body('mainContent')));
+  ck('non-Aquila school still shows manual add', /Add Student/.test(body('mainContent')) && !/Search in Aquila/.test(body('mainContent')));
 
   ck('no errors during lookups', window.__errs.length === 0);
 
