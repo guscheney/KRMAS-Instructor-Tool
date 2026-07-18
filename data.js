@@ -248,6 +248,63 @@ const TOPIC_CHARTS = {
   }
 };
 
+// v133: frozen snapshot of the built-in charts so DB overrides can be applied
+// idempotently (reset-then-apply, mirroring applyClassTypeOverrides above).
+const TOPIC_CHART_DEFAULTS = JSON.parse(JSON.stringify(TOPIC_CHARTS));
+
+// v133: every topic section key used across the charts, in display order.
+// `bool` sections are presence flags (kata / weapons), not text.
+const TOPIC_SECTIONS = [
+  { key: 'fitness',     label: 'Fitness' },
+  { key: 'basics',      label: 'Basics' },
+  { key: 'etiquette',   label: 'Etiquette' },
+  { key: 'grappling',   label: 'Grappling' },
+  { key: 'selfDefence', label: 'Self defence' },
+  { key: 'sparring',    label: 'Sparring' },
+  { key: 'techniques',  label: 'Techniques' },
+  { key: 'tachi',       label: 'Tachi waza' },
+  { key: 'teaching',    label: 'Teaching points' },
+  { key: 'round',       label: 'Round type' },
+  { key: 'extra',       label: 'Extras' },
+  { key: 'format',      label: 'Format' },
+  { key: 'drills',      label: 'Drills' },
+  { key: 'focus',       label: 'Focus' },
+  { key: 'bunkai',      label: 'Bunkai' },
+  { key: 'equipment',   label: 'Equipment' },
+  { key: 'other',       label: 'Other' },
+  { key: 'kata',        label: 'Kata practice',  bool: true },
+  { key: 'weapons',     label: 'Weapons (kids)', bool: true },
+];
+
+// v133: apply superadmin-edited topic chart overrides. Blob lives network-wide
+// at kv 'topic-charts:network', shape:
+//   { charts: { <chartKey>: { name?, cycleLength?, topics?: { <n>: <topic> } } } }
+// Reset-then-apply: each call restores the built-in defaults first so a cleared
+// override reverts cleanly. Only charts that exist in the defaults are honoured
+// — the weekly ROTATION patterns are keyed to these charts and stay hardcoded,
+// so an unknown chart key would have no schedule to drive it. An overridden
+// topic REPLACES the default topic wholesale (no field merge) so removed
+// sections stay removed.
+function applyTopicChartOverrides(blob) {
+  for (const k of Object.keys(TOPIC_CHARTS)) delete TOPIC_CHARTS[k];
+  for (const k of Object.keys(TOPIC_CHART_DEFAULTS)) TOPIC_CHARTS[k] = JSON.parse(JSON.stringify(TOPIC_CHART_DEFAULTS[k]));
+  const charts = blob && blob.charts;
+  if (!charts || typeof charts !== 'object') return TOPIC_CHARTS;
+  for (const key of Object.keys(charts)) {
+    if (!TOPIC_CHARTS[key]) continue;                       // unknown chart → ignore
+    const o = charts[key] || {};
+    if (o.name) TOPIC_CHARTS[key].name = String(o.name);
+    if (o.cycleLength && (o.cycleLength | 0) > 0) TOPIC_CHARTS[key].cycleLength = o.cycleLength | 0;
+    if (o.topics && typeof o.topics === 'object') {
+      for (const n of Object.keys(o.topics)) {
+        const t = o.topics[n];
+        if (t && typeof t === 'object' && t.title) TOPIC_CHARTS[key].topics[n | 0] = JSON.parse(JSON.stringify(t));
+      }
+    }
+  }
+  return TOPIC_CHARTS;
+}
+
 // ---------- Mat chat topics (kids, monthly) ----------
 const MAT_CHATS = [
   null, // 0-indexed offset

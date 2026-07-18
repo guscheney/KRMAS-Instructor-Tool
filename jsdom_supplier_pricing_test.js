@@ -164,25 +164,25 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     DB.applyMovement = async (sid,itemId,size,delta,kind,note,refType,refId) => { window.__lastMovement = {sid,itemId,size,delta,kind,note,refType,refId}; return delta; };
   `);
   const product1 = ev(`({ title: 'Focus Mitts', productType: 'Boxing Protective Equipment', image: 'https://x/img.jpg', variants: [ { id:1, sku:'FM-001', title:'', price: '59.95', available: true } ] })`);
-  const ensured1 = await ev(`(async () => { const p = ${JSON.stringify(product1)}; return await shopEnsureSmaiItem(p, p.variants[0]); })()`);
+  const ensured1 = await ev(`(async () => { const p = ${JSON.stringify(product1)}; return await shopEnsureSupplierItem(p, p.variants[0]); })()`);
   ck('ensure: creates a new catalogue item from a SMAI product/variant', ensured1 && ensured1.name === 'Focus Mitts');
   ck('ensure: retail price carried from the variant', ensured1 && ensured1.retailPrice === 59.95);
   ck('ensure: category auto-created from product_type', ev('state.shop.categories.length') === 1 && ev('state.shop.categories[0].name') === 'Boxing Protective Equipment');
   ck('ensure: SMAI supplier auto-created', ev('state.shop.suppliers.some(s=>s.name==="SMAI")') === true);
 
-  const ensured2 = await ev(`(async () => { const p = ${JSON.stringify(product1)}; return await shopEnsureSmaiItem(p, p.variants[0]); })()`);
+  const ensured2 = await ev(`(async () => { const p = ${JSON.stringify(product1)}; return await shopEnsureSupplierItem(p, p.variants[0]); })()`);
   ck('ensure: second lookup of the same SKU reuses the item (no duplicate)', ev('state.shop.items.length') === 1);
   ck('ensure: reused item keeps the same id', ensured2.id === ensured1.id);
 
   // price refresh on re-lookup
   const product1Moved = ev(`({ title: 'Focus Mitts', productType: 'Boxing Protective Equipment', variants: [ { id:1, sku:'FM-001', title:'', price: '64.95', available: true } ] })`);
-  const ensured3 = await ev(`(async () => { const p = ${JSON.stringify(product1Moved)}; return await shopEnsureSmaiItem(p, p.variants[0]); })()`);
+  const ensured3 = await ev(`(async () => { const p = ${JSON.stringify(product1Moved)}; return await shopEnsureSupplierItem(p, p.variants[0]); })()`);
   ck('ensure: retail price refreshed on a re-lookup with a new price', ensured3.retailPrice === 64.95);
   ck('ensure: still no duplicate created for the price refresh', ev('state.shop.items.length') === 1);
 
   // ── smaiStageVariant / basket: catalogue mode stages catalogue items, NO quantities, NO stock ──
   ev(`
-    state._smai = { mode: 'catalogue', product: ${JSON.stringify(product1)}, basket: [], scope: null };
+    state._smai = { mode: 'catalogue', product: ${JSON.stringify(product1)}, basket: [], scope: null, supplier: { id: 'SUPX', name: 'SMAI' } };
     document.body.insertAdjacentHTML('beforeend', '<div id="smaiBasket"></div>');
     window.__lastMovement = null;
   `);
@@ -253,7 +253,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     sel.innerHTML = '<option value="">— choose an item —</option>';
     window.document.body.appendChild(sel);
     window.soOnItemChange = window.soOnItemChange || function(){};
-    state._smai = { mode: 'special', product: { title:'Headgear', productType:'Boxing Protective Equipment', variants:[{id:7,sku:'HG-007',title:'',price:'89.00',available:true}] } };
+    state._smai = { mode: 'special', product: { title:'Headgear', productType:'Boxing Protective Equipment', variants:[{id:7,sku:'HG-007',title:'',price:'89.00',available:true}] }, supplier: { id: 'SUPX', name: 'SMAI' } };
     window.__lastMovement = null;
   `);
   await ev('smaiConfirmAdd(0)');
@@ -262,13 +262,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   ck('smaiConfirmAdd (special): item option injected into #soItem', ev(`document.getElementById('soItem').value`) !== '');
   ck('smaiConfirmAdd (special): new item is network-wide by default', ev(`state.shop.items.find(i=>i.sku==='HG-007').schoolId`) == null);
   // an EXISTING item picked again keeps whatever scope it already had (never silently re-scoped)
-  ev(`state._smai = { mode: 'special', product: ${JSON.stringify(product1)} };`);
+  ev(`state._smai = { mode: 'special', product: ${JSON.stringify(product1)}, supplier: { id: 'SUPX', name: 'SMAI' } };`);
   await ev('smaiConfirmAdd(0)');
   await sleep(20);
   ck('smaiConfirmAdd (special): re-picking an existing item keeps its scope', ev(`state.shop.items.find(i=>i.sku==='FM-001').schoolId`) === 'sch2');
 
   // ── smaiConfirmAdd: blocked without edit-stock permission ──
-  ev(`can.editStock = () => false; window.__addBefore = state.shop.items.length; state._smai = { mode:'special', product: { title:'Blocked', productType:'X', variants:[{id:3,sku:'BLK-1',title:'',price:'1.00',available:true}] } };`);
+  ev(`can.editStock = () => false; window.__addBefore = state.shop.items.length; state._smai = { mode:'special', product: { title:'Blocked', productType:'X', variants:[{id:3,sku:'BLK-1',title:'',price:'1.00',available:true}] }, supplier: { id: 'SUPX', name: 'SMAI' } };`);
   await ev('smaiConfirmAdd(0)');
   await sleep(20);
   ck('smaiConfirmAdd: blocked when editStock() denies', ev('state.shop.items.length === window.__addBefore'));
@@ -497,22 +497,22 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     state.shop.items.push({ id:'netP', name:'Kick Pad', sku:'KP-1', schoolId:null, retailPrice: 10 });
     window.__savedIds = []; DB.saveItem = async (it) => { window.__savedIds.push(it.id||'new'); return it; };
   `);
-  await ev(`shopEnsureSmaiItem({ title:'Kick Pad', productType:'X', image:null }, { id:1, sku:'KP-1', title:'', price:'12.00', available:true }, 'sch1')`);
+  await ev(`shopEnsureSupplierItem({ title:'Kick Pad', productType:'X', image:null }, { id:1, sku:'KP-1', title:'', price:'12.00', available:true }, 'sch1')`);
   await sleep(10);
   ck('ensure (school admin): reuses network item WITHOUT attempting price write', ev('window.__savedIds.length') === 0);
   ev(`can.manageShop = () => true;`);
 
   // ── search results rendering (pure render, mocked DB.smai.search) ──
   ev(`can.editStock = () => true;`);
-  ck('openSmaiSearch defined', typeof ev('openSmaiSearch') === 'function');
+  ck('openSupplierSearch defined', typeof ev('openSupplierSearch') === 'function');
   ck('smaiSearchInput defined', typeof ev('smaiSearchInput') === 'function');
   ev(`
     document.body.insertAdjacentHTML('beforeend', '<div id="smaiResults"></div>');
-    state._smai = { mode:'catalogue', results: [ { handle:'gi', title:'Karate Gi', price:'$49.95', image:null, available:true } ], loading:false, error:null };
+    state._smai = { mode:'catalogue', results: [ { handle:'gi', title:'Karate Gi', price:'$49.95', image:null, available:true } ], loading:false, error:null, supplier: { id: 'SUPX', name: 'SMAI' } };
   `);
   ev('smaiRenderResults()');
   ck('search results render the product title', /Karate Gi/.test(ev(`document.getElementById('smaiResults').innerHTML`)));
-  ev(`state._smai.error = 'smai_unavailable'; `);
+  ev(`state._smai.error = 'supplier_network_error'; `);
   ev('smaiRenderResults()');
   ck('search error renders a friendly message', /reach SMAI/.test(ev(`document.getElementById('smaiResults').innerHTML`)));
 

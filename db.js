@@ -2187,6 +2187,12 @@ const DB = (() => {
     saveNetworkPlans: (d) => set('lesson-plans:network', d),
     loadBrand: () => get('brand:global'),
     saveBrand: (d) => set('brand:global', d),
+    // v133: superadmin-edited topic chart overrides (network-wide) + per-school
+    // rotation anchor ({ weekStart: 'YYYY-MM-DD' } — the Monday week 1 restarts).
+    loadTopicCharts:    () => get('topic-charts:network'),
+    saveTopicCharts:    (d) => set('topic-charts:network', d),
+    loadRotationAnchor: (schoolId) => get('rotation-anchor:' + schoolId),
+    saveRotationAnchor: (schoolId, d) => set('rotation-anchor:' + schoolId, d),
     loadDocCategories: () => get('doc-categories:global'),
     saveDocCategories: (d) => set('doc-categories:global', d),
     // ── lesson-plan corpus (migration 33) ──

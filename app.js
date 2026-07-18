@@ -582,8 +582,17 @@ function isoDate(d) {
 function isSameDay(a, b) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
 
 // ---------- Rotation ----------
+// v133: the cycle anchor is per-school. A school admin can restart the 12-week
+// cycle (e.g. after holidays) by saving { weekStart } to kv 'rotation-anchor';
+// absent that, the hardcoded network default in ROTATION applies. NOTE this
+// week number drives BOTH topic assignment AND week-based instructor roster
+// rotations — restarting the cycle re-anchors both (accepted design, v133).
+function rotationWeekStart() {
+  const a = (typeof state !== 'undefined') && state.rotationAnchor && state.rotationAnchor.weekStart;
+  return a || ROTATION.weekStart;
+}
 function getWeekNumber(date) {
-  const start = new Date(ROTATION.weekStart + 'T00:00:00');
+  const start = new Date(rotationWeekStart() + 'T00:00:00');
   const diffDays = Math.floor((date - start) / (1000 * 60 * 60 * 24));
   const weekIdx = Math.floor(diffDays / 7);
   const mod = ((weekIdx % 12) + 12) % 12;
@@ -2227,8 +2236,10 @@ function renderSavedPlan(p) {
 function renderTopicLibrary() {
   hideDayHead();
   const main = document.getElementById('mainContent');
+  const canEditCharts = hasRole('superadmin'); // curriculum is HQ-controlled
   let html = `<button class="btn" style="margin-bottom:12px;" onclick="setView('plans')">← Back to Plans</button>`;
   html += `<h1 class="section-head">Topic <span class="accent">library</span></h1>`;
+  html += renderRotationAnchorBar();
   for (const key of Object.keys(TOPIC_CHARTS)) {
     const chart = TOPIC_CHARTS[key];
     html += `<div class="lib-card" id="lib-${key}">
@@ -2236,27 +2247,209 @@ function renderTopicLibrary() {
         <div class="lib-card-title">${escapeHtml(chart.name)}</div>
         <div class="lib-card-meta">${chart.cycleLength}-topic cycle</div>
       </div>
-      <div class="lib-card-body">${renderChartTopics(chart)}</div>
+      <div class="lib-card-body">${canEditCharts ? renderChartMetaEditor(key, chart) : ''}${renderChartTopics(key, chart, canEditCharts)}</div>
     </div>`;
   }
   main.innerHTML = html;
+}
+
+// v133: current week + per-school cycle restart. Everyone sees the week; a
+// school admin (or superadmin) can restart the cycle at week 1 from a chosen
+// Monday (e.g. back from holidays) or revert to the network default anchor.
+function renderRotationAnchorBar() {
+  const wk = getWeekNumber(startOfWeek(new Date()));
+  const anchor = (state.rotationAnchor && state.rotationAnchor.weekStart) || null;
+  const eff = anchor || ROTATION.weekStart;
+  const label = formatDateShort(new Date(eff + 'T00:00:00'));
+  let html = `<div class="lib-card" style="margin-bottom:12px;"><div style="padding:12px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+    <div>
+      <strong>Rotation week ${wk} of 12</strong>
+      <div style="font-size:12px;color:var(--grey-500);">Cycle week 1 began ${label} ${anchor ? '(this school)' : '(network default)'}</div>
+    </div>`;
+  if (hasRole('admin')) {
+    html += `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <input type="date" id="rotAnchorDate" value="${eff}" style="max-width:170px;">
+      <button class="btn btn-primary" onclick="saveRotationAnchorUI()">Restart at week 1</button>
+      ${anchor ? `<button class="btn" onclick="clearRotationAnchorUI()">Use network default</button>` : ''}
+    </div>`;
+  }
+  html += `</div></div>`;
+  return html;
+}
+
+async function saveRotationAnchorUI() {
+  if (!hasRole('admin')) return;
+  const el = document.getElementById('rotAnchorDate');
+  if (!el || !el.value) { uiToast('Pick the date week 1 starts.'); return; }
+  const picked = new Date(el.value + 'T00:00:00');
+  if (isNaN(picked)) { uiToast('Invalid date.'); return; }
+  // Week numbering assumes Monday-anchored weeks — snap to that week's Monday.
+  const mon = startOfWeek(picked);
+  const iso = isoDate(mon);
+  const ok = await uiConfirm('Restart the rotation cycle at week 1 from Monday ' + formatDateShort(mon) + '?\n\nThis re-anchors topics AND week-based instructor rotations for this school, and past dates will display against the new cycle.');
+  if (!ok) return;
+  state.rotationAnchor = { weekStart: iso, setBy: (state.user && state.user.id) || null, setAt: new Date().toISOString() };
+  await DB.saveRotationAnchor(state.schoolId, state.rotationAnchor);
+  uiToast('Cycle restarted — week 1 begins ' + formatDateShort(mon) + '.');
+  renderWeekMeta();
+  renderTopicLibrary();
+}
+
+async function clearRotationAnchorUI() {
+  if (!hasRole('admin')) return;
+  if (!await uiConfirm('Revert this school to the network default cycle anchor?')) return;
+  state.rotationAnchor = null;
+  await DB.saveRotationAnchor(state.schoolId, {});
+  uiToast('Reverted to the network default anchor.');
+  renderWeekMeta();
+  renderTopicLibrary();
 }
 
 function toggleLibCard(key) {
   document.getElementById('lib-' + key).classList.toggle('open');
 }
 
-function renderChartTopics(chart) {
+// v133: superadmin-only chart name / cycle length editor (per chart).
+function renderChartMetaEditor(key, chart) {
+  return `<div class="detail-row" style="border-bottom:1px solid var(--grey-200);padding-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+    <input type="text" id="chartName-${key}" value="${escapeHtml(chart.name)}" style="flex:1;min-width:140px;">
+    <input type="number" id="chartLen-${key}" value="${chart.cycleLength}" min="1" max="20" style="max-width:80px;" title="Cycle length">
+    <button class="btn" onclick="saveChartMeta('${key}')">Save chart</button>
+  </div>`;
+}
+
+async function saveChartMeta(key) {
+  if (!hasRole('superadmin')) return;
+  const name = (document.getElementById('chartName-' + key) || {}).value || '';
+  const len  = parseInt((document.getElementById('chartLen-' + key) || {}).value, 10);
+  if (!name.trim()) { uiToast('Chart needs a name.'); return; }
+  if (!len || len < 1 || len > 20) { uiToast('Cycle length must be 1–20.'); return; }
+  if (len < TOPIC_CHART_DEFAULTS[key].cycleLength) {
+    if (!await uiConfirm('Cycle length is shorter than the built-in ' + TOPIC_CHART_DEFAULTS[key].cycleLength + '. The weekly rotation pattern is fixed and may reference topics beyond the new length (those days will show no topic). Continue?')) return;
+  }
+  await persistTopicOverride(key, (o) => { o.name = name.trim(); o.cycleLength = len; });
+  renderTopicLibrary();
+  const card = document.getElementById('lib-' + key); if (card) card.classList.add('open');
+}
+
+function renderChartTopics(chartKey, chart, canEdit) {
   let html = '';
   for (let i = 1; i <= chart.cycleLength; i++) {
     const t = chart.topics[i];
-    if (!t) continue;
+    if (!t && !canEdit) continue;
+    const editBtn = canEdit ? `<span class="action" style="cursor:pointer;margin-left:8px;white-space:nowrap;" onclick="openTopicEdit('${chartKey}',${i})">✎ Edit</span>` : '';
+    const body = t
+      ? `<strong>${escapeHtml(t.title)}</strong>${editBtn}${t.basics ? `<div style="font-size: 12px; color: var(--grey-500); margin-top: 4px;">${escapeHtml(t.basics)}</div>` : ''}`
+      : `<span style="color:var(--grey-400);">— not set —</span>${editBtn}`;
     html += `<div class="detail-row" style="border-bottom: 1px solid var(--grey-200); padding-bottom: 8px;">
       <div class="detail-label">#${i}</div>
-      <div class="detail-val"><strong>${escapeHtml(t.title)}</strong>${t.basics ? `<div style="font-size: 12px; color: var(--grey-500); margin-top: 4px;">${escapeHtml(t.basics)}</div>` : ''}</div>
+      <div class="detail-val">${body}</div>
     </div>`;
   }
   return html;
+}
+
+// ---------- v133: topic editor (superadmin) ----------
+let _topicEditCtx = null;
+
+function openTopicEdit(chartKey, num) {
+  if (!hasRole('superadmin')) return;
+  const chart = TOPIC_CHARTS[chartKey]; if (!chart) return;
+  const t = chart.topics[num] || { title: '' };
+  _topicEditCtx = { chartKey, num };
+  document.getElementById('topicEditSub').textContent = chart.name + ' — topic #' + num;
+  document.getElementById('topicEditTitle').value = t.title || '';
+  const body = document.getElementById('topicEditSections');
+  let html = '';
+  for (const s of TOPIC_SECTIONS) {
+    if (s.bool) continue;
+    if (t[s.key] == null) continue;
+    html += topicSectionRow(s.key, t[s.key]);
+  }
+  body.innerHTML = html;
+  document.getElementById('topicEditKata').checked = !!t.kata;
+  document.getElementById('topicEditWeapons').checked = !!t.weapons;
+  refreshTopicSectionAdd();
+  openModal('modalTopicEdit');
+}
+
+function topicSectionRow(key, val) {
+  const meta = TOPIC_SECTIONS.find(s => s.key === key);
+  return `<div class="form-row" data-sec="${key}">
+    <label style="display:flex;justify-content:space-between;align-items:center;">${escapeHtml(meta ? meta.label : key)}
+      <span class="action" style="cursor:pointer;color:var(--grey-400);font-weight:400;" onclick="removeTopicSection('${key}')">✕ remove</span></label>
+    <textarea rows="2" data-seckey="${key}">${escapeHtml(String(val))}</textarea>
+  </div>`;
+}
+
+function refreshTopicSectionAdd() {
+  const sel = document.getElementById('topicEditAddSec');
+  if (!sel) return;
+  const present = new Set();
+  document.querySelectorAll('#topicEditSections [data-sec]').forEach(el => present.add(el.getAttribute('data-sec')));
+  let html = '<option value="">+ Add section…</option>';
+  for (const s of TOPIC_SECTIONS) {
+    if (s.bool || present.has(s.key)) continue;
+    html += `<option value="${s.key}">${escapeHtml(s.label)}</option>`;
+  }
+  sel.innerHTML = html;
+  sel.value = '';
+}
+
+function addTopicSection(key) {
+  if (!key) return;
+  const body = document.getElementById('topicEditSections');
+  body.insertAdjacentHTML('beforeend', topicSectionRow(key, ''));
+  refreshTopicSectionAdd();
+  const ta = body.querySelector(`textarea[data-seckey="${key}"]`); if (ta) ta.focus();
+}
+
+function removeTopicSection(key) {
+  const row = document.querySelector(`#topicEditSections [data-sec="${key}"]`);
+  if (row) row.remove();
+  refreshTopicSectionAdd();
+}
+
+async function saveTopicEdit() {
+  if (!_topicEditCtx || !hasRole('superadmin')) return;
+  const { chartKey, num } = _topicEditCtx;
+  const title = document.getElementById('topicEditTitle').value.trim();
+  if (!title) { uiToast('Topic needs a title.'); return; }
+  const t = { title };
+  document.querySelectorAll('#topicEditSections textarea[data-seckey]').forEach(ta => {
+    const v = ta.value.trim();
+    if (v) t[ta.getAttribute('data-seckey')] = v;
+  });
+  if (document.getElementById('topicEditKata').checked) t.kata = true;
+  if (document.getElementById('topicEditWeapons').checked) t.weapons = true;
+  await persistTopicOverride(chartKey, (o) => { o.topics = o.topics || {}; o.topics[num] = t; });
+  closeModal('modalTopicEdit');
+  renderTopicLibrary();
+  const card = document.getElementById('lib-' + chartKey); if (card) card.classList.add('open');
+}
+
+// Drop this one topic's override and fall back to the built-in default.
+async function resetTopicToDefault() {
+  if (!_topicEditCtx || !hasRole('superadmin')) return;
+  const { chartKey, num } = _topicEditCtx;
+  await persistTopicOverride(chartKey, (o) => { if (o.topics) delete o.topics[num]; });
+  closeModal('modalTopicEdit');
+  renderTopicLibrary();
+  const card = document.getElementById('lib-' + chartKey); if (card) card.classList.add('open');
+}
+
+// Merge one chart's mutation into the network override blob, re-apply the live
+// charts, and persist. The blob is the single source the superadmin edits;
+// applyTopicChartOverrides guarantees defaults-plus-overrides consistency.
+async function persistTopicOverride(chartKey, mutate) {
+  const blob = (state.topicChartOverrides && typeof state.topicChartOverrides === 'object') ? state.topicChartOverrides : {};
+  blob.charts = blob.charts || {};
+  blob.charts[chartKey] = blob.charts[chartKey] || {};
+  mutate(blob.charts[chartKey]);
+  state.topicChartOverrides = blob;
+  applyTopicChartOverrides(blob);
+  await DB.saveTopicCharts(blob);
+  uiToast('Topic chart saved.');
 }
 
 // ---------- View: Me ----------
@@ -3325,6 +3518,7 @@ async function loadCurrentSchoolData() {
   await loadEdits(); await loadPlans(); await loadIncidents();
   await loadStudents(); await clearStoredProgressionsOnce(); await loadPathways(); await loadPinOverrides(); await loadGrading(); await loadNotices(); await loadFeedData(); await loadGroupsData(); await loadClassAssignmentsData(); await loadCalendarData(); await loadAquilaIntegration();
   await reconcileStudents();
+  state.rotationAnchor = (await DB.loadRotationAnchor(state.schoolId)) || null; // v133: per-school cycle restart
   state.lastLogins = (await DB.loadLastLogins(state.schoolId)) || {};
   state.documents = await DB.loadDocuments(state.schoolId);
   try { const dc = await DB.loadDocCategories(); state.docCategories = (dc && Array.isArray(dc.list) && dc.list.length) ? dc.list : null; } catch (e) { state.docCategories = null; }
@@ -9245,6 +9439,7 @@ async function enterAppWithSession(session) {
   try { recordLastLogin(state.user.id); } catch (e) {}
   try { state.roleConfig = await DB.roles.loadConfig(); } catch (e) { console.warn('loadRoleConfig:', e && e.message); }
   try { state.classTypes = (await DB.classTypes.load()) || []; applyClassTypeOverrides(state.classTypes); } catch (e) { console.warn('loadClassTypes:', e && e.message); }
+  try { state.topicChartOverrides = (await DB.loadTopicCharts()) || null; applyTopicChartOverrides(state.topicChartOverrides); } catch (e) { console.warn('loadTopicCharts:', e && e.message); }
   try { await loadCustomSchools(); } catch (e) { console.warn('loadCustomSchools:', e && e.message); }
   try { if (can.seeShop()) await loadShopData(); } catch (e) { console.warn("loadShopData:", e && e.message); }
   refreshNotifBadge();
