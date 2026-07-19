@@ -3001,21 +3001,17 @@ function refreshAuthUI() {
 // ====================================================================
 function isImpersonating() { return !!state.impersonation; }
 
-// v139: apply or clear the superadmin viewing scope. Writes both the DB
-// session variable AND user_metadata so the scope survives page reloads.
-// Called by selectSchool and the "Show network view" toggle in the header.
+// v139/v140: apply or clear the superadmin viewing scope for THIS SESSION.
+// v139 persisted the scope to user_metadata so it survived reloads; a stale
+// value caused the empty-school "run wizard" prompt on next sign-in. v140
+// makes scope session-only — no persistence, no boot re-apply, no risk of
+// stale state next login. Called by the header badge toggle.
 async function applyViewingScope(schoolId) {
   const target = schoolId || null;
   try {
     const r = target ? await DB.auth.setViewingSchool(target) : await DB.auth.clearViewingSchool();
     if (r && r.error) { uiToast('Could not change scope: ' + r.error); return false; }
     state.viewingAsSchool = target;
-    // Persist across reloads. Don't await — failing to persist doesn't undo
-    // the in-session scope, and the boot re-apply is best-effort anyway.
-    try {
-      state._userMeta = Object.assign({}, state._userMeta || {}, { viewing_as_school: target || null });
-      DB.auth.updateUserMetadata({ viewing_as_school: target || null });
-    } catch (e) {}
     return true;
   } catch (e) { uiToast('Could not change scope.'); return false; }
 }
@@ -3957,17 +3953,10 @@ async function selectSchool(id) {
 
   state.schoolId = id;
   document.getElementById('schoolName').textContent = KRMAS_SCHOOLS.find(s => s.id === id)?.name || id;
-  // v139: superadmin scope-in. Selecting a school that isn't the caller's
-  // home school scopes the session to that school by default (prevents the
-  // cross-school data bleed via the RLS is_superadmin() short-circuit). The
-  // caller keeps write powers because their app_role stays 'superadmin' —
-  // is_superadmin() reports false only while scoped, so policies see them as
-  // an admin of the scoped school.
-  if (hasRole('superadmin')) {
-    const home = state.user && state.user.homeSchoolId;
-    const wantScope = home && id !== home ? id : null;
-    await applyViewingScope(wantScope);
-  }
+  // v140: no auto-scope on school switch. Fresh sign-in defaults to network
+  // view (v139 behaviour was too eager and hid the home school's data when a
+  // stale scope re-applied on boot). Superadmins scope in explicitly via the
+  // header badge — deliberate, per-session, and easy to lift.
   closeModal('modalSchool');
   saveUserAsync(); // persist the school choice
   schoolDataLoad();
@@ -9920,17 +9909,22 @@ async function enterAppWithSession(session) {
     if (school) { const el = document.getElementById('schoolName'); if (el) el.textContent = school.name; }
   }
   try { state._userMeta = (session && session.user && session.user.user_metadata) || {}; } catch (e) { state._userMeta = {}; }
-  // v139: superadmin scope-in survives across reloads via user_metadata.
-  // Re-apply it now, before any per-school data loads run — otherwise the
-  // first loaders will still see the un-scoped (network) view.
+  // v140: scope is session-only. Fresh sign-in always starts at home in the
+  // network view (matches "I teach at Edgeworth, put me there"); scoping in
+  // is a deliberate per-session action via the header pill. This avoids the
+  // v139 failure mode where a stale persisted scope re-applied on boot and
+  // hid the home school's data. Belt-and-braces: proactively clear any
+  // server-side scope left over from a prior session on the same connection,
+  // and strip any legacy persisted value from user_metadata so it can't
+  // re-fire later.
+  state.viewingAsSchool = null;
+  try { await DB.auth.clearViewingSchool(); } catch (e) {}
   try {
-    const persisted = state._userMeta && state._userMeta.viewing_as_school;
-    if (persisted && typeof persisted === 'string') {
-      const r = await DB.auth.setViewingSchool(persisted);
-      if (!r || !r.error) state.viewingAsSchool = persisted;
-      else state.viewingAsSchool = null;
-    } else { state.viewingAsSchool = null; }
-  } catch (e) { console.warn('scope re-apply:', e && e.message); state.viewingAsSchool = null; }
+    if (state._userMeta && Object.prototype.hasOwnProperty.call(state._userMeta, 'viewing_as_school')) {
+      delete state._userMeta.viewing_as_school;
+      DB.auth.updateUserMetadata({ viewing_as_school: null });
+    }
+  } catch (e) {}
   try { recordLastLogin(state.user.id); } catch (e) {}
   try { state.roleConfig = await DB.roles.loadConfig(); } catch (e) { console.warn('loadRoleConfig:', e && e.message); }
   try { state.classTypes = (await DB.classTypes.load()) || []; applyClassTypeOverrides(state.classTypes); } catch (e) { console.warn('loadClassTypes:', e && e.message); }
