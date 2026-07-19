@@ -76,6 +76,21 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   ck('template save blob omits recommenders', pwSaves.length === 1 && !('recommenders' in pwSaves[0]));
   ck('legacy blobs with recommenders still apply harmlessly', (() => { ev(`applyPathwayTemplateOverrides({ recommenders: ['Old Name'] })`); const ok = ev(`INSTRUCTOR_PATHWAY_RECOMMENDERS[0]`) === 'Old Name'; ev(`applyPathwayTemplateOverrides(null)`); return ok; })());
 
+  // ── v137: temp password shown persistently, not in a transient toast ──
+  const confirmMsgs = [], toastMsgs = [];
+  window.__confirmMsgs = confirmMsgs; window.__toastMsgs = toastMsgs;
+  ev(`uiConfirm = async (msg) => { window.__confirmMsgs.push(String(msg)); return true; };`);
+  ev(`uiToast = (msg) => { window.__toastMsgs.push(String(msg)); };`);
+  ev(`requireRole = () => true;`);
+  ev(`state.editingUserId = 'u9'; allInstructors = () => [ { id: 'u9', uid: 'AUTH-9', name: 'Cross School Casey', email: 'c@x.com' } ];`);
+  ev(`DB.users.resetPassword = () => Promise.resolve({ ok: true, tempPassword: 'Temp-1234-Pass' });`);
+  await ev(`adminResetPassword()`);
+  await sleep(30);
+  ck('temp password lands in the persistent dialog', confirmMsgs.some(m => /Temp-1234-Pass/.test(m)));
+  ck('temp password never passes through a toast', !toastMsgs.some(m => /Temp-1234-Pass/.test(m)));
+  ck('edge function implements resetPassword', /action === "resetPassword"/.test(fs.readFileSync('security/edge-functions/manage-users/index.ts', 'utf8')));
+  ck('reset preserves existing user_metadata (tours_seen safe)', /user_metadata \?\? \{\}\), must_change: true/.test(fs.readFileSync('security/edge-functions/manage-users/index.ts', 'utf8')));
+
   console.log(`\njsdom_recommender_v136: ${pass} passed, ${fail} failed`);
   if (fail) { console.log('FAILURES:'); fails.forEach((f) => console.log('  ✗ ' + f)); process.exit(1); }
   process.exit(0);

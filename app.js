@@ -2911,7 +2911,12 @@ async function adminResetPassword() {
   try {
     const res = await DB.users.resetPassword(instr.uid);
     if (res && res.tempPassword) {
-      uiToast('Password reset for ' + (instr.name || instr.email) + '.\n\nTemporary password (share privately — shown only once):\n\n' + res.tempPassword + '\n\nThey will be asked to set their own password when they next sign in.');
+      // v137: a one-time password must never live in an auto-dismissing toast —
+      // uiConfirm is persistent until dismissed and renders newlines (pre-line).
+      await uiConfirm(
+        'Password reset for ' + (instr.name || instr.email) + '.\n\nTemporary password (shown only once — share privately):\n\n' + res.tempPassword + '\n\nThey\u2019ll be asked to set their own password when they next sign in.',
+        { title: 'Temporary password', okLabel: 'Done — I\u2019ve noted it', cancelLabel: 'Close', danger: false }
+      );
     } else {
       uiToast('Reset completed, but no temporary password was returned.');
     }
