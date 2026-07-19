@@ -1906,6 +1906,17 @@ const DB = (() => {
         return sb.auth.updateUser({ password: newPassword, data: { must_change: false } });
       },
       currentUid() { return _uid; },
+      // v134: auth user_metadata — used for lightweight per-account flags like
+      // tours_seen (guided tour completion). Same mechanism as must_change.
+      async getUserMetadata() {
+        const sb = sbClient(); if (!sb) return {};
+        try { const { data } = await sb.auth.getUser(); return (data && data.user && data.user.user_metadata) || {}; }
+        catch (e) { return {}; }
+      },
+      async updateUserMetadata(patch) {
+        const sb = sbClient(); if (!sb) throw new Error('Supabase unavailable');
+        return sb.auth.updateUser({ data: patch });
+      },
       async myProfile() {
         const sb = sbClient(); if (!sb) return null;
         let uid = _uid;

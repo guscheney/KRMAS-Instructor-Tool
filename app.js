@@ -2494,6 +2494,7 @@ async function renderMe() {
       ${me.avatar ? `<button class="btn btn-sm" style="color:var(--red);" onclick="removeMyAvatar()">Remove</button>` : ''}
     </div>
     <div id="meAvatarStatus" style="font-size:11px;color:var(--grey-500);margin-top:6px;min-height:14px;"></div>
+    <button class="btn btn-sm" style="width:100%;margin-top:8px;" onclick="tourStart(true)">🧭 Replay app tour</button>
   </div></div>`;
 
   // Onboarding checklist (if incomplete)
@@ -3437,6 +3438,185 @@ async function pinLockSubmit() {
   }
   state._pinUnlocked = true;
   closeModal('modalPinLock');
+  tourMaybeStart(); // v134: tour deferred until the device PIN clears
+}
+
+// ---------- v134: guided app tour ----------
+// A spotlight walkthrough that DRIVES the app: each step can switch to a real
+// view via setView() before highlighting a real control, so new users see the
+// actual screens they'll use. Steps are role-gated with the same can.* /
+// hasRole gates as the nav model — one script, every role sees its own slice.
+// Completion is stored per ACCOUNT in auth user_metadata.tours_seen (same
+// mechanism as must_change): fires once for everyone — including existing
+// users on this release — and is replayable from My profile. Design notes:
+//  * Steps target chrome that always renders (buttons, tabs, headers), never
+//    data-dependent modals, so a brand-new empty school tours cleanly.
+//  * A step whose target is missing (role-gated markup, changed DOM) is
+//    skipped silently in the direction of travel.
+//  * Never fires while impersonating, read-only, offline, or under a modal.
+const TOUR_ID = 'core-v1';
+
+function tourSteps() {
+  return [
+    { view: 'feed',   target: '.nav-btn[data-view="feed"]',   title: 'Home',
+      body: 'This is your school feed — posts, notices, events and release notes all land here. It\u2019s the first thing you\u2019ll see every time you open the app.' },
+    { view: 'feed',   target: '#mainContent', title: 'The feed',
+      body: 'Like and comment on posts, and keep an eye out for notices — anything marked required reading stays put until you\u2019ve read it.' },
+    { view: 'feed',   target: '.nav-btn[data-view="roster"]', gate: () => can.viewRoster(), title: 'Roster',
+      body: 'Who\u2019s teaching what, every day. Your own classes are highlighted.' },
+    { view: 'roster', target: '#dayTabs', gate: () => can.viewRoster(), title: 'Day tabs',
+      body: 'Jump between teaching days. Today is selected automatically when you open the app.' },
+    { view: 'roster', target: '.week-nav', gate: () => can.viewRoster(), title: 'Week navigation',
+      body: 'Step backwards and forwards through the weeks — the roster and topics follow.' },
+    { view: 'roster', target: '.week-meta', gate: () => can.viewRoster(), title: 'Rotation week',
+      body: 'The current week of the topic rotation cycle. Every class\u2019s topic for the day comes from this number and the topic charts.' },
+    { view: 'roster', target: '.nav-btn[data-view="teach"]', title: 'Classes',
+      body: 'Grading, lesson plans, cover requests and incident reports all live under Classes.' },
+    { view: 'teach',  target: '#mainContent', title: 'The Classes hub',
+      body: 'These tiles are filtered to your role — you\u2019ll only ever see what you can use.' },
+    { view: 'plans',  target: '#plansResults', gate: () => can.viewPlans(), title: 'Lesson plans',
+      body: 'Every saved plan for your school, searchable. Tap a class on the roster to write a plan for it — completed plans build your personal library, which powers grounded plan generation.' },
+    { view: 'plans',  target: 'button[onclick="setView(\'topics\')"]', gate: () => can.viewPlans(), title: 'Topic library',
+      body: 'The full curriculum for every class chart lives here, along with the rotation week — admins can restart the cycle after holidays.' },
+    { view: 'grading', target: '#mainContent', title: 'Grading',
+      body: 'Belt progressions, grading days and results are managed here.' },
+    { view: 'teach',  target: '.nav-btn[data-view="shop"]', gate: () => can.seeShop(), title: 'Shop',
+      body: 'The catalogue, stock levels and supplier ordering — including live search of supplier catalogues.' },
+    { view: 'teach',  target: '.nav-btn[data-view="more"]', title: 'More',
+      body: 'Students, documents, admin settings and your own profile are under More.' },
+    { view: 'admin',  target: '#mainContent', gate: () => can.manageInstructors(), title: 'Admin & settings',
+      body: 'Schools, logins, roles and configuration. As an admin this is where you manage your team.' },
+    { view: 'admin',  target: '#schoolName', gate: () => can.switchAnySchool(), title: 'School switching',
+      body: 'As superadmin you can switch into any school from the header — everything you see scopes to the selected school.' },
+    { view: 'me',     target: '#mainContent', title: 'My profile',
+      body: 'Your photo, device PIN, and library sharing live here — and you can replay this tour any time from the button above. That\u2019s the lot. Osu!' },
+  ];
+}
+
+let _tour = null;
+
+function tourEligibleSteps() {
+  return tourSteps().filter(s => { try { return !s.gate || s.gate(); } catch (e) { return false; } });
+}
+
+// Fire-once trigger. Safe to call repeatedly; every guard is re-checked.
+function tourMaybeStart() {
+  if (_tour || !state.user) return;
+  if (isImpersonating() || DB.readOnly) return;    // never tour someone else's account
+  if (!DB.isSupabase) return;                      // offline: can't persist — next session
+  if (document.querySelector('.modal-bg.open')) {  // e.g. forced password change — retry
+    setTimeout(tourMaybeStart, 2500);
+    return;
+  }
+  const seen = (state._userMeta && state._userMeta.tours_seen) || [];
+  if (seen.includes(TOUR_ID)) return;
+  tourStart(false);
+}
+
+// force=true → replay from My profile (ignores the seen flag).
+async function tourStart(force) {
+  if (_tour) return;
+  if (force && (isImpersonating() || DB.readOnly)) { uiToast('The tour can\u2019t run while viewing as someone else.'); return; }
+  const steps = tourEligibleSteps();
+  if (!steps.length) return;
+  _tour = { steps, i: 0, returnView: state.view || 'feed' };
+  tourBuildOverlay();
+  await tourShowStep(0, 1);
+}
+
+function tourBuildOverlay() {
+  const el = document.createElement('div');
+  el.id = 'tourOverlay';
+  el.style.cssText = 'position:fixed;inset:0;z-index:12000;';
+  el.innerHTML = `
+    <div id="tourSpot" style="position:absolute;border-radius:10px;box-shadow:0 0 0 200vmax rgba(15,15,15,.62);transition:all .25s ease;pointer-events:none;"></div>
+    <div id="tourCard" style="position:absolute;max-width:320px;min-width:240px;background:#fff;border-radius:12px;padding:14px 16px;box-shadow:0 8px 30px rgba(0,0,0,.35);">
+      <div id="tourCount" style="font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--grey-400);text-transform:uppercase;margin-bottom:4px;"></div>
+      <div id="tourTitle" style="font-weight:700;font-size:15px;margin-bottom:4px;"></div>
+      <div id="tourBody" style="font-size:13px;line-height:1.5;color:var(--grey-600,#4b5563);"></div>
+      <div style="display:flex;gap:8px;margin-top:12px;align-items:center;">
+        <button class="btn btn-sm" id="tourBack" onclick="tourMove(-1)">‹ Back</button>
+        <button class="btn btn-sm btn-primary" id="tourNext" style="flex:1;" onclick="tourMove(1)">Next ›</button>
+        <button class="btn btn-sm" onclick="tourEnd(false)" style="color:var(--grey-400);">Skip</button>
+      </div>
+    </div>`;
+  document.body.appendChild(el);
+  window.addEventListener('resize', tourReposition);
+}
+
+async function tourShowStep(i, dir) {
+  if (!_tour) return;
+  if (i < 0) i = 0;
+  if (i >= _tour.steps.length) { await tourEnd(true); return; }
+  const step = _tour.steps[i];
+  _tour.i = i;
+  if (step.view && state.view !== step.view) {
+    try { setView(step.view); } catch (e) {}
+    await new Promise(r => setTimeout(r, 250)); // let the view render
+  }
+  const target = document.querySelector(step.target);
+  if (!target) { await tourShowStep(i + (dir || 1), dir); return; } // gated / missing → skip through
+  try { target.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch (e) { try { target.scrollIntoView(); } catch (e2) {} }
+  await new Promise(r => setTimeout(r, 60));
+  tourReposition();
+  document.getElementById('tourCount').textContent = `Step ${i + 1} of ${_tour.steps.length}`;
+  document.getElementById('tourTitle').textContent = step.title;
+  document.getElementById('tourBody').textContent  = step.body;
+  document.getElementById('tourBack').style.visibility = i === 0 ? 'hidden' : 'visible';
+  document.getElementById('tourNext').textContent = i === _tour.steps.length - 1 ? 'Finish ✓' : 'Next ›';
+}
+
+function tourReposition() {
+  if (!_tour) return;
+  const step = _tour.steps[_tour.i];
+  const target = step && document.querySelector(step.target);
+  const spot = document.getElementById('tourSpot');
+  const card = document.getElementById('tourCard');
+  if (!target || !spot || !card) return;
+  const r = target.getBoundingClientRect();
+  const pad = 6;
+  spot.style.left   = (r.left - pad) + 'px';
+  spot.style.top    = (r.top - pad) + 'px';
+  spot.style.width  = (r.width + pad * 2) + 'px';
+  spot.style.height = (r.height + pad * 2) + 'px';
+  // Card below the target when there's room, above otherwise; clamped to viewport.
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const cw = Math.min(320, vw - 24);
+  card.style.maxWidth = cw + 'px';
+  const ch = card.offsetHeight || 150;
+  let top = r.bottom + pad + 12;
+  if (top + ch > vh - 12) top = Math.max(12, r.top - pad - 12 - ch);
+  let left = Math.min(Math.max(12, r.left), vw - cw - 12);
+  card.style.top = top + 'px';
+  card.style.left = left + 'px';
+}
+
+function tourMove(dir) {
+  if (!_tour) return;
+  tourShowStep(_tour.i + dir, dir);
+}
+
+async function tourEnd(completed) {
+  if (!_tour) return;
+  const returnView = _tour.returnView;
+  _tour = null;
+  const el = document.getElementById('tourOverlay');
+  if (el) el.remove();
+  window.removeEventListener('resize', tourReposition);
+  try { if (state.view !== returnView) setView(returnView); } catch (e) {}
+  await tourMarkSeen();
+  if (completed) uiToast('Tour complete — welcome aboard! Replay it any time from My profile.', 'success');
+}
+
+// Persist per-account so the tour never re-fires on another device. Tolerates
+// failure (offline/queued) — worst case it offers itself again next session.
+async function tourMarkSeen() {
+  try {
+    const seen = ((state._userMeta && state._userMeta.tours_seen) || []).slice();
+    if (!seen.includes(TOUR_ID)) seen.push(TOUR_ID);
+    state._userMeta = Object.assign({}, state._userMeta, { tours_seen: seen });
+    if (DB.isSupabase && !isImpersonating() && !DB.readOnly) await DB.auth.updateUserMetadata({ tours_seen: seen });
+  } catch (e) { console.warn('tourMarkSeen:', e && e.message); }
 }
 
 // ---------- School picker ----------
@@ -9056,6 +9236,8 @@ const NOTICE_TYPES = {
   info:    { label: 'Info',    bg: '#eff6ff', border: '#3b82f6', text: '#1e40af', icon: 'ℹ' },
   alert:   { label: 'Alert',   bg: '#fffbeb', border: 'var(--amber-500)', text: 'var(--amber-700)', icon: '⚠' },
   urgent:  { label: 'Urgent',  bg: '#fff1f2', border: 'var(--red)', text: '#9f1239', icon: '🚨' },
+  // v134: release notes — superadmin-only, always network-wide (all users).
+  release: { label: 'Release notes', bg: '#f0fdf4', border: '#16a34a', text: '#166534', icon: '🚀' },
 };
 
 function activeNotices() {
@@ -9436,6 +9618,7 @@ async function enterAppWithSession(session) {
     const school = (typeof KRMAS_SCHOOLS !== 'undefined') && KRMAS_SCHOOLS.find(s => s.id === state.schoolId);
     if (school) { const el = document.getElementById('schoolName'); if (el) el.textContent = school.name; }
   }
+  try { state._userMeta = (session && session.user && session.user.user_metadata) || {}; } catch (e) { state._userMeta = {}; }
   try { recordLastLogin(state.user.id); } catch (e) {}
   try { state.roleConfig = await DB.roles.loadConfig(); } catch (e) { console.warn('loadRoleConfig:', e && e.message); }
   try { state.classTypes = (await DB.classTypes.load()) || []; applyClassTypeOverrides(state.classTypes); } catch (e) { console.warn('loadClassTypes:', e && e.message); }
@@ -9448,7 +9631,9 @@ async function enterAppWithSession(session) {
   finishBootRender();
   if (typeof refreshAuthUI === 'function') refreshAuthUI();
   if (DB.isSupabase && !state._pinUnlocked) {
-    try { if (await DB.auth.hasPin()) showPinLock(); } catch (e) {}
+    try { if (await DB.auth.hasPin()) showPinLock(); else tourMaybeStart(); } catch (e) {}
+  } else {
+    tourMaybeStart(); // v134: guided tour for accounts that haven't seen it
   }
   DB.loadInstructorDocuments(state.user.id).then(d => { state.myDocuments = d || []; }).catch(() => {});
 }
@@ -10249,6 +10434,9 @@ function openPostComposer(editPostId, opts) {
   const noticeBlock = document.getElementById('composerNoticeBlock');
   const canNotice = can.manageNotices();
   noticeBlock.style.display = canNotice ? 'block' : 'none';
+  // v134: 'Release notes' is a superadmin-only notice type (always network-wide).
+  const relOpt = document.querySelector('#composerNoticeType option[value="release"]');
+  if (relOpt) relOpt.hidden = !can.switchAnySchool();
   if (canNotice) {
     document.getElementById('composerNoticeType').value = existing?.noticeType || (opts.notice ? 'info' : '');
     document.getElementById('composerRequired').checked = existing?.requiredReading || false;
@@ -10256,6 +10444,7 @@ function openPostComposer(editPostId, opts) {
     document.getElementById('composerPublish').value = existing?.publishAt || '';
     document.getElementById('composerPinned').checked = existing?.pinned || false;
   }
+  composerNoticeChanged(); // v134: sync scope lock if editing a release-notes post
 
   // Attachments
   _pendingAttachments = existing?.mediaUrls ? JSON.parse(JSON.stringify(existing.mediaUrls)) : [];
@@ -10267,6 +10456,17 @@ function openPostComposer(editPostId, opts) {
 }
 
 function openPostEditor(postId) { openPostComposer(postId); }
+
+// v134: release notes are network-wide by definition — picking the type locks
+// the audience to 'All schools' so they always reach every user.
+function composerNoticeChanged() {
+  const sel = document.getElementById('composerNoticeType');
+  const scopeSel = document.getElementById('composerScope');
+  if (!sel || !scopeSel) return;
+  const isRelease = sel.value === 'release';
+  if (isRelease) { scopeSel.value = 'network'; composerUpdateTargetUI(); }
+  scopeSel.disabled = isRelease;
+}
 
 function composerUpdateTargetUI() {
   const scope = document.getElementById('composerScope').value;
@@ -10308,7 +10508,7 @@ async function submitPost() {
   if (blockedByImpersonation()) return;
   const body = document.getElementById('composerBody').value.trim();
   if (!body && _pendingAttachments.length === 0) { uiToast('Write something or attach a file first.'); return; }
-  const scope = document.getElementById('composerScope').value;
+  let scope = document.getElementById('composerScope').value;
   const composerModal = document.getElementById('modalPostComposer');
   const targetIds = (scope === 'group' || scope === 'role' || scope === 'users')
     ? [...composerModal.querySelectorAll('.composer-target-check:checked')].map(el => el.value)
@@ -10320,6 +10520,11 @@ async function submitPost() {
 
   const canNotice = can.manageNotices();
   const noticeType = canNotice ? (document.getElementById('composerNoticeType').value || null) : null;
+  if (noticeType === 'release') {
+    // v134: release notes are the superadmin's channel and always network-wide.
+    if (!can.switchAnySchool()) { uiToast('Only the superadmin can post release notes.'); return; }
+    scope = 'network';
+  }
   const requiredReading = canNotice ? document.getElementById('composerRequired').checked : false;
   const expiresAt = canNotice ? (document.getElementById('composerExpires').value || null) : null;
   const publishAt = document.getElementById('composerPublish').value || null;
