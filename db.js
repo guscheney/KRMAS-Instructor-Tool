@@ -1917,6 +1917,20 @@ const DB = (() => {
         const sb = sbClient(); if (!sb) throw new Error('Supabase unavailable');
         return sb.auth.updateUser({ data: patch });
       },
+      // v139: superadmin scope-in. Sets a Postgres session variable so RLS
+      // policies treat this session as an admin of the scoped school (see
+      // migration 37). Session variables reset between pooled requests, so the
+      // client re-applies from user_metadata on every boot.
+      async setViewingSchool(schoolId) {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        const { error } = await sb.rpc('set_viewing_school', { p_school: schoolId || null });
+        return error ? { error: error.message } : {};
+      },
+      async clearViewingSchool() {
+        const sb = sbClient(); if (!sb) return { error: 'offline' };
+        const { error } = await sb.rpc('clear_viewing_school');
+        return error ? { error: error.message } : {};
+      },
       async myProfile() {
         const sb = sbClient(); if (!sb) return null;
         let uid = _uid;

@@ -2988,6 +2988,7 @@ function refreshAuthUI() {
   } else {
     btn.style.display = 'none';
   }
+  renderScopeBadge(); // v139: keep the scope badge in sync with role/scope changes
 }
 
 // ====================================================================
@@ -2999,6 +3000,59 @@ function refreshAuthUI() {
 // nobody can act as someone else; exit to make changes.
 // ====================================================================
 function isImpersonating() { return !!state.impersonation; }
+
+// v139: apply or clear the superadmin viewing scope. Writes both the DB
+// session variable AND user_metadata so the scope survives page reloads.
+// Called by selectSchool and the "Show network view" toggle in the header.
+async function applyViewingScope(schoolId) {
+  const target = schoolId || null;
+  try {
+    const r = target ? await DB.auth.setViewingSchool(target) : await DB.auth.clearViewingSchool();
+    if (r && r.error) { uiToast('Could not change scope: ' + r.error); return false; }
+    state.viewingAsSchool = target;
+    // Persist across reloads. Don't await — failing to persist doesn't undo
+    // the in-session scope, and the boot re-apply is best-effort anyway.
+    try {
+      state._userMeta = Object.assign({}, state._userMeta || {}, { viewing_as_school: target || null });
+      DB.auth.updateUserMetadata({ viewing_as_school: target || null });
+    } catch (e) {}
+    return true;
+  } catch (e) { uiToast('Could not change scope.'); return false; }
+}
+
+// Header toggle: superadmin can drop back to the network view without leaving
+// the school. Reloads per-school data so any list that filters by RLS
+// re-issues its SELECT with the new scope in effect.
+async function toggleNetworkView() {
+  if (!hasRole('superadmin')) return;
+  const scoped = !!state.viewingAsSchool;
+  if (scoped) {
+    if (!await uiConfirm('Show the network view? You will see every school\u2019s data across audits, supply orders and the change log until you scope back into a school.')) return;
+    await applyViewingScope(null);
+  } else {
+    const sid = state.schoolId; if (!sid) return;
+    await applyViewingScope(sid);
+  }
+  try { await loadCurrentSchoolData(); } catch (e) {}
+  if (typeof loadShopData === 'function') try { await loadShopData(); } catch (e) {}
+  if (typeof loadAuditData === 'function') { state.auditData = null; }
+  renderScopeBadge();
+  if (state.view) setView(state.view);
+}
+
+function renderScopeBadge() {
+  const el = document.getElementById('scopeBadge');
+  if (!el) return;
+  if (!hasRole('superadmin')) { el.style.display = 'none'; return; }
+  el.style.display = 'inline-flex';
+  const scoped = !!state.viewingAsSchool;
+  el.textContent = scoped ? 'Scoped in' : 'Network view';
+  el.title = scoped
+    ? 'You are scoped into this school — every list respects its school. Tap to show the network view.'
+    : 'You are seeing every school\u2019s data. Tap to scope back into this school.';
+  el.classList.toggle('scope-badge-scoped', scoped);
+  el.classList.toggle('scope-badge-network', !scoped);
+}
 function realUser()       { return state.impersonation ? state.impersonation.real : state.user; }
 
 function roleLabelFor(role) {
@@ -3903,6 +3957,17 @@ async function selectSchool(id) {
 
   state.schoolId = id;
   document.getElementById('schoolName').textContent = KRMAS_SCHOOLS.find(s => s.id === id)?.name || id;
+  // v139: superadmin scope-in. Selecting a school that isn't the caller's
+  // home school scopes the session to that school by default (prevents the
+  // cross-school data bleed via the RLS is_superadmin() short-circuit). The
+  // caller keeps write powers because their app_role stays 'superadmin' —
+  // is_superadmin() reports false only while scoped, so policies see them as
+  // an admin of the scoped school.
+  if (hasRole('superadmin')) {
+    const home = state.user && state.user.homeSchoolId;
+    const wantScope = home && id !== home ? id : null;
+    await applyViewingScope(wantScope);
+  }
   closeModal('modalSchool');
   saveUserAsync(); // persist the school choice
   schoolDataLoad();
@@ -9842,7 +9907,7 @@ async function enterAppWithSession(session) {
     return;
   }
   _enteredOnce = true;
-  state.user = { id: session.user.id, name: prof.display_name || session.user.email, role: prof.role, email: session.user.email || null, isShopAdmin: !!prof.is_shop_admin, isSupplyAdmin: !!prof.is_supply_admin };
+  state.user = { id: session.user.id, name: prof.display_name || session.user.email, role: prof.role, email: session.user.email || null, isShopAdmin: !!prof.is_shop_admin, isSupplyAdmin: !!prof.is_supply_admin, homeSchoolId: prof.school_id || null };
   // Multi-school membership (instructors may belong to more than one school). Falls
   // back to the single home school for everyone else. Drives the school-pill filter.
   state.user.schools = (Array.isArray(prof.schools) && prof.schools.length)
@@ -9855,6 +9920,17 @@ async function enterAppWithSession(session) {
     if (school) { const el = document.getElementById('schoolName'); if (el) el.textContent = school.name; }
   }
   try { state._userMeta = (session && session.user && session.user.user_metadata) || {}; } catch (e) { state._userMeta = {}; }
+  // v139: superadmin scope-in survives across reloads via user_metadata.
+  // Re-apply it now, before any per-school data loads run — otherwise the
+  // first loaders will still see the un-scoped (network) view.
+  try {
+    const persisted = state._userMeta && state._userMeta.viewing_as_school;
+    if (persisted && typeof persisted === 'string') {
+      const r = await DB.auth.setViewingSchool(persisted);
+      if (!r || !r.error) state.viewingAsSchool = persisted;
+      else state.viewingAsSchool = null;
+    } else { state.viewingAsSchool = null; }
+  } catch (e) { console.warn('scope re-apply:', e && e.message); state.viewingAsSchool = null; }
   try { recordLastLogin(state.user.id); } catch (e) {}
   try { state.roleConfig = await DB.roles.loadConfig(); } catch (e) { console.warn('loadRoleConfig:', e && e.message); }
   try { state.classTypes = (await DB.classTypes.load()) || []; applyClassTypeOverrides(state.classTypes); } catch (e) { console.warn('loadClassTypes:', e && e.message); }
@@ -18469,6 +18545,18 @@ function auditBarsSvg(rows, w) {
 }
 
 // ---- Router + data load ----
+// v139: defence-in-depth. Even though migration 37 makes RLS scope-aware,
+// filter audits and templates to the active school here too — so a future
+// RLS regression can't reintroduce cross-school leak silently.
+function _scopeFilterBySchool(rows) {
+  const sid = state.schoolId;
+  if (!sid) return rows || [];
+  if (!hasRole('superadmin') || state.viewingAsSchool) {
+    return (rows || []).filter(r => !r.school_id || r.school_id === sid);
+  }
+  return rows || [];
+}
+
 async function loadAuditData() {
   const [templates, audits, actions, people] = await Promise.all([
     DB.audits.listTemplates(), DB.audits.listAudits(), DB.audits.listActions(),
@@ -18476,7 +18564,7 @@ async function loadAuditData() {
   ]);
   const peopleById = {};
   (people || []).forEach(p => { peopleById[p.id] = p.display_name || p.name || p.email || String(p.id || '').slice(0, 8); });
-  state.auditData = { templates: templates || [], audits: audits || [], actions: actions || [], peopleById };
+  state.auditData = { templates: _scopeFilterBySchool(templates), audits: _scopeFilterBySchool(audits), actions: _scopeFilterBySchool(actions), peopleById };
 }
 function reloadAudits() { state.auditData = null; if (state.view === 'audits') renderAudits(); }
 

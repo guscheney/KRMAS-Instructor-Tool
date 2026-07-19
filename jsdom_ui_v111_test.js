@@ -13,7 +13,7 @@ const dom = new JSDOM(html, { runScripts: 'dangerously', pretendToBeVisual: true
 const { window } = dom;
 window.SUPABASE_URL = 'https://x.supabase.co';
 window.SUPABASE_ANON = 'anon-key';
-window.KRMAS_APP_VERSION = '138';
+window.KRMAS_APP_VERSION = '139';
 window.supabase = { createClient: () => theClient };
 window.XLSX = {};
 window.matchMedia = (q) => ({ matches: false, media: q, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} });
@@ -116,8 +116,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   ck('table-scroll css present', /\.table-scroll\s*\{[^}]*overflow-x:\s*auto/.test(css));
 
   // ── H. version ──
-  ck('sw.js at 138', /const VERSION = '138'/.test(fs.readFileSync('sw.js', 'utf8')));
-  ck('cache busters at 138', (fs.readFileSync('index.html', 'utf8').match(/\?v=138/g) || []).length >= 4);
+  ck('sw.js at 139', /const VERSION = '139'/.test(fs.readFileSync('sw.js', 'utf8')));
+  ck('cache busters at 139', (fs.readFileSync('index.html', 'utf8').match(/\?v=139/g) || []).length >= 4);
 
   console.log('\n════════════════════════════════════');
   console.log('  jsdom v111 UI: PASS=' + pass + ' FAIL=' + fail);
