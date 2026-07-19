@@ -3979,9 +3979,15 @@ function renderWizardStep() {
       </div>
     </div>`;
   } else if (step === 1) {
+    // v138: owner-operator schools — the admin can BE the instructor with one
+    // tap instead of re-typing themselves.
+    const adminName = (w.contact.adminName || '').trim();
+    const adminAlreadyListed = adminName && w.instructors.some(i => i.name.toLowerCase() === adminName.toLowerCase());
     html += `<div class="lp-section">
       <div class="lp-section-title">Instructors</div>
       <p style="font-size: 12px; color: var(--grey-500); margin: 0 0 10px;">Add the instructor team. PIN defaults to 0000 — each instructor changes their own on first login (Phase 2 feature).</p>
+      ${adminName && !adminAlreadyListed ? `<button class="btn btn-primary" style="width: 100%; margin-bottom: 10px;" onclick="wizardAddAdminAsInstructor()">＋ Add ${escapeHtml(adminName)} (the admin) as instructor</button>
+      <p style="font-size: 11px; color: var(--grey-500); margin: -4px 0 10px;">Owner-operator school? The admin can be the sole instructor — nothing else to add.</p>` : ''}
       <div id="wizInstrList" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px;">
         ${renderWizardInstructors()}
       </div>
@@ -4084,6 +4090,18 @@ function renderWizardSchedule() {
       <button class="btn btn-ghost" style="padding: 3px 6px; font-size: 10px;" onclick="wizardRemoveClass(${idx})">×</button>
     </div>`;
   }).join('');
+}
+
+// v138: push the step-0 admin straight into the instructor list (role admin,
+// email attached so their login links to this record). Duplicate-guarded by name.
+function wizardAddAdminAsInstructor() {
+  const w = state.wizardData;
+  const name = (w.contact.adminName || '').trim();
+  if (!name) { uiToast('Enter the admin name on the previous step first.'); return; }
+  if (w.instructors.some(i => i.name.toLowerCase() === name.toLowerCase())) { uiToast(name + ' is already listed.'); return; }
+  const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') + '-' + Date.now().toString(36).slice(-4);
+  state.wizardData.instructors.push({ id, name, short: name.split(' ').pop(), pin: '0000', role: 'admin', email: (w.contact.adminEmail || '').trim() || undefined });
+  renderWizardStep(); // re-render so the one-tap button disappears
 }
 
 function wizardAddInstructor() {
