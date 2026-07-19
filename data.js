@@ -616,7 +616,7 @@ const INSTRUCTOR_MONTHS = [
   'January','February','March','April','May','June',
   'July','August','September','October','November','December'
 ];
-const INSTRUCTOR_MEETING_POINTS = 3;
+let INSTRUCTOR_MEETING_POINTS = 3; // v135: let — overridable via pathway-template kv
 
 // Milestones — one-off achievements with date + reviewer
 const INSTRUCTOR_MILESTONES = [
@@ -648,6 +648,69 @@ function instructorPathwayPoints(pathway) {
     if (pathway.milestones?.[m.id]?.date) total += m.points;
   }
   return total;
+}
+
+// ---------- v135: superadmin-editable progression frameworks ----------
+// Both frameworks follow the class-types / topic-charts pattern: frozen
+// defaults + a network-wide kv override blob applied reset-then-apply at boot,
+// so clearing an override reverts cleanly to the built-ins.
+
+const PROGRESSION_PROGRAM_DEFAULTS = JSON.parse(JSON.stringify(PROGRESSION_PROGRAMS));
+
+// Blob shape at kv 'progression-programs:network': { programs: [ ...full array... ] }
+// Wholesale replacement (ordered array with add/remove semantics) — a valid,
+// non-empty programs array replaces everything; anything else leaves defaults.
+function applyProgressionProgramOverrides(blob) {
+  PROGRESSION_PROGRAMS.length = 0;
+  for (const p of PROGRESSION_PROGRAM_DEFAULTS) PROGRESSION_PROGRAMS.push(JSON.parse(JSON.stringify(p)));
+  const arr = blob && Array.isArray(blob.programs) ? blob.programs : null;
+  if (!arr || !arr.length) return PROGRESSION_PROGRAMS;
+  const valid = arr.filter(p => p && p.id && p.name && Array.isArray(p.ranks) &&
+    p.ranks.every(r => r && r.id && r.label));
+  if (valid.length !== arr.length || !valid.length) return PROGRESSION_PROGRAMS; // reject malformed blobs wholesale
+  PROGRESSION_PROGRAMS.length = 0;
+  for (const p of valid) PROGRESSION_PROGRAMS.push(JSON.parse(JSON.stringify(p)));
+  return PROGRESSION_PROGRAMS;
+}
+
+const PATHWAY_TEMPLATE_DEFAULTS = {
+  goals:        JSON.parse(JSON.stringify(INSTRUCTOR_GOALS)),
+  milestones:   JSON.parse(JSON.stringify(INSTRUCTOR_MILESTONES)),
+  meetingPoints: INSTRUCTOR_MEETING_POINTS,
+  recommenders: INSTRUCTOR_PATHWAY_RECOMMENDERS.slice(),
+};
+
+// Blob shape at kv 'pathway-template:network':
+//   { goals?: [{id,label,points}], milestones?: [{id,label,points}],
+//     meetingPoints?: n, recommenders?: [names] }
+// Per-field wholesale replacement. Points are read live by
+// instructorPathwayPoints(), so edits re-score existing candidates — accepted
+// design (single source of truth; the editor warns before saving point changes).
+// Removing a goal/milestone hides it from new sign-offs but never touches the
+// per-candidate records, which stay keyed by id.
+function applyPathwayTemplateOverrides(blob) {
+  INSTRUCTOR_GOALS.length = 0;
+  for (const g of PATHWAY_TEMPLATE_DEFAULTS.goals) INSTRUCTOR_GOALS.push(JSON.parse(JSON.stringify(g)));
+  INSTRUCTOR_MILESTONES.length = 0;
+  for (const m of PATHWAY_TEMPLATE_DEFAULTS.milestones) INSTRUCTOR_MILESTONES.push(JSON.parse(JSON.stringify(m)));
+  INSTRUCTOR_PATHWAY_RECOMMENDERS.length = 0;
+  for (const r of PATHWAY_TEMPLATE_DEFAULTS.recommenders) INSTRUCTOR_PATHWAY_RECOMMENDERS.push(r);
+  INSTRUCTOR_MEETING_POINTS = PATHWAY_TEMPLATE_DEFAULTS.meetingPoints;
+  if (!blob || typeof blob !== 'object') return;
+  const okItem = (x) => x && x.id && x.label && typeof x.points === 'number' && x.points >= 0;
+  if (Array.isArray(blob.goals) && blob.goals.length && blob.goals.every(okItem)) {
+    INSTRUCTOR_GOALS.length = 0;
+    for (const g of blob.goals) INSTRUCTOR_GOALS.push(JSON.parse(JSON.stringify(g)));
+  }
+  if (Array.isArray(blob.milestones) && blob.milestones.length && blob.milestones.every(okItem)) {
+    INSTRUCTOR_MILESTONES.length = 0;
+    for (const m of blob.milestones) INSTRUCTOR_MILESTONES.push(JSON.parse(JSON.stringify(m)));
+  }
+  if (Array.isArray(blob.recommenders) && blob.recommenders.length) {
+    INSTRUCTOR_PATHWAY_RECOMMENDERS.length = 0;
+    for (const r of blob.recommenders) if (r && String(r).trim()) INSTRUCTOR_PATHWAY_RECOMMENDERS.push(String(r).trim());
+  }
+  if (typeof blob.meetingPoints === 'number' && blob.meetingPoints >= 0) INSTRUCTOR_MEETING_POINTS = blob.meetingPoints;
 }
 
 // ====================================================================

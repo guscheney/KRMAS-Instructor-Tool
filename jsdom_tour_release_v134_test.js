@@ -16,7 +16,7 @@ const dom = new JSDOM(html, { runScripts: 'dangerously', pretendToBeVisual: true
 const { window } = dom;
 window.SUPABASE_URL = 'https://x.supabase.co';
 window.SUPABASE_ANON = 'anon-key';
-window.KRMAS_APP_VERSION = '134';
+window.KRMAS_APP_VERSION = '135';
 window.supabase = { createClient: () => theClient };
 window.XLSX = {};
 window.matchMedia = () => ({ matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} });
@@ -66,6 +66,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   ck('superadmin gets the school-switching step', ev(`tourEligibleSteps().some(s => s.title === 'School switching')`));
   ev(`state.user = { id: 'i1', role: 'instructor' };`);
   ck('instructor does NOT get admin steps', !ev(`tourEligibleSteps().some(s => s.title === 'Admin & settings')`));
+  ck('instructor does NOT get shop steps', !ev(`tourEligibleSteps().some(s => s.title === 'Inventory tabs')`));
+  ev(`state.user = { id: 's1', role: 'superadmin' };`);
+  ck('superadmin gets deep shop steps', ev(`tourEligibleSteps().some(s => s.title === 'Reorder list') && tourEligibleSteps().some(s => s.title === 'Shop management')`));
+  ck('superadmin gets the Aquila key step', ev(`tourEligibleSteps().some(s => s.title === 'Aquila CRM key')`));
+  ev(`state.user = { id: 'i1', role: 'instructor' };`);
 
   // ── trigger guards ────────────────────────────────────────────────────
   ev(`state.user = { id: 'u1', role: 'instructor' }; state._userMeta = { tours_seen: ['core-v1'] };`);

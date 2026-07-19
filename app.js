@@ -1530,6 +1530,8 @@ function adminMenuSections(isSuperAdmin) {
       { icon: '🎨', label: 'Event types',          fn: 'openEventTypes()' },
       { icon: '📅', label: 'Import events',        fn: 'openEventImport()' },
       { icon: '🏷️', label: 'Class types',          fn: 'openClassTypesEditor()', sup: true },
+      { icon: '🥋', label: 'Progression programs', fn: 'openProgressionProgramsEditor()', sup: true },
+      { icon: '🧭', label: 'Pathway template',     fn: 'openPathwayTemplateEditor()', sup: true },
     ] },
     { title: 'Records & compliance', items: [
       { icon: '📊', label: 'Dashboard',            fn: 'openDashboard()' },
@@ -3441,6 +3443,169 @@ async function pinLockSubmit() {
   tourMaybeStart(); // v134: tour deferred until the device PIN clears
 }
 
+// ---------- v135: progression frameworks editors (superadmin) ----------
+// Both edit a working deep copy in state and persist wholesale on Save —
+// applyXxxOverrides re-applies immediately so the planner and pathway views
+// pick edits up live. Reset clears the override and reverts to built-ins.
+
+function openProgressionProgramsEditor() {
+  if (!hasRole('superadmin')) { uiToast('Superadmin only.'); return; }
+  state._progEdit = JSON.parse(JSON.stringify(PROGRESSION_PROGRAMS));
+  renderProgressionProgramsEditor();
+  openModal('modalProgPrograms');
+}
+
+function renderProgressionProgramsEditor() {
+  const el = document.getElementById('progProgramsBody'); if (!el) return;
+  const list = state._progEdit || [];
+  let h = '';
+  list.forEach((p, pi) => {
+    h += `<div style="border:1px solid var(--grey-200);border-radius:10px;padding:10px;margin-bottom:10px;">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
+        <input type="text" value="${escapeHtml(p.name)}" oninput="state._progEdit[${pi}].name=this.value" style="flex:1;min-width:130px;font-weight:700;">
+        <input type="text" value="${escapeHtml(p.type || '')}" placeholder="Type" oninput="state._progEdit[${pi}].type=this.value" style="max-width:150px;">
+        <input type="color" value="${/^#[0-9a-fA-F]{6}$/.test(p.colour || '') ? p.colour : '#4b5563'}" oninput="state._progEdit[${pi}].colour=this.value" title="Colour" style="width:36px;height:32px;padding:0;border:none;background:none;">
+        <span class="action" style="cursor:pointer;color:var(--red);" onclick="progEditRemoveProgram(${pi})">✕ remove</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 76px 86px 24px;gap:5px;font-size:11px;color:var(--grey-500);margin-bottom:2px;"><span>Rank</span><span>Min age</span><span>Min days</span><span></span></div>`;
+    (p.ranks || []).forEach((r, ri) => {
+      h += `<div style="display:grid;grid-template-columns:1fr 76px 86px 24px;gap:5px;margin-bottom:4px;align-items:center;">
+        <input type="text" value="${escapeHtml(r.label)}" oninput="state._progEdit[${pi}].ranks[${ri}].label=this.value">
+        <input type="number" min="0" value="${r.minAgeYears ?? 0}" oninput="state._progEdit[${pi}].ranks[${ri}].minAgeYears=parseInt(this.value,10)||0">
+        <input type="number" min="0" value="${r.minDays ?? 0}" oninput="state._progEdit[${pi}].ranks[${ri}].minDays=parseInt(this.value,10)||0">
+        <span class="action" style="cursor:pointer;color:var(--grey-400);text-align:center;" onclick="progEditRemoveRank(${pi},${ri})">✕</span>
+      </div>`;
+    });
+    h += `<button class="btn btn-sm" style="margin-top:4px;" onclick="progEditAddRank(${pi})">+ Add rank</button>
+    </div>`;
+  });
+  h += `<button class="btn" style="width:100%;" onclick="progEditAddProgram()">+ Add program</button>`;
+  el.innerHTML = h;
+}
+
+function _progSlug(label, taken) {
+  let base = String(label || 'item').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'item';
+  let slug = base, n = 2;
+  while (taken.includes(slug)) slug = base + '-' + (n++);
+  return slug;
+}
+
+function progEditAddProgram() {
+  const taken = (state._progEdit || []).map(p => p.id);
+  state._progEdit.push({ id: _progSlug('program', taken), name: 'New program', type: '', colour: '#4b5563', ranks: [] });
+  renderProgressionProgramsEditor();
+}
+function progEditRemoveProgram(pi) { state._progEdit.splice(pi, 1); renderProgressionProgramsEditor(); }
+function progEditAddRank(pi) {
+  const p = state._progEdit[pi]; if (!p) return;
+  const taken = (p.ranks || []).map(r => r.id);
+  p.ranks.push({ id: _progSlug(p.id + '-rank', taken), label: 'New rank', minAgeYears: 0, minDays: 0 });
+  renderProgressionProgramsEditor();
+}
+function progEditRemoveRank(pi, ri) { state._progEdit[pi].ranks.splice(ri, 1); renderProgressionProgramsEditor(); }
+
+async function saveProgressionPrograms() {
+  if (!hasRole('superadmin')) return;
+  const list = state._progEdit || [];
+  for (const p of list) {
+    if (!p.name || !p.name.trim()) { uiToast('Every program needs a name.'); return; }
+    for (const r of (p.ranks || [])) { if (!r.label || !r.label.trim()) { uiToast('Every rank needs a label.'); return; } }
+  }
+  state.progressionProgramOverrides = { programs: JSON.parse(JSON.stringify(list)) };
+  applyProgressionProgramOverrides(state.progressionProgramOverrides);
+  await DB.saveProgressionPrograms(state.progressionProgramOverrides);
+  uiToast('Progression programs saved network-wide.');
+  closeModal('modalProgPrograms');
+}
+
+async function resetProgressionPrograms() {
+  if (!hasRole('superadmin')) return;
+  if (!await uiConfirm('Revert progression programs to the built-in defaults for the whole network?')) return;
+  state.progressionProgramOverrides = null;
+  applyProgressionProgramOverrides(null);
+  await DB.saveProgressionPrograms({});
+  uiToast('Reverted to the built-in programs.');
+  closeModal('modalProgPrograms');
+}
+
+function openPathwayTemplateEditor() {
+  if (!hasRole('superadmin')) { uiToast('Superadmin only.'); return; }
+  state._pwEdit = {
+    goals:        JSON.parse(JSON.stringify(INSTRUCTOR_GOALS)),
+    milestones:   JSON.parse(JSON.stringify(INSTRUCTOR_MILESTONES)),
+    meetingPoints: INSTRUCTOR_MEETING_POINTS,
+    recommenders: INSTRUCTOR_PATHWAY_RECOMMENDERS.slice(),
+  };
+  renderPathwayTemplateEditor();
+  openModal('modalPathwayTemplate');
+}
+
+function renderPathwayTemplateEditor() {
+  const el = document.getElementById('pathwayTemplateBody'); if (!el) return;
+  const d = state._pwEdit;
+  const itemRows = (kind) => d[kind].map((x, i) => `
+    <div style="display:grid;grid-template-columns:1fr 72px 24px;gap:5px;margin-bottom:4px;align-items:center;">
+      <input type="text" value="${escapeHtml(x.label)}" oninput="state._pwEdit.${kind}[${i}].label=this.value">
+      <input type="number" min="0" value="${x.points}" oninput="state._pwEdit.${kind}[${i}].points=parseInt(this.value,10)||0" title="Points">
+      <span class="action" style="cursor:pointer;color:var(--grey-400);text-align:center;" onclick="pwEditRemove('${kind}',${i})">✕</span>
+    </div>`).join('');
+  el.innerHTML = `
+    <div class="section-sub">Instructing goals <span style="font-weight:400;color:var(--grey-400);text-transform:none;">(sign-offs · points)</span></div>
+    <div style="display:grid;grid-template-columns:1fr 72px 24px;gap:5px;font-size:11px;color:var(--grey-500);"><span>Goal</span><span>Points</span><span></span></div>
+    ${itemRows('goals')}
+    <button class="btn btn-sm" onclick="pwEditAdd('goals')">+ Add goal</button>
+    <div class="section-sub" style="margin-top:12px;">Milestones</div>
+    <div style="display:grid;grid-template-columns:1fr 72px 24px;gap:5px;font-size:11px;color:var(--grey-500);"><span>Milestone</span><span>Points</span><span></span></div>
+    ${itemRows('milestones')}
+    <button class="btn btn-sm" onclick="pwEditAdd('milestones')">+ Add milestone</button>
+    <div class="form-row" style="margin-top:12px;"><label>Points per monthly leadership meeting</label>
+      <input type="number" min="0" value="${d.meetingPoints}" oninput="state._pwEdit.meetingPoints=parseInt(this.value,10)||0" style="max-width:100px;"></div>
+    <div class="form-row"><label>Recommenders <span style="font-weight:400;color:var(--grey-400);text-transform:none;">(one per line)</span></label>
+      <textarea rows="5" oninput="state._pwEdit.recommenders=this.value.split('\\n')">${escapeHtml(d.recommenders.join('\n'))}</textarea></div>`;
+}
+
+function pwEditAdd(kind) {
+  const taken = state._pwEdit[kind].map(x => x.id);
+  state._pwEdit[kind].push({ id: _progSlug(kind === 'goals' ? 'goal' : 'milestone', taken), label: kind === 'goals' ? 'New goal' : 'New milestone', points: 0 });
+  renderPathwayTemplateEditor();
+}
+function pwEditRemove(kind, i) { state._pwEdit[kind].splice(i, 1); renderPathwayTemplateEditor(); }
+
+async function savePathwayTemplate() {
+  if (!hasRole('superadmin')) return;
+  const d = state._pwEdit;
+  for (const kind of ['goals', 'milestones']) {
+    for (const x of d[kind]) { if (!x.label || !x.label.trim()) { uiToast('Every item needs a label.'); return; } }
+  }
+  // Points changes re-score every existing candidate live — warn before saving.
+  const pointsChanged =
+    JSON.stringify(INSTRUCTOR_GOALS.map(g => [g.id, g.points])) !== JSON.stringify(d.goals.map(g => [g.id, g.points])) ||
+    JSON.stringify(INSTRUCTOR_MILESTONES.map(m => [m.id, m.points])) !== JSON.stringify(d.milestones.map(m => [m.id, m.points])) ||
+    INSTRUCTOR_MEETING_POINTS !== d.meetingPoints;
+  if (pointsChanged && !await uiConfirm('Point values have changed. Every existing candidate\u2019s pathway score will recompute against the new values immediately. Continue?')) return;
+  const blob = {
+    goals: JSON.parse(JSON.stringify(d.goals)),
+    milestones: JSON.parse(JSON.stringify(d.milestones)),
+    meetingPoints: d.meetingPoints,
+    recommenders: d.recommenders.map(r => String(r).trim()).filter(Boolean),
+  };
+  state.pathwayTemplateOverrides = blob;
+  applyPathwayTemplateOverrides(blob);
+  await DB.savePathwayTemplate(blob);
+  uiToast('Pathway template saved network-wide.');
+  closeModal('modalPathwayTemplate');
+}
+
+async function resetPathwayTemplate() {
+  if (!hasRole('superadmin')) return;
+  if (!await uiConfirm('Revert the pathway template to the built-in defaults for the whole network? Scores recompute against the default points.')) return;
+  state.pathwayTemplateOverrides = null;
+  applyPathwayTemplateOverrides(null);
+  await DB.savePathwayTemplate({});
+  uiToast('Reverted to the built-in template.');
+  closeModal('modalPathwayTemplate');
+}
+
 // ---------- v134: guided app tour ----------
 // A spotlight walkthrough that DRIVES the app: each step can switch to a real
 // view via setView() before highlighting a real control, so new users see the
@@ -3482,10 +3647,26 @@ function tourSteps() {
       body: 'Belt progressions, grading days and results are managed here.' },
     { view: 'teach',  target: '.nav-btn[data-view="shop"]', gate: () => can.seeShop(), title: 'Shop',
       body: 'The catalogue, stock levels and supplier ordering — including live search of supplier catalogues.' },
+    // v135: deeper shop walkthrough for anyone with shop access.
+    { view: 'shop',   target: '.shop-tabs', gate: () => can.seeShop(), title: 'Inventory tabs',
+      body: 'Everything inventory lives behind these tabs — stock on hand, the reorder list, special orders and stocktakes.' },
+    { view: 'shop',   target: 'button[onclick="setShopView(\'reorder\')"]', gate: () => can.seeShop(), title: 'Reorder list',
+      body: 'Items at or below their reorder point collect here, grouped by supplier — with links straight to each supplier\u2019s site and live catalogue search for Shopify-backed suppliers.' },
+    { view: 'shop',   target: 'button[onclick="setShopView(\'special\')"]', gate: () => can.seeShop(), title: 'Special orders',
+      body: 'One-off member orders — sizes, uniforms, equipment — tracked from request through to arrival and pickup.' },
+    { view: 'shop',   target: 'button[onclick="setShopView(\'manage\')"]', gate: () => can.manageShop(), title: 'Shop management',
+      body: 'Catalogue, suppliers and value reporting. Supplier records hold websites and storefront links, and power the live product search when staging a reorder.' },
     { view: 'teach',  target: '.nav-btn[data-view="more"]', title: 'More',
       body: 'Students, documents, admin settings and your own profile are under More.' },
     { view: 'admin',  target: '#mainContent', gate: () => can.manageInstructors(), title: 'Admin & settings',
       body: 'Schools, logins, roles and configuration. As an admin this is where you manage your team.' },
+    // v135: deeper settings walkthrough for admins.
+    { view: 'admin',  target: '#adminMenuSearch', gate: () => can.manageInstructors(), title: 'Finding a setting',
+      body: 'Every admin tool is grouped below — People, Scheduling, Records, Communication, Integrations, System. Type here to filter straight to the one you need.' },
+    { view: 'admin',  target: 'button[onclick="openInstructorManager()"]', gate: () => can.manageInstructors(), title: 'User management',
+      body: 'Add instructors, set roles and permissions, reset logins and PINs. New users get the invite flow — and this tour — automatically.' },
+    { view: 'admin',  target: 'button[onclick="openAquilaSettings()"]', gate: () => can.manageInstructors() && DB.isSupabase, title: 'Aquila CRM key',
+      body: 'Connect your school to Aquila here: paste your Aquila API key and the app validates it, shows which roles it carries, and links your location. The key needs the Development_Read role for student progression to load — and you can rotate it any time without losing the connection.' },
     { view: 'admin',  target: '#schoolName', gate: () => can.switchAnySchool(), title: 'School switching',
       body: 'As superadmin you can switch into any school from the header — everything you see scopes to the selected school.' },
     { view: 'me',     target: '#mainContent', title: 'My profile',
@@ -9623,6 +9804,8 @@ async function enterAppWithSession(session) {
   try { state.roleConfig = await DB.roles.loadConfig(); } catch (e) { console.warn('loadRoleConfig:', e && e.message); }
   try { state.classTypes = (await DB.classTypes.load()) || []; applyClassTypeOverrides(state.classTypes); } catch (e) { console.warn('loadClassTypes:', e && e.message); }
   try { state.topicChartOverrides = (await DB.loadTopicCharts()) || null; applyTopicChartOverrides(state.topicChartOverrides); } catch (e) { console.warn('loadTopicCharts:', e && e.message); }
+  try { state.progressionProgramOverrides = (await DB.loadProgressionPrograms()) || null; applyProgressionProgramOverrides(state.progressionProgramOverrides); } catch (e) { console.warn('loadProgressionPrograms:', e && e.message); }
+  try { state.pathwayTemplateOverrides = (await DB.loadPathwayTemplate()) || null; applyPathwayTemplateOverrides(state.pathwayTemplateOverrides); } catch (e) { console.warn('loadPathwayTemplate:', e && e.message); }
   try { await loadCustomSchools(); } catch (e) { console.warn('loadCustomSchools:', e && e.message); }
   try { if (can.seeShop()) await loadShopData(); } catch (e) { console.warn("loadShopData:", e && e.message); }
   refreshNotifBadge();

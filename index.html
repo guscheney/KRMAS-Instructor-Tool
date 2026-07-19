@@ -15,7 +15,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Open+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=134">
+<link rel="stylesheet" href="styles.css?v=135">
 <script>
 /* No-flash brand boot: apply the cached published brand to :root BEFORE first paint,
    so a custom-branded portal never flashes the default palette on load. Self-contained
@@ -393,6 +393,34 @@
       <button class="btn btn-primary" onclick="saveTopicEdit()" style="flex:1;">Save topic</button>
       <button class="btn" onclick="resetTopicToDefault()">Reset to default</button>
       <button class="btn" onclick="closeModal('modalTopicEdit')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="modalProgPrograms">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2>Progression programs</h2>
+    <p class="modal-sub">Network-wide — every school's planner uses these programs and rank requirements.</p>
+    <div id="progProgramsBody"></div>
+    <div class="detail-actions" style="margin-top:10px;">
+      <button class="btn btn-primary" onclick="saveProgressionPrograms()" style="flex:1;">Save network-wide</button>
+      <button class="btn" onclick="resetProgressionPrograms()">Reset to defaults</button>
+      <button class="btn" onclick="closeModal('modalProgPrograms')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="modalPathwayTemplate">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2>Instructor pathway template</h2>
+    <p class="modal-sub">Network-wide — goals, milestones, points and recommenders for every candidate's pathway.</p>
+    <div id="pathwayTemplateBody"></div>
+    <div class="detail-actions" style="margin-top:10px;">
+      <button class="btn btn-primary" onclick="savePathwayTemplate()" style="flex:1;">Save network-wide</button>
+      <button class="btn" onclick="resetPathwayTemplate()">Reset to defaults</button>
+      <button class="btn" onclick="closeModal('modalPathwayTemplate')">Cancel</button>
     </div>
   </div>
 </div>
@@ -2286,15 +2314,15 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '134';
+  window.KRMAS_APP_VERSION = '135';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
 </script>
-<script src="data.js?v=134"></script>
-<script src="db.js?v=134"></script>
-<script src="plangen.js?v=134"></script>
-<script src="app.js?v=134"></script>
+<script src="data.js?v=135"></script>
+<script src="db.js?v=135"></script>
+<script src="plangen.js?v=135"></script>
+<script src="app.js?v=135"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

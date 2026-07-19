@@ -2204,6 +2204,11 @@ const DB = (() => {
     saveTopicCharts:    (d) => set('topic-charts:network', d),
     loadRotationAnchor: (schoolId) => get('rotation-anchor:' + schoolId),
     saveRotationAnchor: (schoolId, d) => set('rotation-anchor:' + schoolId, d),
+    // v135: superadmin-edited progression frameworks (network-wide)
+    loadProgressionPrograms: () => get('progression-programs:network'),
+    saveProgressionPrograms: (d) => set('progression-programs:network', d),
+    loadPathwayTemplate:     () => get('pathway-template:network'),
+    savePathwayTemplate:     (d) => set('pathway-template:network', d),
     loadDocCategories: () => get('doc-categories:global'),
     saveDocCategories: (d) => set('doc-categories:global', d),
     // ── lesson-plan corpus (migration 33) ──
