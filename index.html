@@ -15,7 +15,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Open+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=141">
+<link rel="stylesheet" href="styles.css?v=142">
 <script>
 /* No-flash brand boot: apply the cached published brand to :root BEFORE first paint,
    so a custom-branded portal never flashes the default palette on load. Self-contained
@@ -1971,6 +1971,42 @@
 </div>
 
 <!-- ===== Modal: Compliance requirements manager ===== -->
+<div class="modal-bg" id="modalMyCompliance">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2>My compliance</h2>
+    <p class="modal-sub">Upload your certificates directly against each requirement. Your admin verifies the submission.</p>
+    <div id="myComplianceBody" style="max-height:60vh;overflow-y:auto;"></div>
+    <div class="detail-actions" style="margin-top:8px;">
+      <button class="btn" onclick="closeModal('modalMyCompliance')" style="flex:1;">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="modalComplianceUpload">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2 id="compUpTitle">Upload</h2>
+    <div class="form-row compact">
+      <label>Certificate file (PDF or image, up to 5MB)</label>
+      <input type="file" id="compUpFile" accept="application/pdf,image/*">
+    </div>
+    <div class="form-row compact" id="compUpExpiryRow" style="display:none;">
+      <label>Expiry date</label>
+      <input type="date" id="compUpExpiry">
+    </div>
+    <div class="form-row compact">
+      <label>Reference / cert number (optional)</label>
+      <input type="text" id="compUpRef" placeholder="e.g. WWC1234567">
+    </div>
+    <div id="compUpStatus" style="font-size:12px;min-height:16px;margin:6px 0;"></div>
+    <div class="detail-actions" style="margin-top:8px;">
+      <button class="btn btn-primary" onclick="submitComplianceUpload()" style="flex:1;">Submit for verification</button>
+      <button class="btn" onclick="closeModal('modalComplianceUpload')">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-bg" id="modalComplianceReqs">
   <div class="modal">
     <div class="modal-handle"></div>
@@ -2009,12 +2045,14 @@
       <label>Status</label>
       <select id="compEdStatus">
         <option value="not_started">Not started</option>
+        <option value="submitted">Submitted — awaiting verification</option>
         <option value="valid">Valid</option>
         <option value="pending">Pending</option>
         <option value="expired">Expired</option>
         <option value="exempt">Exempt</option>
       </select>
     </div>
+    <div class="form-row compact" id="compEdDocRow" style="display:none;"></div>
     <div class="form-row compact" id="compEdExpiryRow">
       <label>Expiry date</label>
       <input type="date" id="compEdExpiry">
@@ -2315,15 +2353,15 @@
   // Bumped on every deploy alongside the service-worker cache. The running app
   // periodically compares this against the served index.html and offers a
   // one-tap update when they differ — no manual hard-refresh needed.
-  window.KRMAS_APP_VERSION = '141';
+  window.KRMAS_APP_VERSION = '142';
   // Web push — public (client) half of the VAPID key pair. The matching PRIVATE
   // key lives ONLY as a Supabase Edge Function secret (never commit it).
   window.VAPID_PUBLIC_KEY = 'BKjIqdpnID6ZipVeKBdfZbahA1uNS1JweqhbbbMCR2icMlT1-bRfVgaa73f0_S_n3dSZ3SP2DZlsijeCJgyCloE';
 </script>
-<script src="data.js?v=141"></script>
-<script src="db.js?v=141"></script>
-<script src="plangen.js?v=141"></script>
-<script src="app.js?v=141"></script>
+<script src="data.js?v=142"></script>
+<script src="db.js?v=142"></script>
+<script src="plangen.js?v=142"></script>
+<script src="app.js?v=142"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

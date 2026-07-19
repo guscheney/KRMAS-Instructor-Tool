@@ -36,7 +36,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const doc = window.document;
 
   // TOUR_ID bumped → every existing user re-eligible for the catch-up.
-  ck('TOUR_ID bumped to core-v2', ev(`TOUR_ID`) === 'core-v2');
+  ck('TOUR_ID bumped to core-v3', ev(`TOUR_ID`) === 'core-v3');
 
   // Superadmin sees every new step.
   ev(`state.user = { id: 's1', role: 'superadmin' };`);

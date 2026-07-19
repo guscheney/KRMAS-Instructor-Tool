@@ -981,6 +981,7 @@ const DB = (() => {
       uploadedBy:   r.uploaded_by || null,
       targetScope:  r.target_scope || 'school',
       targetIds:    r.target_ids || [],
+      requirementId: r.requirement_id || null, // v142
       createdAt:    r.created_at,
     };
   }
@@ -1049,6 +1050,7 @@ const DB = (() => {
         uploaded_by:   doc.uploadedBy || null,
         target_scope:  doc.targetScope || 'school',
         target_ids:    doc.targetIds || [],
+        requirement_id: doc.requirementId || null, // v142: link to compliance requirement
         created_at:    doc.createdAt || new Date().toISOString(),
         updated_at:    new Date().toISOString(),
       };
@@ -1259,6 +1261,7 @@ const DB = (() => {
         requirementId: r.requirement_id, status: r.status,
         expiryDate: r.expiry_date || null, referenceNumber: r.reference_number || '',
         notes: r.notes || '', updatedBy: r.updated_by || null,
+        documentId: r.document_id || null, // v142
       }));
     } catch (e) { return (await lGet('compliance:' + schoolId)) || []; }
   }
@@ -1277,6 +1280,7 @@ const DB = (() => {
         requirement_id: rec.requirementId, status: rec.status,
         expiry_date: rec.expiryDate || null, reference_number: rec.referenceNumber || null,
         notes: rec.notes || null, updated_by: rec.updatedBy || null,
+        document_id: rec.documentId || null, // v142
         updated_at: new Date().toISOString(),
       }, { onConflict: 'school_id,instructor_id,requirement_id' });
       return !error;

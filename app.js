@@ -2586,8 +2586,20 @@ async function renderMe() {
   html += `<div class="section-sub" style="margin-top:14px;">This week's hours</div>`;
   html += renderInstructorHours(me.id, currentWeekMonday);
 
+  // v142: My compliance — instructor uploads their own certificates against
+  // the requirements the admin has set up. Merges the previously separate
+  // "my documents" and "compliance" flows into a single self-service surface.
+  const myComplianceRecs = (state.complianceRecords || []).filter(r => r.instructorId === me.id);
+  const myComplianceOutstanding = (state.complianceReqs || []).filter(req => {
+    const rec = myComplianceRecs.find(r => r.requirementId === req.id);
+    return !rec || rec.status === 'not_started' || rec.status === 'expired';
+  }).length;
+  if ((state.complianceReqs || []).length > 0) {
+    html += `<div style="margin-top:18px;"><button class="btn" style="width:100%;" onclick="openMyCompliance()">🛡 My compliance${myComplianceOutstanding ? ` <span style="background:var(--amber-500);color:var(--white);border-radius:10px;padding:1px 8px;font-size:11px;margin-left:6px;">${myComplianceOutstanding} outstanding</span>` : ''}</button></div>`;
+  }
+
   // My documents (change 6)
-  html += `<div style="margin-top:18px;"><button class="btn" style="width:100%;" onclick="openMyDocuments()">📄 My documents${state.myDocuments?.length ? ' (' + state.myDocuments.length + ')' : ''}</button></div>`;
+  html += `<div style="margin-top:8px;"><button class="btn" style="width:100%;" onclick="openMyDocuments()">📄 My documents${state.myDocuments?.length ? ' (' + state.myDocuments.length + ')' : ''}</button></div>`;
 
   // Settings
   html += `<div style="margin-top:12px;display:grid;gap:8px;">
@@ -3706,7 +3718,7 @@ async function resetPathwayTemplate() {
 //  * A step whose target is missing (role-gated markup, changed DOM) is
 //    skipped silently in the direction of travel.
 //  * Never fires while impersonating, read-only, offline, or under a modal.
-const TOUR_ID = 'core-v2'; // v141: catch-up steps added, fire once for everyone again
+const TOUR_ID = 'core-v3'; // v142: My compliance step added, refire once
 
 function tourSteps() {
   return [
@@ -3758,6 +3770,9 @@ function tourSteps() {
       body: 'As superadmin you can switch into any school from the header — everything you see scopes to the selected school.' },
     { view: 'me',     target: '#mainContent', title: 'My profile',
       body: 'Your photo, device PIN, and library sharing live here — and you can replay this tour any time from the button above.' },
+    // v142: instructor self-service compliance upload.
+    { view: 'me',     target: 'button[onclick="openMyCompliance()"]', title: 'My compliance',
+      body: 'When your admin sets up compliance requirements (WWC, First Aid, etc.), each one shows up here. Tap Upload to submit your certificate directly — no more sending it separately. Your admin verifies the submission from their compliance dashboard.' },
     // v141: catch-up steps for v135–v140. Superadmin-only tail — role-gated so
     // instructors and admins see none of these; superadmin flow ends here.
     { view: 'feed',   target: '#scopeBadge', gate: () => can.switchAnySchool(), title: 'Scope badge (superadmin)',
@@ -13280,20 +13295,21 @@ function renderComplianceDashboard() {
   }
 
   // Summary counts
-  let expired = 0, expiringSoon = 0, valid = 0, total = 0;
+  let expired = 0, expiringSoon = 0, valid = 0, submitted = 0, total = 0;
   const thirtyDays = calAddDays(today, 30);
   for (const instr of instrs) {
     for (const req of reqs) {
       total++;
       const rec = state.complianceRecords.find(r => r.instructorId === instr.id && r.requirementId === req.id);
       const st = getComplianceStatus(rec, req);
+      if (rec?.status === 'submitted') { submitted++; continue; } // v142: awaiting verify
       if (st === 'expired') expired++;
       else if (st === 'valid' && req.hasExpiry && rec?.expiryDate && rec.expiryDate <= thirtyDays) expiringSoon++;
       else if (st === 'valid') valid++;
     }
   }
 
-  let html = `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px;">
+  let html = `<div style="display:grid;grid-template-columns:repeat(${submitted > 0 ? 4 : 3},1fr);gap:8px;margin-bottom:14px;">
     <div style="text-align:center;padding:10px;background:${expired ? '#fff1f2' : 'var(--off-white)'};border-radius:var(--r-sm);border:1px solid ${expired ? '#fca5a5' : 'var(--grey-200)'};">
       <div style="font-size:22px;font-weight:700;color:${expired ? '#ef4444' : 'var(--grey-400)'};">${expired}</div>
       <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--grey-500);">Expired</div>
@@ -13306,6 +13322,10 @@ function renderComplianceDashboard() {
       <div style="font-size:22px;font-weight:700;color:#10b981;">${valid}</div>
       <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--grey-500);">Valid</div>
     </div>
+    ${submitted > 0 ? `<div style="text-align:center;padding:10px;background:#e0f2fe;border-radius:var(--r-sm);border:1px solid #7dd3fc;">
+      <div style="font-size:22px;font-weight:700;color:#0ea5e9;">${submitted}</div>
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--grey-500);">Awaiting verify</div>
+    </div>` : ''}
   </div>`;
 
   html += `<button class="btn btn-sm" onclick="openComplianceReqManager()" style="margin-bottom:12px;">⚙ Manage requirements</button>`;
@@ -13317,13 +13337,18 @@ function renderComplianceDashboard() {
     for (const req of reqs) {
       const rec = state.complianceRecords.find(r => r.instructorId === instr.id && r.requirementId === req.id);
       const st = getComplianceStatus(rec, req);
-      const s = COMPLIANCE_STATUS[st];
+      const isSubmitted = rec?.status === 'submitted';
+      const s = isSubmitted
+        ? { colour: '#0ea5e9', icon: '⏳' } // v142: awaiting admin verification
+        : COMPLIANCE_STATUS[st];
       const expiring = st === 'valid' && req.hasExpiry && rec?.expiryDate && rec.expiryDate <= thirtyDays;
+      const doc = rec?.documentId ? (state.personalDocsList || []).find(d => d.id === rec.documentId) : null;
       html += `<div onclick="openComplianceEditor('${instr.id}','${req.id}')" style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--grey-100);cursor:pointer;">
         <span style="width:22px;height:22px;border-radius:50%;background:${s.colour};color:var(--white);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;">${s.icon}</span>
         <div style="flex:1;min-width:0;">
-          <div style="font-size:13px;font-weight:600;">${escapeHtml(req.name)}</div>
-          ${rec?.expiryDate ? `<div style="font-size:11px;color:${expiring ? 'var(--amber-500)' : st==='expired' ? '#ef4444' : 'var(--grey-400)'};">${st === 'expired' ? 'Expired' : expiring ? 'Expires' : 'Valid until'} ${rec.expiryDate}${rec.referenceNumber ? ' · #' + escapeHtml(rec.referenceNumber) : ''}</div>` : ''}
+          <div style="font-size:13px;font-weight:600;">${escapeHtml(req.name)}${rec?.documentId ? ' <span style="font-size:11px;color:#0ea5e9;">📄</span>' : ''}</div>
+          ${isSubmitted ? `<div style="font-size:11px;color:#0ea5e9;font-weight:600;">Awaiting verification${rec?.expiryDate ? ' · Expiry ' + rec.expiryDate : ''}${rec?.referenceNumber ? ' · #' + escapeHtml(rec.referenceNumber) : ''}</div>` :
+          rec?.expiryDate ? `<div style="font-size:11px;color:${expiring ? 'var(--amber-500)' : st==='expired' ? '#ef4444' : 'var(--grey-400)'};">${st === 'expired' ? 'Expired' : expiring ? 'Expires' : 'Valid until'} ${rec.expiryDate}${rec.referenceNumber ? ' · #' + escapeHtml(rec.referenceNumber) : ''}</div>` : ''}
         </div>
         <span style="font-size:11px;color:var(--grey-400);">›</span>
       </div>`;
@@ -13332,6 +13357,117 @@ function renderComplianceDashboard() {
   }
 
   body.innerHTML = html;
+}
+
+// ---------- v142: My compliance (instructor self-service) ----------
+// Instructor's own view of their compliance requirements. Each row shows the
+// requirement, current status (including 'submitted — awaiting verification'
+// after they upload), and an Upload button. Uploading creates a personal
+// document tagged with requirement_id AND writes an instructor_compliance
+// row with status='submitted' (which admin-side ic_admin_write can then
+// verify to 'valid'/'expired'/'exempt' — see migration 38).
+async function openMyCompliance() {
+  if (!state.user) { openLogin(); return; }
+  renderMyComplianceList();
+  openModal('modalMyCompliance');
+}
+
+function renderMyComplianceList() {
+  const body = document.getElementById('myComplianceBody');
+  if (!body) return;
+  const me = getInstructor(myInstructorId());
+  if (!me) { body.innerHTML = '<div class="empty">Instructor not found.</div>'; return; }
+  const reqs = state.complianceReqs || [];
+  if (!reqs.length) {
+    body.innerHTML = '<div class="empty" style="padding:12px;color:var(--grey-500);">Your admin hasn\u2019t set up any compliance requirements yet.</div>';
+    return;
+  }
+  let html = '';
+  for (const req of reqs) {
+    const rec = (state.complianceRecords || []).find(r => r.instructorId === me.id && r.requirementId === req.id);
+    const st = getComplianceStatus(rec, req);
+    const submitted = rec?.status === 'submitted';
+    const doc = rec?.documentId ? (state.myDocuments || []).find(d => d.id === rec.documentId) : null;
+    const s = submitted
+      ? { label: 'Submitted — awaiting verification', colour: '#0ea5e9', icon: '⏳' }
+      : COMPLIANCE_STATUS[st] || { label: 'Not started', colour: 'var(--grey-400)', icon: '—' };
+    html += `<div style="background:var(--white);border:1px solid var(--grey-200);border-radius:var(--r-md);padding:10px 12px;margin-bottom:8px;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+        <span style="width:22px;height:22px;border-radius:50%;background:${s.colour};color:var(--white);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;">${s.icon}</span>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:14px;font-weight:700;">${escapeHtml(req.name)}</div>
+          <div style="font-size:11px;color:var(--grey-500);">${escapeHtml(s.label)}${rec?.expiryDate ? ` · Expires ${rec.expiryDate}` : ''}${rec?.referenceNumber ? ` · #${escapeHtml(rec.referenceNumber)}` : ''}</div>
+        </div>
+      </div>
+      ${doc ? `<div style="font-size:12px;padding:6px 8px;background:var(--off-white);border-radius:var(--r-sm);margin-bottom:8px;display:flex;align-items:center;gap:6px;">📄 <span style="flex:1;">${escapeHtml(doc.title || doc.filename)}</span><span class="action" style="cursor:pointer;font-size:11px;" onclick="viewDocument('${doc.id}')">View</span></div>` : ''}
+      <button class="btn btn-sm" style="width:100%;" onclick="openComplianceUpload('${req.id}')">${doc ? '↻ Replace / update' : '＋ Upload certificate'}</button>
+    </div>`;
+  }
+  body.innerHTML = html;
+}
+
+function openComplianceUpload(reqId) {
+  const req = (state.complianceReqs || []).find(r => r.id === reqId);
+  if (!req) return;
+  state._complianceUploadReqId = reqId;
+  document.getElementById('compUpTitle').textContent = 'Upload — ' + req.name;
+  document.getElementById('compUpExpiryRow').style.display = req.hasExpiry ? 'block' : 'none';
+  document.getElementById('compUpExpiry').value = '';
+  document.getElementById('compUpRef').value = '';
+  document.getElementById('compUpFile').value = '';
+  document.getElementById('compUpStatus').textContent = '';
+  openModal('modalComplianceUpload');
+}
+
+async function submitComplianceUpload() {
+  const reqId = state._complianceUploadReqId;
+  const req = (state.complianceReqs || []).find(r => r.id === reqId);
+  const status = document.getElementById('compUpStatus');
+  if (!req) { status.textContent = '⚠ Requirement not found.'; status.style.color = 'var(--red)'; return; }
+  const fileInput = document.getElementById('compUpFile');
+  const file = fileInput.files && fileInput.files[0];
+  if (!file) { status.textContent = '⚠ Pick a file first.'; status.style.color = 'var(--red)'; return; }
+  if (file.size > 5 * 1024 * 1024) { status.textContent = '⚠ File is too large (max 5MB).'; status.style.color = 'var(--red)'; return; }
+  const expiry = req.hasExpiry ? (document.getElementById('compUpExpiry').value || null) : null;
+  const refNum = document.getElementById('compUpRef').value.trim();
+  status.textContent = 'Uploading…'; status.style.color = 'var(--grey-500)';
+  try {
+    const dataUrl = await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => reject(new Error('Read failed'));
+      r.readAsDataURL(file);
+    });
+    const docId = 'DOC-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+    const doc = {
+      id: docId, schoolId: state.schoolId, instructorId: state.user.id,
+      title: req.name + ' — ' + file.name, description: refNum ? ('Ref #' + refNum) : '',
+      category: 'compliance', filename: file.name,
+      mimeType: file.type || 'application/octet-stream', fileSize: file.size,
+      fileData: dataUrl, uploadedBy: state.user?.name || null,
+      targetScope: 'school', targetIds: [], requirementId: reqId,
+      createdAt: new Date().toISOString(),
+    };
+    await DB.saveDocument(doc);
+    state.myDocuments = [doc, ...(state.myDocuments || [])];
+    const rec = {
+      id: 'CMP-' + state.user.id + '-' + reqId,
+      schoolId: state.schoolId, instructorId: state.user.id, requirementId: reqId,
+      status: 'submitted', expiryDate: expiry, referenceNumber: refNum, notes: '',
+      documentId: docId, updatedBy: state.user?.name || null,
+    };
+    const idx = (state.complianceRecords || []).findIndex(r => r.instructorId === state.user.id && r.requirementId === reqId);
+    if (idx !== -1) state.complianceRecords[idx] = rec;
+    else (state.complianceRecords = state.complianceRecords || []).push(rec);
+    await DB.saveInstructorCompliance(rec);
+    status.textContent = '✓ Submitted for verification.';
+    status.style.color = 'var(--ok)';
+    renderMyComplianceList();
+    setTimeout(() => closeModal('modalComplianceUpload'), 900);
+  } catch (e) {
+    status.textContent = '⚠ Upload failed: ' + (e && e.message || e);
+    status.style.color = 'var(--red)';
+  }
 }
 
 // ── Requirements manager ──
@@ -13396,6 +13532,8 @@ function openComplianceEditor(instrId, reqId) {
   document.getElementById('compEdTitle').textContent = `${instr.name} — ${req.name}`;
   document.getElementById('compEdInstrId').value = instrId;
   document.getElementById('compEdReqId').value = reqId;
+  // v142: show "Submitted" as a real status option so admins can see it and
+  // then verify by picking a terminal status.
   document.getElementById('compEdStatus').value = rec?.status || 'not_started';
 
   const expiryRow = document.getElementById('compEdExpiryRow');
@@ -13404,12 +13542,43 @@ function openComplianceEditor(instrId, reqId) {
   document.getElementById('compEdRef').value = rec?.referenceNumber || '';
   document.getElementById('compEdNotes').value = rec?.notes || '';
 
+  // v142: if the instructor uploaded a certificate against this requirement,
+  // load it and offer a View link so the admin can review before verifying.
+  const docRow = document.getElementById('compEdDocRow');
+  if (docRow) {
+    if (rec?.documentId) {
+      // The doc is instructor-scoped; load it into personalDocsList so
+      // viewDocument() can find it.
+      DB.loadInstructorDocuments(instrId).then(docs => {
+        state.personalDocsList = docs || [];
+        const doc = (docs || []).find(d => d.id === rec.documentId);
+        if (doc) {
+          docRow.style.display = 'block';
+          docRow.innerHTML = `<label>Uploaded certificate</label>
+            <div style="padding:8px 10px;background:var(--off-white);border-radius:var(--r-sm);display:flex;align-items:center;gap:8px;">
+              📄 <span style="flex:1;">${escapeHtml(doc.title || doc.filename)}</span>
+              <button class="btn btn-sm" onclick="viewDocument('${doc.id}')">View</button>
+            </div>`;
+        } else {
+          docRow.style.display = 'none';
+        }
+      });
+    } else {
+      docRow.style.display = 'none';
+      docRow.innerHTML = '';
+    }
+  }
+
   openModal('modalComplianceEditor');
 }
 
 async function saveComplianceRecord() {
   const instrId = document.getElementById('compEdInstrId').value;
   const reqId = document.getElementById('compEdReqId').value;
+  // v142: preserve the document link when admin verifies an instructor
+  // submission — the file the instructor uploaded stays attached to the
+  // record after status flips from 'submitted' to 'valid'/'exempt'.
+  const existing = state.complianceRecords.find(r => r.instructorId === instrId && r.requirementId === reqId);
   const rec = {
     id: 'CMP-' + instrId + '-' + reqId,
     schoolId: state.schoolId,
@@ -13419,6 +13588,7 @@ async function saveComplianceRecord() {
     expiryDate: document.getElementById('compEdExpiry').value || null,
     referenceNumber: document.getElementById('compEdRef').value.trim(),
     notes: document.getElementById('compEdNotes').value.trim(),
+    documentId: existing?.documentId || null,
     updatedBy: state.user?.name || null,
   };
   const idx = state.complianceRecords.findIndex(r => r.instructorId === instrId && r.requirementId === reqId);
