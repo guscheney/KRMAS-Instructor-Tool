@@ -73,7 +73,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   ev(`state.user = { id: 'i1', role: 'instructor' };`);
 
   // ── trigger guards ────────────────────────────────────────────────────
-  ev(`state.user = { id: 'u1', role: 'instructor' }; state._userMeta = { tours_seen: ['core-v1'] };`);
+  ev(`state.user = { id: 'u1', role: 'instructor' }; state._userMeta = { tours_seen: ['core-v2'] };`);
   ev(`tourMaybeStart()`);
   await sleep(30);
   ck('seen flag suppresses the tour', !doc.getElementById('tourOverlay'));
@@ -97,8 +97,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // walk to the end
   for (let g = 0; g < 20 && ev('_tour !== null'); g++) { await ev(`tourMove(1)`); await sleep(320); }
   ck('tour reaches the end and closes', !doc.getElementById('tourOverlay'));
-  ck('completion persisted to auth metadata', metaWrites.length === 1 && metaWrites[0].tours_seen.includes('core-v1'));
-  ck('local metadata updated too', ev(`state._userMeta.tours_seen.includes('core-v1')`));
+  ck('completion persisted to auth metadata', metaWrites.length === 1 && metaWrites[0].tours_seen.includes('core-v2'));
+  ck('local metadata updated too', ev(`state._userMeta.tours_seen.includes('core-v2')`));
 
   // ── replay ignores the flag; skip persists too ────────────────────────
   ev(`tourStart(true)`);

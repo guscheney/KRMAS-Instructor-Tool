@@ -3706,7 +3706,7 @@ async function resetPathwayTemplate() {
 //  * A step whose target is missing (role-gated markup, changed DOM) is
 //    skipped silently in the direction of travel.
 //  * Never fires while impersonating, read-only, offline, or under a modal.
-const TOUR_ID = 'core-v1';
+const TOUR_ID = 'core-v2'; // v141: catch-up steps added, fire once for everyone again
 
 function tourSteps() {
   return [
@@ -3757,7 +3757,17 @@ function tourSteps() {
     { view: 'admin',  target: '#schoolName', gate: () => can.switchAnySchool(), title: 'School switching',
       body: 'As superadmin you can switch into any school from the header — everything you see scopes to the selected school.' },
     { view: 'me',     target: '#mainContent', title: 'My profile',
-      body: 'Your photo, device PIN, and library sharing live here — and you can replay this tour any time from the button above. That\u2019s the lot. Osu!' },
+      body: 'Your photo, device PIN, and library sharing live here — and you can replay this tour any time from the button above.' },
+    // v141: catch-up steps for v135–v140. Superadmin-only tail — role-gated so
+    // instructors and admins see none of these; superadmin flow ends here.
+    { view: 'feed',   target: '#scopeBadge', gate: () => can.switchAnySchool(), title: 'Scope badge (superadmin)',
+      body: 'Right next to the school name — tells you whether you\u2019re seeing every school\u2019s data ("Network view") or just this school\u2019s ("Scoped in"). Tap it to toggle. Session-only: refresh or sign back in and you\u2019re at your home school in network view.' },
+    { view: 'admin',  target: 'button[onclick="openProgressionProgramsEditor()"]', gate: () => hasRole('superadmin'), title: 'Progression programs',
+      body: 'Edit every program\u2019s name, colour, and rank ladder — labels, minimum age, minimum days per rank. Add or remove ranks and whole programs. Saves network-wide instantly for every school\u2019s planner.' },
+    { view: 'admin',  target: 'button[onclick="openPathwayTemplateEditor()"]', gate: () => hasRole('superadmin'), title: 'Pathway template',
+      body: 'Edit the instructor pathway itself: goal labels and points, milestone labels and points, points per monthly meeting. Point changes retroactively re-score every existing candidate — you\u2019ll be warned before saving. Recommenders are no longer listed here; they\u2019re built from real accounts (this school\u2019s users plus superadmins) on each pathway record.' },
+    { view: 'admin',  target: 'button[onclick="openInstructorManager()"]', gate: () => can.manageInstructors(), title: 'Adding a new school',
+      body: 'When you add a new school through here, the setup wizard runs — and for owner-operator schools the step-1 instructor page offers a one-tap "Add \u3008admin\u3009 as instructor" so a solo owner never has to type themselves twice.' },
   ];
 }
 
