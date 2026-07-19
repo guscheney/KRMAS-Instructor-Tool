@@ -393,6 +393,39 @@ function allInstructors() {
   return data ? data.instructors : [];
 }
 
+// v136: 'Recommended by' on the instructor pathway is constrained to real
+// accounts — this school's users plus any superadmin network-wide — instead of
+// free text. Stored value stays the display NAME (records and printouts are
+// unchanged); the constraint lives in the select. A legacy free-text value on
+// an existing record is preserved as a '(legacy)' option so nothing is lost.
+function pathwayRecommenderOptions() {
+  const opts = [];
+  const seen = new Set();
+  for (const i of allInstructors()) {
+    if (!i || !i.name || seen.has(i.name)) continue;
+    seen.add(i.name); opts.push({ name: i.name, tag: '' });
+  }
+  for (const i of allInstructorsAllSchools()) {
+    if (!i || i.role !== 'superadmin' || !i.name || seen.has(i.name)) continue;
+    seen.add(i.name); opts.push({ name: i.name, tag: ' (superadmin)' });
+  }
+  opts.sort((a, b) => a.name.localeCompare(b.name));
+  return opts;
+}
+
+function populatePathwayRecommenders(currentVal) {
+  const sel = document.getElementById('pwRecommendedBy');
+  if (!sel) return;
+  const opts = pathwayRecommenderOptions();
+  let html = '<option value="">\u2014 Select \u2014</option>' +
+    opts.map(o => `<option value="${escapeHtml(o.name)}">${escapeHtml(o.name)}${escapeHtml(o.tag)}</option>`).join('');
+  if (currentVal && !opts.some(o => o.name === currentVal)) {
+    html += `<option value="${escapeHtml(currentVal)}">${escapeHtml(currentVal)} (legacy)</option>`;
+  }
+  sel.innerHTML = html;
+  sel.value = currentVal || '';
+}
+
 // Every instructor across every school, each tagged with their home school. Custom-schools
 // is loaded globally, so all rosters are available even when not the active school. Used
 // for superadmin network groups that can contain anyone from any location.
@@ -3534,7 +3567,8 @@ function openPathwayTemplateEditor() {
     goals:        JSON.parse(JSON.stringify(INSTRUCTOR_GOALS)),
     milestones:   JSON.parse(JSON.stringify(INSTRUCTOR_MILESTONES)),
     meetingPoints: INSTRUCTOR_MEETING_POINTS,
-    recommenders: INSTRUCTOR_PATHWAY_RECOMMENDERS.slice(),
+    // v136: recommenders are no longer template-listed — the pathway form
+    // constrains them to this school's users + superadmins directly.
   };
   renderPathwayTemplateEditor();
   openModal('modalPathwayTemplate');
@@ -3560,8 +3594,7 @@ function renderPathwayTemplateEditor() {
     <button class="btn btn-sm" onclick="pwEditAdd('milestones')">+ Add milestone</button>
     <div class="form-row" style="margin-top:12px;"><label>Points per monthly leadership meeting</label>
       <input type="number" min="0" value="${d.meetingPoints}" oninput="state._pwEdit.meetingPoints=parseInt(this.value,10)||0" style="max-width:100px;"></div>
-    <div class="form-row"><label>Recommenders <span style="font-weight:400;color:var(--grey-400);text-transform:none;">(one per line)</span></label>
-      <textarea rows="5" oninput="state._pwEdit.recommenders=this.value.split('\\n')">${escapeHtml(d.recommenders.join('\n'))}</textarea></div>`;
+    <div style="font-size:12px;color:var(--grey-500);margin-top:12px;">Recommenders are no longer listed here \u2014 the pathway form offers this school's users plus superadmins automatically.</div>`;
 }
 
 function pwEditAdd(kind) {
@@ -3587,7 +3620,6 @@ async function savePathwayTemplate() {
     goals: JSON.parse(JSON.stringify(d.goals)),
     milestones: JSON.parse(JSON.stringify(d.milestones)),
     meetingPoints: d.meetingPoints,
-    recommenders: d.recommenders.map(r => String(r).trim()).filter(Boolean),
   };
   state.pathwayTemplateOverrides = blob;
   applyPathwayTemplateOverrides(blob);
@@ -7169,7 +7201,7 @@ function openPathway(studentId) {
   document.getElementById('pwStudentName').value = stu.name;
   document.getElementById('pwSyllabus').value = pw.syllabus || '';
   document.getElementById('pwEnrolledDate').value = pw.enrolledDate || '';
-  document.getElementById('pwRecommendedBy').value = pw.recommendedBy || '';
+  populatePathwayRecommenders(pw.recommendedBy || '');
   document.getElementById('pwEnrolledFlag').checked = !!pw.enrolledInLeadership;
   document.getElementById('pwSummaryNotes').value = pw.summaryNotes || '';
   document.getElementById('pwWeaknesses').value = pw.weaknesses || '';

@@ -12,7 +12,7 @@ const dom = new JSDOM(html, { runScripts: 'dangerously', pretendToBeVisual: true
 const { window } = dom;
 window.SUPABASE_URL = 'https://x.supabase.co';
 window.SUPABASE_ANON = 'anon-key';
-window.KRMAS_APP_VERSION = '135';
+window.KRMAS_APP_VERSION = '136';
 window.supabase = { createClient: () => theClient };
 window.XLSX = {};
 window.matchMedia = () => ({ matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} });
@@ -140,8 +140,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   ck('spinner clears when load completes', !/ui-loading/.test(doc.getElementById('mainContent').innerHTML));
 
   // ── G. version ──
-  ck('sw.js bumped to 135', /const VERSION = '135'/.test(fs.readFileSync('sw.js', 'utf8')));
-  ck('index.html cache busters at 135', (fs.readFileSync('index.html', 'utf8').match(/\?v=135/g) || []).length >= 4);
+  ck('sw.js bumped to 136', /const VERSION = '136'/.test(fs.readFileSync('sw.js', 'utf8')));
+  ck('index.html cache busters at 136', (fs.readFileSync('index.html', 'utf8').match(/\?v=136/g) || []).length >= 4);
   ck('quick-find button present in header', /openQuickFind\(\)/.test(fs.readFileSync('index.html', 'utf8')));
 
   console.log('\n════════════════════════════════════');
