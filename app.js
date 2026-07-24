@@ -3718,7 +3718,7 @@ async function resetPathwayTemplate() {
 //  * A step whose target is missing (role-gated markup, changed DOM) is
 //    skipped silently in the direction of travel.
 //  * Never fires while impersonating, read-only, offline, or under a modal.
-const TOUR_ID = 'core-v3'; // v142: My compliance step added, refire once
+const TOUR_ID = 'core-v4'; // v143: plan tagging step added, refire once
 
 function tourSteps() {
   return [
@@ -3740,6 +3740,8 @@ function tourSteps() {
       body: 'These tiles are filtered to your role — you\u2019ll only ever see what you can use.' },
     { view: 'plans',  target: '#plansResults', gate: () => can.viewPlans(), title: 'Lesson plans',
       body: 'Every saved plan for your school, searchable. Tap a class on the roster to write a plan for it — completed plans build your personal library, which powers grounded plan generation.' },
+    { view: 'plans',  target: '#plansResults', gate: () => can.viewPlans(), title: 'Tagging people in a plan',
+      body: 'Inside any lesson plan, the class instructor, assistant and junior fields accept an @ — type it and your school\u2019s roster appears. Pick someone and they get a push notification when you save. Re-saving won\u2019t re-notify: only a first tag or a newly added person is pinged.' },
     { view: 'plans',  target: 'button[onclick="setView(\'topics\')"]', gate: () => can.viewPlans(), title: 'Topic library',
       body: 'The full curriculum for every class chart lives here, along with the rotation week — admins can restart the cycle after holidays.' },
     { view: 'grading', target: '#mainContent', title: 'Grading',
@@ -4819,6 +4821,140 @@ function fillFromTopic() {
   }
 }
 
+// ---------- v143: @-mention tagging inside lesson plan people fields ----------
+// The three people fields (class instructor / assistant / junior) accept plain
+// text as before, but typing "@" opens a picker of the school's roster. Picking
+// someone inserts their exact name, which resolveMentionUids()-style matching
+// then turns into a real auth uid at save time so they can be notified.
+// Deliberately NOT a <select>: existing plans carry free-text names, and an
+// instructor may legitimately write someone who has no login (e.g. a visiting
+// coach). Typing stays free; the picker is an assist, not a constraint.
+const PLAN_MENTION_FIELDS = ['planInstructor', 'planAssist', 'planJunior'];
+let _planMentionState = {}; // fieldId -> { items, active, from }
+
+// The @-fragment immediately before the caret, or null when not mentioning.
+function _planMentionFragment(el) {
+  const pos = el.selectionStart == null ? el.value.length : el.selectionStart;
+  const before = el.value.slice(0, pos);
+  const at = before.lastIndexOf('@');
+  if (at === -1) return null;
+  const frag = before.slice(at + 1);
+  if (/[\n]/.test(frag)) return null;
+  return { from: at, query: frag };
+}
+
+function planMentionInput(fieldId) {
+  const el = document.getElementById(fieldId);
+  const menu = document.getElementById(fieldId + 'Menu');
+  if (!el || !menu) return;
+  const frag = _planMentionFragment(el);
+  if (!frag) { planMentionClose(fieldId); return; }
+  const q = frag.query.toLowerCase();
+  const people = currentInstructors()
+    .filter(i => i && i.name && (!q || i.name.toLowerCase().includes(q)))
+    .slice(0, 8);
+  if (!people.length) { planMentionClose(fieldId); return; }
+  _planMentionState[fieldId] = { items: people, active: 0, from: frag.from };
+  menu.innerHTML = people.map((p, idx) => `
+    <div class="plan-mention-item ${idx === 0 ? 'active' : ''}" data-idx="${idx}"
+         onmousedown="event.preventDefault(); planMentionPick('${fieldId}',${idx})">
+      <span style="flex:1;">${escapeHtml(p.name)}</span>
+      <span class="pm-role">${escapeHtml(p.role || '')}</span>
+    </div>`).join('');
+  menu.classList.add('open');
+}
+
+function planMentionKey(ev, fieldId) {
+  const st = _planMentionState[fieldId];
+  const menu = document.getElementById(fieldId + 'Menu');
+  if (!st || !menu || !menu.classList.contains('open')) return;
+  if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+    ev.preventDefault();
+    st.active = ev.key === 'ArrowDown'
+      ? (st.active + 1) % st.items.length
+      : (st.active - 1 + st.items.length) % st.items.length;
+    menu.querySelectorAll('.plan-mention-item').forEach((n, i) => n.classList.toggle('active', i === st.active));
+  } else if (ev.key === 'Enter' || ev.key === 'Tab') {
+    ev.preventDefault();
+    planMentionPick(fieldId, st.active);
+  } else if (ev.key === 'Escape') {
+    planMentionClose(fieldId);
+  }
+}
+
+function planMentionPick(fieldId, idx) {
+  const st = _planMentionState[fieldId];
+  const el = document.getElementById(fieldId);
+  if (!st || !el || !st.items[idx]) return;
+  const name = st.items[idx].name;
+  const pos = el.selectionStart == null ? el.value.length : el.selectionStart;
+  // Replace the "@fragment" with the picked name. No "@" is kept in the stored
+  // value — the field holds display names, matching pre-v143 plan data exactly.
+  el.value = el.value.slice(0, st.from) + name + el.value.slice(pos);
+  const caret = st.from + name.length;
+  try { el.setSelectionRange(caret, caret); } catch (e) {}
+  planMentionClose(fieldId);
+  el.focus();
+}
+
+function planMentionClose(fieldId) {
+  const menu = document.getElementById(fieldId + 'Menu');
+  if (menu) { menu.classList.remove('open'); menu.innerHTML = ''; }
+  delete _planMentionState[fieldId];
+}
+
+function planMentionBlur(fieldId) {
+  // Delay so a mousedown on an item still registers.
+  setTimeout(() => planMentionClose(fieldId), 120);
+}
+
+// Resolve the auth uids named across a plan's three people fields. Matching is
+// longest-name-first and consumes on hit, mirroring resolveMentionUids() so a
+// short name can't double-match inside a longer one.
+function planTaggedUids(plan) {
+  const uids = new Set();
+  if (!plan) return uids;
+  let text = ' ' + [plan.instructor, plan.assist, plan.junior].filter(Boolean).join(' ; ') + ' ';
+  const people = currentInstructors().slice().sort((a, b) => (b.name || '').length - (a.name || '').length);
+  for (const i of people) {
+    if (!i.uid || !i.name) continue;
+    const esc = i.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp('(^|[\\s;,])' + esc + '(?=[\\s;,]|$)', 'i').test(text)) {
+      uids.add(i.uid);
+      text = text.replace(new RegExp(esc, 'gi'), ' ');
+    }
+  }
+  return uids;
+}
+
+// Notify people NEWLY tagged on this save. Diffing against the previously saved
+// plan means re-saving an unchanged plan notifies nobody — only a first tag or
+// a genuinely added person fires. Never notifies the saver themselves.
+function notifyPlanTags(prevPlan, nextPlan, classLabel) {
+  try {
+    if (!state.user) return;
+    const before = planTaggedUids(prevPlan);
+    const after = planTaggedUids(nextPlan);
+    const added = [];
+    after.forEach(uid => { if (!before.has(uid)) added.push(uid); });
+    const targets = added.filter(uid => uid !== state.user.id);
+    if (!targets.length) return;
+    const who = state.user.name || 'Someone';
+    const when = nextPlan.date ? formatDateShort(new Date(nextPlan.date + 'T00:00:00')) : '';
+    const time = nextPlan.start ? (' at ' + nextPlan.start) : '';
+    const cls = classLabel || nextPlan.classType || 'a class';
+    DB.sendPushNotification({
+      title: '📋 ' + who + ' tagged you in a lesson plan',
+      body: who + ' tagged you in the ' + cls + ' lesson plan for ' + when + time + '.',
+      tag: 'plan-tag-' + (nextPlan.key || Date.now()),
+      url: './',
+      schoolId: state.schoolId || null,
+      targetUserIds: targets,
+      excludeUserId: state.user.id,
+    });
+  } catch (e) { /* best-effort — never block the save */ }
+}
+
 async function savePlan(status) {
   const dateKey = state.planningKey;
   if (!dateKey) return;
@@ -4834,6 +4970,10 @@ async function savePlan(status) {
   }
 
   const shared = !isGrading && can.switchAnySchool() && document.getElementById('planShared')?.checked;
+
+  // v143: snapshot the previously saved plan so notifyPlanTags can diff and
+  // only notify people who are NEWLY tagged on this save.
+  const _prevPlan = state.plans[dateKey] ? JSON.parse(JSON.stringify(state.plans[dateKey])) : null;
 
   state.plans[dateKey] = {
     key: dateKey,
@@ -4864,6 +5004,8 @@ async function savePlan(status) {
     updatedAt: new Date().toISOString()
   };
   await savePlans();
+  // v143: notify anyone newly tagged in the people fields. Fire-and-forget.
+  notifyPlanTags(_prevPlan, state.plans[dateKey], isGrading ? 'grading' : (c && c.type));
   // ── corpus ingest (v126): every COMPLETED plan becomes a training example
   // in its author's generation library. Fire-and-forget — a corpus hiccup
   // must never block saving the actual plan.

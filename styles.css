@@ -1115,3 +1115,37 @@
 }
 .scope-badge-scoped  { background: #ecfeff; border-color: #06b6d4; color: #164e63; }
 .scope-badge-network { background: #fef3c7; border-color: var(--amber-500); color: var(--amber-700); }
+
+/* v143: @-mention autocomplete inside lesson plan people fields. */
+.plan-mention-menu {
+  display: none;
+  position: absolute;
+  left: 0; right: 0;
+  top: 100%;
+  z-index: 60;
+  background: var(--white);
+  border: 1px solid var(--grey-200);
+  border-radius: var(--r-sm);
+  box-shadow: 0 6px 20px rgba(0,0,0,.14);
+  max-height: 190px;
+  overflow-y: auto;
+}
+.plan-mention-menu.open { display: block; }
+.plan-mention-item {
+  padding: 8px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--grey-100);
+}
+.plan-mention-item:last-child { border-bottom: none; }
+.plan-mention-item.active, .plan-mention-item:hover { background: var(--off-white); }
+.plan-mention-item .pm-role {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--grey-400);
+  font-weight: 700;
+}
