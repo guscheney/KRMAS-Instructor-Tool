@@ -1149,3 +1149,52 @@
   color: var(--grey-400);
   font-weight: 700;
 }
+
+/* v144: like + comment bar on saved lesson plans. */
+.lp-saved-wrap { margin-bottom: 6px; }
+.lp-social {
+  display: flex;
+  gap: 6px;
+  padding: 4px 10px 6px;
+  background: var(--white);
+  border: 1px solid var(--grey-200);
+  border-top: none;
+  border-radius: 0 0 var(--r-sm) var(--r-sm);
+}
+.lp-social-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--grey-500);
+  padding: 2px 8px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.lp-social-btn:hover { background: var(--off-white); }
+.lp-social-btn.liked { color: var(--red); font-weight: 700; }
+.lp-social-btn.active { background: var(--off-white); font-weight: 700; }
+.lp-comments {
+  background: var(--off-white);
+  border: 1px solid var(--grey-200);
+  border-top: none;
+  border-radius: 0 0 var(--r-sm) var(--r-sm);
+  padding: 8px 10px 10px;
+}
+.lp-comment-list { max-height: 220px; overflow-y: auto; margin-bottom: 8px; }
+.lp-comment {
+  background: var(--white);
+  border-radius: var(--r-sm);
+  padding: 6px 8px;
+  margin-bottom: 6px;
+}
+.lp-comment-input {
+  width: 100%;
+  font-size: 13px;
+  padding: 6px 8px;
+  border: 1px solid var(--grey-200);
+  border-radius: var(--r-sm);
+  resize: vertical;
+}

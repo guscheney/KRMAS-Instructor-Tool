@@ -1945,6 +1945,8 @@ function hideDayHead() {
 // ---------- View: Plans ----------
 function renderPlans() {
   hideDayHead();
+  state.planSocial = null; // v144: force a fresh count load for this view
+  state.planCommentsOpen = null;
   const main = document.getElementById('mainContent');
 
   if (!can.viewPlans()) {
@@ -1965,6 +1967,11 @@ function renderPlans() {
 function renderPlansResults() {
   const box = document.getElementById('plansResults');
   if (!box) return;
+  // v144: ensure like/comment counts are loaded once for this view.
+  if (!state.planSocial && state.user) {
+    state.planSocial = { likes: {}, comments: {} };
+    loadPlanSocial().then(() => renderPlansResults()).catch(() => {});
+  }
   const q = (state.plansSearch || '').trim().toLowerCase();
 
   let planList = Object.entries(state.plans)
@@ -2257,14 +2264,227 @@ function exportIncidentsCsv() {
 function renderSavedPlan(p) {
   const meta = CLASS_TYPES[p.classType] || {};
   const dateStr = p.date ? formatDateShort(new Date(p.date + 'T00:00:00')) : '—';
-  return `<div class="lp-saved-item ${p.status === 'draft' ? 'draft' : ''}" onclick="openPlan('${p.key}')">
-    <div style="flex: 1;">
-      <div style="font-weight: 700;">${escapeHtml(meta.name || p.classType)} — ${escapeHtml(p.theme || 'Untitled')}</div>
-      <div class="meta">${dateStr} · ${p.start || ''} · ${escapeHtml(p.instructor || '—')}</div>
+  // v144: like + comment bar, mirroring the feed. The card body keeps its
+  // open-the-plan click; the social bar sits outside it and stops propagation
+  // so tapping ♥ or 💬 never opens the plan editor.
+  const social = state.planSocial || { likes: {}, comments: {} };
+  const like = social.likes[p.key] || { count: 0, mine: false };
+  const cCount = social.comments[p.key] || 0;
+  const open = state.planCommentsOpen === p.key;
+  return `<div class="lp-saved-wrap">
+    <div class="lp-saved-item ${p.status === 'draft' ? 'draft' : ''}" onclick="openPlan('${p.key}')">
+      <div style="flex: 1;">
+        <div style="font-weight: 700;">${escapeHtml(meta.name || p.classType)} — ${escapeHtml(p.theme || 'Untitled')}</div>
+        <div class="meta">${dateStr} · ${p.start || ''} · ${escapeHtml(p.instructor || '—')}</div>
+      </div>
+      ${p.shared ? `<span class="badge" style="background:#e0f2fe;color:#075985;">🌐 Shared</span>` : ''}
+      <span class="badge ${p.status === 'draft' ? 'badge-draft' : 'badge-plan'}">${p.status || 'final'}</span>
     </div>
-    ${p.shared ? `<span class="badge" style="background:#e0f2fe;color:#075985;">🌐 Shared</span>` : ''}
-    <span class="badge ${p.status === 'draft' ? 'badge-draft' : 'badge-plan'}">${p.status || 'final'}</span>
+    <div class="lp-social">
+      <button class="lp-social-btn ${like.mine ? 'liked' : ''}" onclick="event.stopPropagation(); togglePlanLike('${p.key}')">
+        ${like.mine ? '♥' : '♡'} <span>${like.count || ''}</span>
+      </button>
+      <button class="lp-social-btn ${open ? 'active' : ''}" onclick="event.stopPropagation(); togglePlanComments('${p.key}')">
+        💬 <span>${cCount || ''}</span>
+      </button>
+    </div>
+    ${open ? `<div class="lp-comments" id="planComments-${p.key}" onclick="event.stopPropagation();">
+      <div class="lp-comment-list" id="planCommentList-${p.key}"><div style="font-size:12px;color:var(--grey-500);padding:6px;">Loading…</div></div>
+      <div style="position:relative;">
+        <textarea class="lp-comment-input" id="planCommentInput-${p.key}" rows="2" placeholder="Add a comment… type @ to tag someone"
+          oninput="planCommentMentionInput('${p.key}')" onkeydown="planCommentMentionKey(event,'${p.key}')" onblur="planCommentMentionBlur('${p.key}')"></textarea>
+        <div class="plan-mention-menu" id="planCommentMenu-${p.key}"></div>
+      </div>
+      <button class="btn btn-sm btn-primary" style="width:100%;margin-top:6px;" onclick="submitPlanComment('${p.key}')">Post comment</button>
+    </div>` : ''}
   </div>`;
+}
+
+// ---------- v144: plan likes & comments ----------
+// Mirrors the feed's social layer, scoped to a lesson plan. Counts are batch
+// loaded once per plans-view render (loadPlanSocialCounts) rather than per
+// card, so a long plan list stays two queries.
+async function loadPlanSocial() {
+  const keys = Object.keys(state.plans || {}).filter(k => !k.startsWith('grading-'));
+  if (!keys.length || !state.user) { state.planSocial = { likes: {}, comments: {} }; return; }
+  try {
+    state.planSocial = await DB.loadPlanSocialCounts(state.schoolId, keys, state.user.id);
+  } catch (e) { state.planSocial = { likes: {}, comments: {} }; }
+}
+
+async function togglePlanLike(planKey) {
+  if (!state.user) { openLogin(); return; }
+  const social = state.planSocial || (state.planSocial = { likes: {}, comments: {} });
+  const cur = social.likes[planKey] || { count: 0, mine: false };
+  const nextMine = !cur.mine;
+  // Optimistic — revert if the write fails.
+  social.likes[planKey] = { count: Math.max(0, cur.count + (nextMine ? 1 : -1)), mine: nextMine };
+  renderPlansResults();
+  const n = await DB.togglePlanLike(state.schoolId, planKey, state.user.id, nextMine);
+  if (n === null) { social.likes[planKey] = cur; renderPlansResults(); uiToast('Could not save that like.'); return; }
+  social.likes[planKey] = { count: n, mine: nextMine };
+  renderPlansResults();
+}
+
+async function togglePlanComments(planKey) {
+  if (state.planCommentsOpen === planKey) { state.planCommentsOpen = null; renderPlansResults(); return; }
+  state.planCommentsOpen = planKey;
+  renderPlansResults();
+  await refreshPlanCommentList(planKey);
+}
+
+async function refreshPlanCommentList(planKey) {
+  const el = document.getElementById('planCommentList-' + planKey);
+  if (!el) return;
+  let comments = [];
+  try { comments = await DB.loadPlanComments(state.schoolId, planKey); } catch (e) {}
+  state._planCommentCache = state._planCommentCache || {};
+  state._planCommentCache[planKey] = comments;
+  if (state.planSocial) state.planSocial.comments[planKey] = comments.length;
+  if (!comments.length) {
+    el.innerHTML = '<div style="font-size:12px;color:var(--grey-500);padding:6px;">No comments yet.</div>';
+    return;
+  }
+  el.innerHTML = comments.map(c => {
+    const mine = state.user && c.authorId === state.user.id;
+    const canDelete = mine || can.manageInstructors();
+    return `<div class="lp-comment">
+      <div style="display:flex;align-items:baseline;gap:6px;">
+        <strong style="font-size:12px;">${escapeHtml(c.authorName)}</strong>
+        <span style="font-size:10px;color:var(--grey-400);">${timeAgo(c.createdAt)}</span>
+        ${canDelete ? `<span class="action" style="margin-left:auto;font-size:10px;cursor:pointer;color:var(--grey-400);" onclick="event.stopPropagation(); deletePlanComment('${planKey}','${c.id}')">Delete</span>` : ''}
+      </div>
+      <div style="font-size:13px;margin-top:2px;">${renderMentions(escapeHtml(c.body))}</div>
+    </div>`;
+  }).join('');
+}
+
+async function submitPlanComment(planKey) {
+  if (!state.user) { openLogin(); return; }
+  const input = document.getElementById('planCommentInput-' + planKey);
+  const body = (input && input.value || '').trim();
+  if (!body) { uiToast('Write something first.'); return; }
+  const comment = {
+    id: 'PC-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
+    schoolId: state.schoolId,
+    planKey,
+    authorId: state.user.id,
+    authorName: state.user.name || 'Someone',
+    authorRole: state.user.role || null,
+    body,
+    edited: false,
+    createdAt: new Date().toISOString(),
+  };
+  input.value = '';
+  const ok = await DB.savePlanComment(comment);
+  if (!ok) { uiToast('Could not post that comment.'); return; }
+  await refreshPlanCommentList(planKey);
+  renderPlansResults();
+  // Re-open the thread after the list re-render and notify anyone @tagged.
+  state.planCommentsOpen = planKey;
+  notifyPlanCommentMentions(body, planKey);
+}
+
+async function deletePlanComment(planKey, commentId) {
+  if (!await uiConfirm('Delete this comment?')) return;
+  const ok = await DB.deletePlanComment(commentId);
+  if (!ok) { uiToast('Could not delete that comment.'); return; }
+  await refreshPlanCommentList(planKey);
+  renderPlansResults();
+  state.planCommentsOpen = planKey;
+}
+
+// Notify anyone @mentioned in a plan comment. Reuses the feed's resolver so
+// name matching behaves identically across the app.
+function notifyPlanCommentMentions(body, planKey) {
+  try {
+    if (!state.user || !(body && body.indexOf('@') !== -1)) return;
+    const { uids } = resolveMentionUids(body);
+    uids.delete(state.user.id);
+    if (!uids.size) return;
+    const plan = state.plans[planKey] || {};
+    const meta = CLASS_TYPES[plan.classType] || {};
+    const cls = meta.name || plan.classType || 'a class';
+    const when = plan.date ? formatDateShort(new Date(plan.date + 'T00:00:00')) : '';
+    const who = state.user.name || 'Someone';
+    DB.sendPushNotification({
+      title: '💬 ' + who + ' mentioned you in a plan comment',
+      body: who + ' commented on the ' + cls + ' lesson plan' + (when ? ' for ' + when : '') + ': ' +
+            body.replace(/\s+/g, ' ').trim().slice(0, 100),
+      tag: 'plan-comment-' + planKey,
+      url: './',
+      schoolId: state.schoolId || null,
+      targetUserIds: Array.from(uids),
+      excludeUserId: state.user.id,
+    });
+  } catch (e) { /* best-effort */ }
+}
+
+// ── @-mention picker inside the comment box (same UX as the plan fields) ──
+let _planCommentMention = {};
+
+function planCommentMentionInput(planKey) {
+  const el = document.getElementById('planCommentInput-' + planKey);
+  const menu = document.getElementById('planCommentMenu-' + planKey);
+  if (!el || !menu) return;
+  const pos = el.selectionStart == null ? el.value.length : el.selectionStart;
+  const before = el.value.slice(0, pos);
+  const at = before.lastIndexOf('@');
+  if (at === -1) { planCommentMentionClose(planKey); return; }
+  const query = before.slice(at + 1);
+  if (/\n/.test(query)) { planCommentMentionClose(planKey); return; }
+  const q = query.toLowerCase();
+  const people = currentInstructors().filter(i => i && i.name && (!q || i.name.toLowerCase().includes(q))).slice(0, 8);
+  if (!people.length) { planCommentMentionClose(planKey); return; }
+  _planCommentMention[planKey] = { items: people, active: 0, from: at };
+  menu.innerHTML = people.map((p, idx) => `
+    <div class="plan-mention-item ${idx === 0 ? 'active' : ''}" data-idx="${idx}"
+         onmousedown="event.preventDefault(); planCommentMentionPick('${planKey}',${idx})">
+      <span style="flex:1;">${escapeHtml(p.name)}</span>
+      <span class="pm-role">${escapeHtml(p.role || '')}</span>
+    </div>`).join('');
+  menu.classList.add('open');
+}
+
+function planCommentMentionKey(ev, planKey) {
+  const st = _planCommentMention[planKey];
+  const menu = document.getElementById('planCommentMenu-' + planKey);
+  if (!st || !menu || !menu.classList.contains('open')) return;
+  if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+    ev.preventDefault();
+    st.active = ev.key === 'ArrowDown' ? (st.active + 1) % st.items.length : (st.active - 1 + st.items.length) % st.items.length;
+    menu.querySelectorAll('.plan-mention-item').forEach((n, i) => n.classList.toggle('active', i === st.active));
+  } else if (ev.key === 'Enter' || ev.key === 'Tab') {
+    ev.preventDefault();
+    planCommentMentionPick(planKey, st.active);
+  } else if (ev.key === 'Escape') {
+    planCommentMentionClose(planKey);
+  }
+}
+
+function planCommentMentionPick(planKey, idx) {
+  const st = _planCommentMention[planKey];
+  const el = document.getElementById('planCommentInput-' + planKey);
+  if (!st || !el || !st.items[idx]) return;
+  const name = st.items[idx].name;
+  const pos = el.selectionStart == null ? el.value.length : el.selectionStart;
+  // Comments KEEP the "@" — the body is rendered with renderMentions() and the
+  // notifier matches on "@Name", exactly like a feed comment.
+  el.value = el.value.slice(0, st.from) + '@' + name + ' ' + el.value.slice(pos);
+  const caret = st.from + name.length + 2;
+  try { el.setSelectionRange(caret, caret); } catch (e) {}
+  planCommentMentionClose(planKey);
+  el.focus();
+}
+
+function planCommentMentionClose(planKey) {
+  const menu = document.getElementById('planCommentMenu-' + planKey);
+  if (menu) { menu.classList.remove('open'); menu.innerHTML = ''; }
+  delete _planCommentMention[planKey];
+}
+
+function planCommentMentionBlur(planKey) {
+  setTimeout(() => planCommentMentionClose(planKey), 120);
 }
 
 // ---------- View: Topic library ----------
@@ -3718,7 +3938,7 @@ async function resetPathwayTemplate() {
 //  * A step whose target is missing (role-gated markup, changed DOM) is
 //    skipped silently in the direction of travel.
 //  * Never fires while impersonating, read-only, offline, or under a modal.
-const TOUR_ID = 'core-v4'; // v143: plan tagging step added, refire once
+const TOUR_ID = 'core-v5'; // v144: plan likes+comments step added, refire once
 
 function tourSteps() {
   return [
@@ -3742,6 +3962,8 @@ function tourSteps() {
       body: 'Every saved plan for your school, searchable. Tap a class on the roster to write a plan for it — completed plans build your personal library, which powers grounded plan generation.' },
     { view: 'plans',  target: '#plansResults', gate: () => can.viewPlans(), title: 'Tagging people in a plan',
       body: 'Inside any lesson plan, the class instructor, assistant and junior fields accept an @ — type it and your school\u2019s roster appears. Pick someone and they get a push notification when you save. Re-saving won\u2019t re-notify: only a first tag or a newly added person is pinged.' },
+    { view: 'plans',  target: '#plansResults', gate: () => can.viewPlans(), title: 'Likes & comments on plans',
+      body: 'Every saved plan has a \u2661 and a \ud83d\udcac underneath it, just like a post on Home. Comment to ask a question or leave feedback \u2014 and type @ in the comment box to tag someone, who\u2019ll get a notification straight away.' },
     { view: 'plans',  target: 'button[onclick="setView(\'topics\')"]', gate: () => can.viewPlans(), title: 'Topic library',
       body: 'The full curriculum for every class chart lives here, along with the rotation week — admins can restart the cycle after holidays.' },
     { view: 'grading', target: '#mainContent', title: 'Grading',

@@ -638,6 +638,129 @@ const DB = (() => {
     } catch (e) { return new Set(); }
   }
 
+  // ── v144: plan comments & likes (migration 39) ───────────────────
+  // Mirrors the feed's comment/like API but keyed on (school_id, plan_key)
+  // since lesson plans live in kv_store and have no row to reference.
+  async function loadPlanComments(schoolId, planKey) {
+    if (!isSB()) return (await lGet('plancomments:' + schoolId + ':' + planKey)) || [];
+    try {
+      const { data, error } = await sbClient()
+        .from('plan_comments').select('*')
+        .eq('school_id', schoolId).eq('plan_key', planKey)
+        .order('created_at', { ascending: true });
+      if (error) throw error;
+      return (data || []).map(r => ({
+        id: r.id, schoolId: r.school_id, planKey: r.plan_key,
+        authorId: r.author_id, authorName: r.author_name, authorRole: r.author_role,
+        body: r.body, edited: r.edited, createdAt: r.created_at,
+      }));
+    } catch (e) {
+      console.warn('[DB] loadPlanComments fallback:', e.message);
+      return (await lGet('plancomments:' + schoolId + ':' + planKey)) || [];
+    }
+  }
+
+  async function savePlanComment(c) {
+    if (!isSB()) {
+      const key = 'plancomments:' + c.schoolId + ':' + c.planKey;
+      const arr = (await lGet(key)) || [];
+      const idx = arr.findIndex(x => x.id === c.id);
+      if (idx !== -1) arr[idx] = c; else arr.push(c);
+      return lSet(key, arr);
+    }
+    try {
+      const { error } = await sbClient().from('plan_comments').upsert({
+        id: c.id, school_id: c.schoolId, plan_key: c.planKey,
+        author_id: c.authorId, author_name: c.authorName, author_role: c.authorRole || null,
+        body: c.body, edited: !!c.edited,
+        created_at: c.createdAt || new Date().toISOString(),
+      }, { onConflict: 'id' });
+      if (error) throw error;
+      return true;
+    } catch (e) { console.warn('[DB] savePlanComment:', e.message); return false; }
+  }
+
+  async function deletePlanComment(id) {
+    if (!isSB()) return true; // local: caller filters its own cache
+    try {
+      const { error } = await sbClient().from('plan_comments').delete().eq('id', id);
+      return !error;
+    } catch (e) { return false; }
+  }
+
+  // Returns the new like count for the plan, or null on failure.
+  async function togglePlanLike(schoolId, planKey, userId, liked) {
+    if (!isSB()) {
+      const key = 'planlikes:' + schoolId + ':' + planKey;
+      const ids = (await lGet(key)) || [];
+      if (liked) { if (!ids.includes(userId)) ids.push(userId); }
+      else { const i = ids.indexOf(userId); if (i !== -1) ids.splice(i, 1); }
+      await lSet(key, ids);
+      return ids.length;
+    }
+    try {
+      const sb = sbClient();
+      if (liked) {
+        await sb.from('plan_likes').upsert(
+          { school_id: schoolId, plan_key: planKey, user_id: userId },
+          { onConflict: 'school_id,plan_key,user_id' }
+        );
+      } else {
+        await sb.from('plan_likes').delete()
+          .eq('school_id', schoolId).eq('plan_key', planKey).eq('user_id', userId);
+      }
+      const { count } = await sb.from('plan_likes')
+        .select('*', { count: 'exact', head: true })
+        .eq('school_id', schoolId).eq('plan_key', planKey);
+      return count || 0;
+    } catch (e) { console.warn('[DB] togglePlanLike:', e.message); return null; }
+  }
+
+  // { count, mine } for one plan — one round trip for the badge.
+  async function loadPlanLikes(schoolId, planKey, userId) {
+    if (!isSB()) {
+      const ids = (await lGet('planlikes:' + schoolId + ':' + planKey)) || [];
+      return { count: ids.length, mine: ids.includes(userId) };
+    }
+    try {
+      const { data } = await sbClient().from('plan_likes')
+        .select('user_id').eq('school_id', schoolId).eq('plan_key', planKey);
+      const rows = data || [];
+      return { count: rows.length, mine: rows.some(r => r.user_id === userId) };
+    } catch (e) { return { count: 0, mine: false }; }
+  }
+
+  // Batch counts for the plans list — two queries total rather than N+1.
+  // Returns { likes: { <planKey>: {count, mine} }, comments: { <planKey>: count } }.
+  async function loadPlanSocialCounts(schoolId, planKeys, userId) {
+    const out = { likes: {}, comments: {} };
+    if (!planKeys || !planKeys.length) return out;
+    if (!isSB()) {
+      for (const k of planKeys) {
+        const ids = (await lGet('planlikes:' + schoolId + ':' + k)) || [];
+        out.likes[k] = { count: ids.length, mine: ids.includes(userId) };
+        out.comments[k] = ((await lGet('plancomments:' + schoolId + ':' + k)) || []).length;
+      }
+      return out;
+    }
+    try {
+      const sb = sbClient();
+      const [likesRes, commentsRes] = await Promise.all([
+        sb.from('plan_likes').select('plan_key,user_id').eq('school_id', schoolId).in('plan_key', planKeys),
+        sb.from('plan_comments').select('plan_key').eq('school_id', schoolId).in('plan_key', planKeys),
+      ]);
+      for (const r of (likesRes.data || [])) {
+        const e = out.likes[r.plan_key] || (out.likes[r.plan_key] = { count: 0, mine: false });
+        e.count++;
+        if (r.user_id === userId) e.mine = true;
+      }
+      for (const r of (commentsRes.data || [])) {
+        out.comments[r.plan_key] = (out.comments[r.plan_key] || 0) + 1;
+      }
+      return out;
+    } catch (e) { console.warn('[DB] loadPlanSocialCounts:', e.message); return out; }
+  }
+
   // ── Required-reading acknowledgements ────────────────────────────
   async function loadAcksForPosts(postIds) {
     if (!postIds || postIds.length === 0) return {};
@@ -2364,6 +2487,7 @@ const DB = (() => {
     loadFeedPosts, saveFeedPost, setPostArchived, deleteFeedPost,
     loadComments, saveComment, deleteComment,
     toggleLike, loadMyLikes,
+    loadPlanComments, savePlanComment, deletePlanComment, togglePlanLike, loadPlanLikes, loadPlanSocialCounts, // v144
     loadAcksForPosts, saveAck, loadMyAcks,
 
     // Groups
